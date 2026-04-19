@@ -68,6 +68,10 @@
 | 2026-04-19 23:05 | Agent reply | EXAMPLE-002 is fully complete. All 4 steps done (Step 0: Preflight, Step 1: Create Parallel Hello File, Step 2: Verification, Step 3: Delivery). The deliverable `hello-taskplane-2.md` exists in projec |
 | 2026-04-19 23:05 | Worker iter 2 | done in 99s, tools: 5 |
 | 2026-04-19 23:05 | No progress | Iteration 2: 0 new checkboxes (1/3 stall limit) |
+| 2026-04-19 23:07 | Exit intercept timeout | Supervisor did not respond within 60s — closing session |
+| 2026-04-19 23:07 | Worker iter 3 | done in 110s, tools: 7 |
+| 2026-04-19 23:07 | No progress | Iteration 3: 0 new checkboxes (2/3 stall limit) |
+| 2026-04-19 23:07 | Task complete | .DONE created |
 
 ---
 
