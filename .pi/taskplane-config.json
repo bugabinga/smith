@@ -1,0 +1,30 @@
+{
+  "configVersion": 1,
+  "taskRunner": {
+    "project": {
+      "name": "smith",
+      "description": ""
+    },
+    "paths": {
+      "tasks": "taskplane-tasks"
+    },
+    "testing": {
+      "commands": {
+        "unit": "cargo test",
+        "build": "cargo build"
+      }
+    },
+    "taskAreas": {
+      "general": {
+        "path": "taskplane-tasks",
+        "prefix": "SM",
+        "context": "taskplane-tasks/CONTEXT.md"
+      }
+    }
+  },
+  "orchestrator": {
+    "orchestrator": {
+      "maxLanes": 10
+    }
+  }
+}

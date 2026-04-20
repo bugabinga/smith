@@ -1,0 +1,8 @@
+{"timestamp":"2026-04-19T22:55:11.522Z","type":"batch_complete","batchId":"20260420T005500","waveIndex":-1,"phase":"failed","succeededTasks":0,"failedTasks":0,"skippedTasks":0,"blockedTasks":0,"batchDurationMs":10919}
+{"timestamp":"2026-04-19T23:01:24.707Z","type":"batch_complete","batchId":"20260420T010112","waveIndex":-1,"phase":"failed","succeededTasks":0,"failedTasks":0,"skippedTasks":0,"blockedTasks":0,"batchDurationMs":12508}
+{"timestamp":"2026-04-19T23:03:18.717Z","type":"wave_start","batchId":"20260420T010313","waveIndex":0,"phase":"executing","taskIds":["EXAMPLE-001","EXAMPLE-002"],"laneCount":2}
+{"timestamp":"2026-04-19T23:07:50.596Z","type":"task_complete","batchId":"20260420T010313","waveIndex":0,"phase":"executing","taskId":"EXAMPLE-001","durationMs":64559,"outcome":"succeeded"}
+{"timestamp":"2026-04-19T23:07:50.600Z","type":"task_complete","batchId":"20260420T010313","waveIndex":0,"phase":"executing","taskId":"EXAMPLE-002","durationMs":267381,"outcome":"succeeded"}
+{"timestamp":"2026-04-19T23:07:50.962Z","type":"merge_start","batchId":"20260420T010313","waveIndex":0,"phase":"merging","laneCount":2}
+{"timestamp":"2026-04-19T23:08:34.284Z","type":"merge_success","batchId":"20260420T010313","waveIndex":0,"phase":"merging","laneCount":2,"durationMs":43291,"totalWaves":1}
+{"timestamp":"2026-04-19T23:08:35.977Z","type":"batch_complete","batchId":"20260420T010313","waveIndex":0,"phase":"completed","succeededTasks":2,"failedTasks":0,"skippedTasks":0,"blockedTasks":0,"batchDurationMs":322709}

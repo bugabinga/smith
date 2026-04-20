@@ -1,0 +1,21 @@
+{
+  "batchId": "20260420T010313",
+  "mergeNumber": 2,
+  "sessionName": "orch-u0-a165-merge-2",
+  "waveIndex": 1,
+  "status": "failed",
+  "agent": {
+    "agentId": "orch-u0-a165-merge-2",
+    "status": "crashed",
+    "elapsedMs": 18978,
+    "toolCalls": 4,
+    "contextPct": 1.099609375,
+    "costUsd": 0.00426918,
+    "lastTool": "write: /data/data/com.termux/files/home/Workspace/smith/.pi/merge-result-w1-lane2-u0-a165-20260420T010313.json",
+    "inputTokens": 3417,
+    "outputTokens": 692,
+    "cacheReadTokens": 6528,
+    "cacheWriteTokens": 444
+  },
+  "updatedAt": 1776640113691
+}

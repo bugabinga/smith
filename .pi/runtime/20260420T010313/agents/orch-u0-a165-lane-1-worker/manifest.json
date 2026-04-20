@@ -1,0 +1,20 @@
+{
+  "batchId": "20260420T010313",
+  "agentId": "orch-u0-a165-lane-1-worker",
+  "role": "worker",
+  "laneNumber": 1,
+  "taskId": "EXAMPLE-001",
+  "repoId": "default",
+  "pid": 9310,
+  "parentPid": 9231,
+  "startedAt": 1776639799717,
+  "status": "exited",
+  "cwd": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-1",
+  "packet": {
+    "promptPath": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-1/taskplane-tasks/EXAMPLE-001-hello-world/PROMPT.md",
+    "statusPath": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-1/taskplane-tasks/EXAMPLE-001-hello-world/STATUS.md",
+    "donePath": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-1/taskplane-tasks/EXAMPLE-001-hello-world/.DONE",
+    "reviewsDir": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-1/taskplane-tasks/EXAMPLE-001-hello-world/.reviews",
+    "taskFolder": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-1/taskplane-tasks/EXAMPLE-001-hello-world"
+  }
+}

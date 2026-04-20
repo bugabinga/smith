@@ -1,0 +1,31 @@
+{
+  "batchId": "20260420T010313",
+  "laneNumber": 2,
+  "laneId": "lane-2",
+  "repoId": "default",
+  "taskId": "EXAMPLE-002",
+  "segmentId": "EXAMPLE-002::default",
+  "status": "complete",
+  "worker": {
+    "agentId": "orch-u0-a165-lane-2-worker",
+    "status": "exited",
+    "elapsedMs": 109862,
+    "toolCalls": 7,
+    "contextPct": 4.93,
+    "costUsd": 0,
+    "lastTool": "bash: cd /data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-2 && git add -A && git commit -m \"feat(EXAMPLE-002): complete Step 3 — delivery\"",
+    "inputTokens": 3219,
+    "outputTokens": 1586,
+    "cacheReadTokens": 51904,
+    "cacheWriteTokens": 0
+  },
+  "reviewer": null,
+  "progress": {
+    "currentStep": "Step 3: Delivery",
+    "checked": 5,
+    "total": 5,
+    "iteration": 3,
+    "reviews": 0
+  },
+  "updatedAt": 1776640067112
+}

@@ -1,0 +1,52 @@
+{
+  "capturedAt": "2026-04-19T23:08:14.518Z",
+  "commandResults": [
+    {
+      "commandId": "verify",
+      "exitCode": 1,
+      "stdout": "",
+      "stderr": "error: No justfile found\n",
+      "durationMs": 99,
+      "error": null
+    },
+    {
+      "commandId": "unit",
+      "exitCode": 101,
+      "stdout": "",
+      "stderr": "error: could not find `Cargo.toml` in `/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/merge` or any parent directory\n",
+      "durationMs": 129,
+      "error": null
+    },
+    {
+      "commandId": "build",
+      "exitCode": 101,
+      "stdout": "",
+      "stderr": "error: could not find `Cargo.toml` in `/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/merge` or any parent directory\n",
+      "durationMs": 127,
+      "error": null
+    }
+  ],
+  "fingerprints": [
+    {
+      "commandId": "verify",
+      "file": "",
+      "case": "",
+      "kind": "command_error",
+      "messageNorm": "error: No justfile found"
+    },
+    {
+      "commandId": "unit",
+      "file": "",
+      "case": "",
+      "kind": "command_error",
+      "messageNorm": "error: could not find `Cargo.toml` in `/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/merge` or any parent directory"
+    },
+    {
+      "commandId": "build",
+      "file": "",
+      "case": "",
+      "kind": "command_error",
+      "messageNorm": "error: could not find `Cargo.toml` in `/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/merge` or any parent directory"
+    }
+  ]
+}

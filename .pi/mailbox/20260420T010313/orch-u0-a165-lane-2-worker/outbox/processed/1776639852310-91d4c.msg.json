@@ -1,0 +1,11 @@
+{
+  "id": "1776639852310-91d4c",
+  "batchId": "20260420T010313",
+  "from": "orch-u0-a165-lane-2-worker",
+  "to": "supervisor",
+  "timestamp": 1776639852310,
+  "type": "reply",
+  "content": "EXAMPLE-002 complete. All steps done: created `hello-taskplane-2.md` with title, task ID, and parallel-safe note. Committed as `feat(EXAMPLE-002): create parallel hello file`. STATUS.md marked ✅ Complete.",
+  "expectsReply": false,
+  "replyTo": null
+}

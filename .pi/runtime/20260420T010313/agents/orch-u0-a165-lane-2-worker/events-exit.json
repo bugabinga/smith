@@ -1,0 +1,22 @@
+{
+  "exitCode": 0,
+  "exitSignal": null,
+  "tokens": {
+    "input": 3219,
+    "output": 1586,
+    "cacheRead": 51904,
+    "cacheWrite": 0
+  },
+  "cost": null,
+  "toolCalls": 7,
+  "retries": 0,
+  "compactions": 0,
+  "durationSec": 110,
+  "lastToolCall": "bash: cd /data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-2 && git add -A && git commit -m \"feat(EXAMPLE-002): complete Step 3 — delivery\"",
+  "error": null,
+  "contextUsage": {
+    "tokens": 9860,
+    "contextWindow": 200000,
+    "percent": 4.93
+  }
+}

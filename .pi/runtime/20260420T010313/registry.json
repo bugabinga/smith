@@ -1,0 +1,74 @@
+{
+  "batchId": "20260420T010313",
+  "updatedAt": 1776640113688,
+  "agents": {
+    "orch-u0-a165-lane-1-worker": {
+      "batchId": "20260420T010313",
+      "agentId": "orch-u0-a165-lane-1-worker",
+      "role": "worker",
+      "laneNumber": 1,
+      "taskId": "EXAMPLE-001",
+      "repoId": "default",
+      "pid": 9310,
+      "parentPid": 9231,
+      "startedAt": 1776639799717,
+      "status": "exited",
+      "cwd": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-1",
+      "packet": {
+        "promptPath": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-1/taskplane-tasks/EXAMPLE-001-hello-world/PROMPT.md",
+        "statusPath": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-1/taskplane-tasks/EXAMPLE-001-hello-world/STATUS.md",
+        "donePath": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-1/taskplane-tasks/EXAMPLE-001-hello-world/.DONE",
+        "reviewsDir": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-1/taskplane-tasks/EXAMPLE-001-hello-world/.reviews",
+        "taskFolder": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-1/taskplane-tasks/EXAMPLE-001-hello-world"
+      }
+    },
+    "orch-u0-a165-lane-2-worker": {
+      "batchId": "20260420T010313",
+      "agentId": "orch-u0-a165-lane-2-worker",
+      "role": "worker",
+      "laneNumber": 2,
+      "taskId": "EXAMPLE-002",
+      "repoId": "default",
+      "pid": 10085,
+      "parentPid": 9231,
+      "startedAt": 1776639957142,
+      "status": "exited",
+      "cwd": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-2",
+      "packet": {
+        "promptPath": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-2/taskplane-tasks/EXAMPLE-002-parallel-smoke/PROMPT.md",
+        "statusPath": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-2/taskplane-tasks/EXAMPLE-002-parallel-smoke/STATUS.md",
+        "donePath": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-2/taskplane-tasks/EXAMPLE-002-parallel-smoke/.DONE",
+        "reviewsDir": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-2/taskplane-tasks/EXAMPLE-002-parallel-smoke/.reviews",
+        "taskFolder": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/lane-2/taskplane-tasks/EXAMPLE-002-parallel-smoke"
+      }
+    },
+    "orch-u0-a165-merge-1": {
+      "batchId": "20260420T010313",
+      "agentId": "orch-u0-a165-merge-1",
+      "role": "merger",
+      "laneNumber": null,
+      "taskId": null,
+      "repoId": "default",
+      "pid": 10588,
+      "parentPid": 9231,
+      "startedAt": 1776640072056,
+      "status": "killed",
+      "cwd": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/merge",
+      "packet": null
+    },
+    "orch-u0-a165-merge-2": {
+      "batchId": "20260420T010313",
+      "agentId": "orch-u0-a165-merge-2",
+      "role": "merger",
+      "laneNumber": null,
+      "taskId": null,
+      "repoId": "default",
+      "pid": 10674,
+      "parentPid": 9231,
+      "startedAt": 1776640094707,
+      "status": "killed",
+      "cwd": "/data/data/com.termux/files/home/Workspace/smith/.worktrees/u0-a165-20260420T010313/merge",
+      "packet": null
+    }
+  }
+}
