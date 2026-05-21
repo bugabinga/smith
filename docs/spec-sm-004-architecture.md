@@ -59,10 +59,14 @@ User Input → smith-cli (parse) → smith-harness (orchestrate)
 | `Session`, `SessionEntry`, `SessionStore`, `AgentEvent`, `EngineEvent`, `AgentLoopConfig` | **SM-006** (`smith-core/`) | Business logic, events, sessions |
 | `Provider` trait, model registry, auth | **SM-007** (`smith-ai/`) | LLM providers |
 | TUI widgets, `TuiApp`, render loop, themes | **SM-008** (`smith-tui/`) | Terminal rendering |
-| Plugin system, SDK, built-in tools, sandbox | **SM-009** (`smith-harness/`) | Orchestration + plugins |
+| Plugin system, SDK, built-in tools | **SM-009** (`smith-harness/`) | Orchestration + plugins |
 | CLI args, session commands | **SM-010** (`smith-cli/`) | Binary entry point |
 | Workspace deps, crate graph | **SM-011** | Workspace manifest |
 | Testing strategy | **SM-012** | Test plan |
+| Behavior-mutating event returns | **SM-009** (`smith-harness/`) | Plugin events return typed results (block, transform, cancel, replace) — inherited from pi |
+| Tool renderers (`renderCall`, `renderResult`) | **SM-009** (`smith-harness/`) + **SM-008** (`smith-tui/`) | Per-tool custom TUI rendering — inherited from pi |
+| ExtensionContext / ExtensionUIContext | **SM-009** (`smith-harness/`) | Plugin control over agent lifecycle and UI — inherited from pi |
+| Agent loop hooks (`beforeToolCall`, `afterToolCall`, `shouldStopAfterTurn`) | **SM-006** (`smith-core/`) | Pre/post tool interception and loop control — inherited from pi |
 
 SM-004 is the **architecture narrative** — for type definitions, see the canonical specs above.
 
@@ -258,6 +262,8 @@ pub trait SecretProxy: Send + Sync {
 - Add new `SessionEntry` variants
 - Add new `EngineEvent` variants
 - Custom `Tool` implementations
+- Behavior-mutating hook implementations (`beforeToolCall`, `afterToolCall`) — see SM-006 §agent.rs
+- Agent loop control callbacks (`shouldStopAfterTurn`, `prepareNextTurn`) — see SM-006 §agent.rs
 
 ## Crate: smith-ai
 
@@ -438,7 +444,7 @@ Orchestrator + plugin system. Owns the event loop, coordinates all crates.
 
 ### Responsibilities
 - Plugin loading (LuaJIT via mlua)
-- Plugin SDK (sandboxing, credential access)
+- Plugin SDK (Lua API, credential access, **ExtensionContext** for agent control, **ExtensionUIContext** for UI interaction)
 - Event loop (engine owns it)
 - Coordinates core + ai + tui
 - Receives UI events, dispatches to engine
@@ -460,31 +466,32 @@ pub struct PluginManager {
 
 pub struct PluginSdk {
     // smith.fs.*, smith.env.*, smith.credentials.*
+    // smith.abort(), smith.shutdown(), smith.getContextUsage()
+    // smith.ui.select(), smith.ui.confirm(), smith.ui.setStatus()
 }
 ```
 
-### LuaJIT Sandbox Configuration
+### Lua Runtime Restrictions
 
 **Standard libraries**: Keep `string`, `table`, `math`, `coroutine`, `utf8`, `package`
 (with custom searchers). Strip `io`, `os`, `debug`, `getfenv`, `setfenv`.
 
-**Safe host functions** exposed through a `smith.*` Lua module:
+**Host functions** exposed through a `smith.*` Lua module:
 ```lua
-smith.fs.read("path")         -- read file (enforced: scoped to project dirs)
-smith.fs.write("path", data)  -- write file (enforced: scoped to project dirs)
+smith.fs.read("path")         -- read file
+smith.fs.write("path", data)  -- write file
 smith.env.get("HOME")         -- read-only env access
 smith.time.now()              -- safe timestamp
 ```
 
-Path restrictions are enforced by the SDK (Rust), not by plugins. Plugins only have
-access through `smith.fs.*`. They cannot bypass restrictions because they have no
-raw filesystem API. The SDK enforces: reads/writes are scoped to smith's working
-directory or explicitly allowed paths. Plugins are Lua (untrusted), SDK is Rust
-(trusted).
+Plugins have no `io`, `os`, `debug`, `getfenv`, `setfenv` globals. They can only
+access the filesystem and environment through `smith.fs.*` and `smith.env.*`.
+No path restrictions or capability grants — the Lua runtime itself is the only
+guard. Built-in tools and user plugins use the same API.
 
 **Custom require** via `mlua-pkg` crate — composable resolver chain:
 - `NativeResolver` — smith's Rust API surface to plugins
-- `FsResolver` — scoped to plugin's own directory only
+- `FsResolver` — plugin's own directory
 - `MemoryResolver` — embedded modules smith provides
 - Plugins can be multi-file with nested directories
 
@@ -546,14 +553,15 @@ pub trait PluginLoader {
 /// Lua plugin loader (uses mlua with LuaJIT + mlua-pkg for custom require)
 pub struct LuaPluginLoader { /* TODO */ }
 
-// SandboxConfig and Capability are defined canonically in SM-005 (smith/src/config.rs).
+
 ```
 
 ### Extension Points
 - New interface types (add to `PluginInterface` hierarchy)
 - New plugin loaders (e.g., native Rust `.so` plugins)
-- Sandbox policies
-- Plugin-to-plugin communication
+- Behavior-mutating event handlers (block tool calls, transform input, override system prompts)
+- Tool custom renderers (`renderCall`, `renderResult`)
+- Plugin-to-plugin communication via EventBus
 
 ## Crate: smith-cli
 
@@ -611,11 +619,14 @@ The LLM is the **only untrusted actor**. Everything else is trusted.
 **LLM bounding mechanisms:**
 1. Tool registry: smith controls which tools the LLM sees — not all tools are exposed
 2. Secret proxy: LLM sees `smith:sec:N` identifiers, never real secrets
-3. SDK path restrictions: plugins access filesystem only through `smith.fs.*` (Rust),
-   which enforces scoping. Plugins have no raw filesystem API and cannot bypass.
+3. Lua runtime restrictions: plugins have no `io`, `os`, `debug` globals. They
+   access the filesystem only through `smith.fs.*` (Rust). No capability system.
 
-Security is **configuration**, not confirmation dialogs. Users configure which tools
-are available. Popups that users learn to auto-accept are theater, not security.
+Security is primarily **configuration** — users configure which tools are active.
+Tools execute without confirmation dialogs. Popups that users learn to
+auto-accept are theater, not security. Security comes from restricting what
+tools can do (restricted Lua context, no filesystem escape) and what the LLM
+sees (secret proxy), not from interrupting the user.
 
 **The secret proxy system** prevents LLM data exfiltration:
 - Every user message and tool output scanned for secret patterns (env vars, tokens, keys)
@@ -742,7 +753,7 @@ return {
             limit = { type = "number", description = "Max lines", optional = true },
         },
         execute = function(params)
-            -- smith.fs.* is the safe, sandboxed file API
+            -- smith.fs.* is the file API
             local content = smith.fs.read(params.path)
             if params.offset then
                 content = smith.string.lines(content, params.offset, params.limit)
@@ -866,7 +877,7 @@ Create `docs/ARCHITECTURE.md` — the authoritative architecture reference:
 - Trait hierarchy for each module
 - Extension point catalog
 - Security model layers
-- Plugin system design (interfaces, loading, sandboxing)
+- Plugin system design (interfaces, loading)
 - Dependency decisions with rationale
 - Open research questions
 
@@ -959,7 +970,7 @@ src/
     mod.rs          — module root, re-exports
     interface.rs    — PluginInterface, Plugin, ToolInterface, WidgetInterface, etc.
     loader.rs       — PluginLoader trait, LuaPluginLoader
-    sandbox.rs      — SandboxConfig, Capability, bytecode caching
+    sdk.rs          — Lua SDK module definition, bytecode caching
     sdk.rs          — smith.* Lua module definition (what plugins can call)
 built-in/           — Lua plugins shipped with smith (NOT in src/)
   tools/
