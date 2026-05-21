@@ -8,7 +8,7 @@ Depends on smith/ (SM-005) only. Does NOT depend on smith-ai.
 The agent loop takes a `StreamFn` (from smith/) — it never imports provider types.
 This enables parallel builds: smith-core and smith-ai build simultaneously.
 
-**Architecture:** Follows pi's `pi-agent-core` pattern, but uses dependency inversion
+**Architecture:** Follows pi's agent pattern, but uses dependency inversion
 via `StreamFn` instead of importing provider types directly.
 
 ## Key Design Decision
@@ -130,7 +130,6 @@ pub struct AgentLoopConfig {
     pub convert_to_llm: Box<dyn Fn(Vec<Message>) -> Vec<Message> + Send + Sync>,
     pub transform_context: Option<Box<dyn Fn(Vec<Message>) -> Vec<Message> + Send + Sync>>,
     pub get_api_key: Option<Box<dyn Fn(&str) -> Option<String> + Send + Sync>>,
-    pub before_tool_call: Option<Box<dyn Fn(&str, &serde_json::Value) -> Option<HookResult> + Send + Sync>>,
     pub after_tool_call: Option<Box<dyn Fn(&str, &AgentToolResult) -> Option<AgentToolResult> + Send + Sync>>,
 }
 
@@ -178,10 +177,9 @@ The core loop:
    - ThinkingDelta → emit AgentEvent::ThinkingDelta
    - Done → finalize assistant message, execute queued tools
 6. For each tool call:
-   a. before_tool_call hook (can block)
-   b. Execute tool (AgentTool::execute)
-   c. after_tool_call hook (can modify result)
-   d. Add tool result to messages
+   a. Execute tool (AgentTool::execute)
+   b. after_tool_call hook (can modify result)
+   c. Add tool result to messages
 7. If stop_reason == ToolUse, goto 1 (next turn)
 8. If stop_reason == EndTurn, emit AgentEnd
 ```
@@ -355,7 +353,6 @@ pub struct HookContext {
 
 pub enum HookResult {
     Pass,
-    Block { reason: String },
     Modify { data: serde_json::Value },
 }
 ```
@@ -504,9 +501,6 @@ pub struct InMemorySecretProxy {
   - Mock StreamFn returns ToolCall + Done
   - Agent executes tool, adds result, loops again
   - Second loop returns EndTurn
-- **Agent loop with blocked tool**
-  - before_tool_call returns Block
-  - Tool not executed, error result added
 - **Session creation and entry addition**
 - **Session fork creates correct tree**
 - **SecretProxy hides and restores secrets**

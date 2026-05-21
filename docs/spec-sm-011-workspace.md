@@ -10,7 +10,7 @@ Runs in parallel with SM-009/SM-010.
 ## Key Design Decisions
 
 xTasks must include:
-- `fetch-providers` — fetch from pi + catwalk, generate providers.json
+- `fetch-providers` — fetch from pi.dev + catwalk, generate providers.json
 - `doc-test` — extract @usage + guide code blocks, run in Lua VM
 - `verify-docs` — completeness checks (every API has docs)
 - `doc-gen` — generate man pages + docs bundle from annotations
@@ -70,7 +70,7 @@ xtask/
 ├── Cargo.toml
 └── src/
     ├── main.rs
-    ├── fetch_providers.rs    — fetch from pi + catwalk
+    ├── fetch_providers.rs    — fetch from pi.dev + catwalk
     ├── doc_test.rs           — extract + run code blocks
     ├── verify_docs.rs        — completeness checks
     └── doc_gen.rs            — generate man pages + docs bundle
@@ -90,11 +90,11 @@ cargo run -p xtask -- test               # all tests
 ### 4. `fetch_providers.rs`
 
 ```rust
-/// Fetch provider data from pi repo and catwalk repo
+/// Fetch provider data from pi.dev and catwalk
 /// Merge/deduplicate
 /// Generate smith-ai/src/providers.json
 pub fn fetch_providers() -> Result<()> {
-    // 1. Fetch pi's models.generated.js → parse models
+    // 1. Fetch pi.dev's models.generated.js → parse models
     let pi_models = fetch_pi_models()?;
 
     // 2. Fetch catwalk provider configs → parse models
