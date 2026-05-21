@@ -1,0 +1,30 @@
+{
+  "flowModelConfig": "smith",
+  "flowModelConfigs": {
+    "smith": {
+      "lite": {
+        "primary": "kimi-coding/kimi-for-coding",
+        "failover": ["zai/glm-5-turbo"]
+      },
+      "flash": {
+        "primary": "kimi-coding/kimi-for-coding",
+        "failover": ["zai/glm-5.1"]
+      },
+      "full": {
+        "primary": "zai/glm-5.1",
+        "failover": ["kimi-coding/kimi-for-coding"]
+      }
+    }
+  },
+  "flowSettings": {
+    "maxConcurrency": 2,
+    "steering": {
+      "enabled": false,
+      "strategicHint": false
+    },
+    "animation": {
+      "enabled": true,
+      "glitch": true
+    }
+  }
+}

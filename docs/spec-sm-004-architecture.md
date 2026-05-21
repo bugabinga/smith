@@ -173,69 +173,17 @@ File structure:
 └────────────┴──────────────────┴────────────┴──────────────────┘
 ```
 
-Session entries use a typed envelope + CBOR payload:
-**Session entries** (CBOR-encoded, length-prefixed):
+Session format, entries, persistence, and fault-tolerant CBOR codec are
+defined in **SM-006** §session.rs and §session_format.rs.
+See SM-006 for: `SessionEntry` enum (12 variants), `SessionCodec`,
+`SessionStore` trait, compaction, and migration logic.
 
-```rust
-// Envelope — every entry has this structure
-struct SessionEntry {
-    type_: String,       // "user", "assistant", "tool_call", "secret_register", "compaction"
-    id: String,          // unique entry ID
-    timestamp: u64,
-    payload: Vec<u8>,    // inner CBOR — decoded by type
-}
-
-// Payload types
-struct UserPayload { content: Vec<ContentBlock> }
-struct AssistantPayload { content: Vec<ContentBlock>, usage: ProviderUsage }
-struct ToolCallPayload { tool: String, args: String }
-struct SecretRegisterPayload { id: String, value: String, source: String }
-struct CompactionPayload { summary: String, prev_ids: Vec<String> }
-```
-
-**Secret proxy**: Translation table is stored as `secret_register` session entries.
-Session resume builds the table by scanning backward from the end, collecting the
-most recent registration for each `smith:sec:N` ID. History is self-describing —
-any point in the session can be fully restored.
-
-Compaction rolls up old entries into a `compaction` entry that preserves the
-secret registrations from the rolled-up range, so no data is lost.
-
-**Fault tolerance** — session parsing MUST NOT crash smith:
-- Length prefix is the recovery mechanism: even with corrupt CBOR, reader
-  always knows where next entry starts (`pos + len`).
-- Truncated entry (crash mid-write) → stop, all prior entries intact.
-- Corrupt CBOR bytes → log warning, skip entry, continue.
-- Unknown entry type → keep entry with `Payload::Unknown`.
-- Unknown CBOR fields in known entry → ignored (forward compatible).
-- Missing optional fields → `None` (backward compatible).
-- File missing or empty → return empty vec, create on first write.
-
-**Human-readable output**: `smith session dump` converts CBOR-seq → JSONL to stdout.
-```
-smith session dump                        # latest session as JSONL
-smith session dump <session-id>           # specific session
-smith session dump --last 5               # last 5 entries
-smith session dump --output out.jsonl     # write to file
-smith session list                        # list all sessions
-```
-
-**Session migration**: Session format versions. Migrate on load.
-```rust
-pub const CURRENT_SESSION_VERSION: u32 = 1;
-
-fn migrate_entries(entries: &mut Vec<SessionEntry>) {
-    let version = entries.first()
-        .and_then(|e| match e {
-            SessionEntry::Session { version, .. } => Some(*version),
-            _ => None,
-        })
-        .unwrap_or(1);
-    
-    if version < 1 { migrate_v0_to_v1(entries); }
-    // Future: if version < 2 { migrate_v1_to_v2(entries); }
-}
-```
+**Key properties** (narrative only -- types are canonical in SM-006):
+- CBOR-encoded, length-prefixed entries for crash recovery.
+- Fault-tolerant parsing: truncated -> stop, corrupt -> skip+warn, unknown -> keep.
+- smith session dump converts CBOR-seq -> JSONL (see SM-010 CLI spec).
+- Secret proxy translation table rebuilt by scanning backward from session end.
+- Compaction rolls up old entries while preserving secret registrations.
 
 ## Crate: smith (Shared Library)
 

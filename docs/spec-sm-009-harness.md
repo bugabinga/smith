@@ -125,6 +125,7 @@ pub enum PluginEvent {
     MessageEnd { message: Message, usage: ProviderUsage, stop_reason: StopReason },
     ToolExecutionStart { tool_call_id: String, tool_name: String, args: serde_json::Value },
     ToolExecutionEnd { tool_call_id: String, tool_name: String, result: Vec<ContentBlock>, is_error: bool },
+    ToolExecutionUpdate { tool_call_id: String, tool_name: String, partial: String },
     ToolCall { tool_call_id: String, tool_name: String, input: serde_json::Value },
     TextDelta { delta: String },
     ThinkingDelta { delta: String },
@@ -142,34 +143,75 @@ impl EventBridge {
     fn agent_event_to_plugin_event(event: &AgentEvent) -> Vec<PluginEvent> {
         match event {
             AgentEvent::AgentStart => vec![PluginEvent::AgentStart],
+            AgentEvent::AgentEnd { .. } => vec![PluginEvent::AgentEnd],
             AgentEvent::TurnStart { .. } => vec![PluginEvent::TurnStart],
+            AgentEvent::TurnEnd { .. } => vec![PluginEvent::TurnEnd],
             AgentEvent::MessageStart { message } => vec![PluginEvent::MessageStart { message }],
+            AgentEvent::MessageUpdate { message, delta } => vec![PluginEvent::MessageUpdate { message, delta }],
+            AgentEvent::MessageEnd { message, usage, stop_reason } => {
+                vec![PluginEvent::MessageEnd { message, usage, stop_reason }]
+            }
             AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => {
                 vec![
                     PluginEvent::ToolExecutionStart { tool_call_id, tool_name, args },
                     PluginEvent::ToolCall { tool_call_id, tool_name, input: args },
                 ]
             }
-            // ... etc
+            AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } => {
+                vec![PluginEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error }]
+            }
+            AgentEvent::ToolExecutionUpdate { tool_call_id, tool_name, partial } => {
+                vec![PluginEvent::ToolExecutionUpdate { tool_call_id, tool_name, partial }]
+            }
+            AgentEvent::ThinkingDelta { delta } => vec![PluginEvent::ThinkingDelta { delta }],
+            AgentEvent::TextDelta { delta } => vec![PluginEvent::TextDelta { delta }],
+            AgentEvent::Error { message } => vec![PluginEvent::Error { message }],
         }
     }
 
-    /// Dispatches events to registered handlers. For ToolCall events, checks
-    /// whether any handler returns Err(BlockReason) and aborts the tool if so.
+    /// Dispatches events to registered handlers. All event types are dispatched
+    /// by name. For ToolCall events, handlers receive the full input args and
+    /// may abort execution by returning an error (mapped to BlockReason).
     fn dispatch_event(
         &self,
         event: &PluginEvent,
         handlers: &HashMap<String, Vec<mlua::RegistryKey>>,
         lua: &Lua,
     ) -> Result<(), BlockReason> {
-        if let PluginEvent::ToolCall { tool_call_id, tool_name, .. } = event {
+        let event_name = match event {
+            PluginEvent::AgentStart => "agent_start",
+            PluginEvent::AgentEnd => "agent_end",
+            PluginEvent::TurnStart => "turn_start",
+            PluginEvent::TurnEnd => "turn_end",
+            PluginEvent::MessageStart { .. } => "message_start",
+            PluginEvent::MessageUpdate { .. } => "message_update",
+            PluginEvent::MessageEnd { .. } => "message_end",
+            PluginEvent::ToolExecutionStart { .. } => "tool_execution_start",
+            PluginEvent::ToolExecutionEnd { .. } => "tool_execution_end",
+            PluginEvent::ToolExecutionUpdate { .. } => "tool_execution_update",
+            PluginEvent::ToolCall { .. } => "tool_call",
+            PluginEvent::TextDelta { .. } => "text_delta",
+            PluginEvent::ThinkingDelta { .. } => "thinking_delta",
+            PluginEvent::Error { .. } => "error",
+        };
+
+        // For ToolCall, pass full input args so plugins can inspect arguments
+        if let PluginEvent::ToolCall { tool_call_id, tool_name, input } = event {
             for handler in handlers.get("tool_call").unwrap_or(&vec![]) {
-                let result: Result<String, mlua::Error> = lua.call_function(handler.clone(), (tool_call_id, tool_name));
+                let result: Result<String, mlua::Error> = lua.call_function(
+                    handler.clone(), (tool_call_id, tool_name, input),
+                );
                 if let Err(e) = result {
                     return Err(BlockReason::BlockedByPlugin(e.to_string()));
                 }
             }
         }
+
+        // Dispatch to all handlers registered for this event name
+        for handler in handlers.get(event_name).unwrap_or(&vec![]) {
+            let _ = lua.call_function::<()>(handler.clone(), event);
+        }
+
         Ok(())
     }
 }
@@ -305,7 +347,7 @@ All built-in tools are implemented as Lua plugins (Tier 0) using the same SDK as
 -- security
 -- DEFAULT: bash requires user confirmation before execution.
 --   smith-harness emits PluginEvent::ToolCall before bash execution.
---   If any event handler returns Block, the command is aborted.
+--   If any event handler errors, the command is aborted with BlockReason::BlockedByPlugin.
 --   User can add provider IDs to `auto_approve_bash` in ~/.smith/config.lua
 --   to skip confirmation for trusted providers.
 -- Default timeout: 120s. Max output: 50KB per stream (truncated with notice).
