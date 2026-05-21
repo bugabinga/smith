@@ -24,7 +24,10 @@ Entry point for all smith usage.
 12. **`smith eval --session <id>`** — attach to session for eval
 13. **`smith rpc`** — JSON-RPC via stdio
 14. **`smith help [topic]`** — documentation browser
-15. **Global flags:** `--model`, `--provider`, `--session`, `--config`, `--no-config`
+15. **`smith replay <session-id>`** — replay session from trace log
+16. **`smith replay <session-id> --speed 2`** — replay at 2x speed
+17. **`smith replay <session-id> --compare`** — compare old vs new tool outputs
+18. **Global flags:** `--model`, `--provider`, `--session`, `--config`, `--no-config`
 
 ## Deliverables
 
@@ -144,6 +147,40 @@ enum Commands {
         #[arg(long)]
         guide: Option<String>,
     },
+
+    /// Replay a session from trace log
+    Replay {
+        /// Session id or name
+        session: String,
+
+        /// Replay speed multiplier (1.0 = real-time, 0 = max speed)
+        #[arg(long, default_value = "1.0")]
+        speed: f64,
+
+        /// Compare mode: re-execute tools and diff outputs
+        #[arg(long)]
+        compare: bool,
+
+        /// Sandbox directory for compare mode (must match original CWD structure)
+        #[arg(long)]
+        sandbox: Option<PathBuf>,
+
+        /// Stop after N turns (0 = full replay)
+        #[arg(long)]
+        turns: Option<usize>,
+
+        /// Start from turn N (0 = from beginning)
+        #[arg(long, default_value = "0")]
+        from_turn: usize,
+
+        /// Output format: text, json, summary
+        #[arg(long, default_value = "text")]
+        format: String,
+
+        /// Continue on diff failures in compare mode
+        #[arg(long, default_value = "true")]
+        continue_on_diff: bool,
+    },
 }
 ```
 
@@ -195,6 +232,9 @@ async fn main() -> Result<()> {
         Some(Commands::Help { topic, search, list, examples, example, guide }) => {
             run_help(topic, search, list, examples, example, guide)
         }
+        Some(Commands::Replay { session, speed, compare, sandbox, turns, from_turn, format, continue_on_diff }) => {
+            run_replay(&session, speed, compare, sandbox, turns, from_turn, &format, continue_on_diff, &cli).await
+        }
     }
 }
 ```
@@ -214,6 +254,37 @@ Each subcommand:
 
 `run_session` resolves the session id (latest if not provided), reads entries via `SessionStore`, and formats `Dump` as JSONL.
 
+`run_replay` — replays a session from its trace log using `ReplayEngine` (SM-006 §13.7):
+1. Resolve session id via `SessionStore`
+2. Load trace file from `{data_dir}/sessions/{id}.trace`
+3. Convert speed flag: `speed == 0.0` → `ReplaySpeed::Max`, `speed == 1.0` → `ReplaySpeed::RealTime`, else `ReplaySpeed::Factor(speed)`
+4. Create `ReplayEngine::from_file` with resolved speed and mode
+5. Run replay loop:
+   - Each entry → `ReplayStep` → formatted output to stdout
+   - Speed control: max (no delays), real-time, or factor (N× speed)
+   - Progress indicator: `[42/187] Turn 3 — ToolResult(bash)`
+6. In compare mode (`--compare`):
+   - Intercept `ToolEnd` entries → re-execute tool in sandbox directory
+   - Compare result hash vs original → emit `ReplayDiff` if different
+   - Continue or stop on diff based on `--continue-on-diff` flag
+7. Output formats:
+   - Default: human-readable step-by-step log
+   - `--format json`: JSONL stream of `ReplayStep` objects
+   - `--format summary`: only final `ReplaySummary`
+8. On completion, print `ReplaySummary` (total entries, diffs, regressions)
+
+Compare mode example:
+```bash
+# Replay session, re-execute tools against current codebase, show diffs
+smith replay abc123 --compare --sandbox /tmp/smith-test-env --format json
+
+# Quick replay at 5x speed, no comparison
+smith replay abc123 --speed 5.0 --format summary
+
+# Replay only turns 10-20
+smith replay abc123 --speed 0 --from-turn 10 --turns 10
+```
+
 ## Tests
 
 - CLI parsing: all subcommands parse correctly
@@ -230,6 +301,12 @@ Each subcommand:
 - `smith session dump --last 5` limits to last 5 entries
 - `smith session dump --output out.jsonl` writes to file
 - `smith --no-config` skips config loading
+- `smith replay abc123` replays session from trace
+- `smith replay abc123 --speed 0` replays at max speed (0 is special-cased to Max)
+- `smith replay abc123 --speed 2.0` replays at 2× speed
+- `smith replay abc123 --compare --sandbox /tmp/test` replays with tool comparison
+- `smith replay abc123 --format json` outputs JSONL replay steps
+- `smith replay abc123 --from-turn 5 --turns 3` replays turns 5-7 only
 
 ## Steps
 
