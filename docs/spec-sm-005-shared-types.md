@@ -292,6 +292,7 @@ pub struct Config {
     pub max_tokens: Option<u32>,
     pub system_prompt: Option<String>,
     pub sandbox: SandboxConfig,
+    pub auto_approve_bash: bool,
 }
 
 impl Config {

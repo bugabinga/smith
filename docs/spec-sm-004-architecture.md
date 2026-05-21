@@ -627,7 +627,7 @@ Secret registration entries:
 ```rust
 // Stored as session entries, not separate file
 struct SecretRegisterEntry {
-    id: String,      // "smith:sec:1"
+    secret_id: String, // "smith:sec:1"
     value: String,  // actual secret (plaintext in session)
     source: String,  // "env:SMITH_API_KEY", "manual"
     timestamp: u64,
@@ -881,10 +881,10 @@ src/
   engine/
     mod.rs          — module root, re-exports
     provider.rs     — Provider trait, ProviderStream, ProviderEvent, Message, ContentBlock
-    session.rs      — Session, SessionEntry (typed envelope + CBOR payload), SessionStore trait
+    session.rs      — Session, SessionEntry enum, SessionStore trait
     session_format.rs — Length-prefixed CBOR-seq read/write, fault-tolerant parser
-    tools.rs        — Tool trait, ToolDefinition, ToolInput/Output
-    events.rs       — EngineEvent enum, EventBus trait
+    tools.rs        — AgentTool trait, ToolDefinition, ToolInput/Output
+    events.rs       — EngineEvent enum, AgentEvent enum
     error.rs        — SmithError enum (two-tier: recoverable vs asserted)
     config.rs       — ConfigResolver, ConfigCascade, ConfigSource
     credentials.rs  — CredentialReader trait (env vars + config)

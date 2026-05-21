@@ -159,8 +159,8 @@ pub trait Component: Send + Sync {
     /// Mark cached state as stale; next render will recompute.
     fn invalidate(&mut self);
 
-    /// Support downcasting for focus tracking and widget-specific dispatch.
-    fn as_any_mut(&mut self) -> &mut dyn Any;
+    /// Return self as Focusable if this widget supports focus tracking.
+    fn as_focusable_mut(&mut self) -> Option<&mut dyn Focusable> { None }
 }
 
 /// Focusable widgets receive focus/blur events via the dispatcher.
@@ -189,6 +189,7 @@ pub struct TuiApp {
     border_layout: BorderLayout,
     widgets: HashMap<String, Box<dyn Component>>,
     focused_id: Option<String>,
+    prev_focused_id: Option<String>,
     theme: Theme,
     tick_rate: Duration,
     running: bool,
@@ -199,18 +200,24 @@ impl TuiApp {
     /// Uses a RAII guard to restore terminal state if setup panics.
     pub fn new(theme: Theme) -> Result<Self, TuiError> {
         // RAII guard: restores terminal on panic or early return.
-        struct TerminalGuard;
+        // Disarm with guard.disarm() once setup succeeds.
+        struct TerminalGuard(bool);
+        impl TerminalGuard {
+            fn disarm(&mut self) { self.0 = false; }
+        }
         impl Drop for TerminalGuard {
             fn drop(&mut self) {
-                let _ = crossterm::terminal::disable_raw_mode();
-                let _ = crossterm::execute!(
-                    std::io::stdout(),
-                    crossterm::terminal::LeaveAlternateScreen,
-                    crossterm::event::DisableMouseCapture
-                );
+                if self.0 {
+                    let _ = crossterm::terminal::disable_raw_mode();
+                    let _ = crossterm::execute!(
+                        std::io::stdout(),
+                        crossterm::terminal::LeaveAlternateScreen,
+                        crossterm::event::DisableMouseCapture
+                    );
+                }
             }
         }
-        let _guard = TerminalGuard;
+        let mut guard = TerminalGuard(true);
 
         // 1. Enable raw mode (crossterm)
         // 2. Enter alternate screen
@@ -253,11 +260,23 @@ impl TuiApp {
 
     /// Dispatch a single event to the appropriate component.
     fn dispatch_event(&mut self, event: TuiEvent) {
+        // 0. Defocus previously focused widget
+        if self.prev_focused_id != self.focused_id {
+            if let Some(prev_id) = &self.prev_focused_id {
+                if let Some(widget) = self.widgets.get_mut(prev_id) {
+                    if let Some(focusable) = widget.as_focusable_mut() {
+                        focusable.set_focused(false);
+                    }
+                }
+            }
+            self.prev_focused_id = self.focused_id.clone();
+        }
+
         // 1. Route key events to focused widget
         if let Some(id) = &self.focused_id {
             if let Some(widget) = self.widgets.get_mut(id) {
                 // If widget implements Focusable, track focus state
-                if let Some(focusable) = widget.as_any_mut().downcast_mut::<dyn Focusable>() {
+                if let Some(focusable) = widget.as_focusable_mut() {
                     focusable.set_focused(true);
                 }
                 let consumed = widget.handle_event(&event);

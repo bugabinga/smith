@@ -115,6 +115,7 @@ Maps smith-core's `AgentEvent` to plugin SDK events:
 
 ```rust
 /// Events emitted to Lua plugins via the EventBridge.
+#[derive(Clone, Debug)]
 pub enum PluginEvent {
     AgentStart,
     AgentEnd,
@@ -132,7 +133,20 @@ pub enum PluginEvent {
     Error { message: String },
 }
 
+/// PluginEvent is converted to a Lua table before dispatch.
+/// All contained types (`Message`, `ContentBlock`, `ProviderUsage`,
+/// `StopReason`, `Vec<ContentBlock>`) implement `IntoLua` via mlua
+/// serde integration or manual conversion. The conversion is
+/// fallible — if a type fails to convert, the event is skipped
+/// and a warning is logged.
+///
+/// Example Lua table shape for `PluginEvent::MessageStart`:
+/// ```lua
+/// { type = "message_start", message = { role = "user", content = {...} } }
+/// ```
+
 /// Reason a tool call was blocked by an event handler.
+#[derive(Clone, Debug)]
 pub enum BlockReason {
     BlockedByPlugin(String),
     UserDenied,
@@ -169,15 +183,37 @@ impl EventBridge {
         }
     }
 
-    /// Dispatches events to registered handlers. All event types are dispatched
-    /// by name. For ToolCall events, handlers receive the full input args and
-    /// may abort execution by returning an error (mapped to BlockReason).
+    /// Blocking gate for ToolCall events. Runs before tool execution.
+    /// Handlers receive (tool_call_id, tool_name, input) and may abort
+    /// by returning an error, which maps to BlockReason::BlockedByPlugin.
+    fn before_tool_call(
+        &self,
+        tool_call_id: &str,
+        tool_name: &str,
+        input: &serde_json::Value,
+        handlers: &HashMap<String, Vec<mlua::RegistryKey>>,
+        lua: &Lua,
+    ) -> Result<(), BlockReason> {
+        for handler in handlers.get("tool_call").unwrap_or(&vec![]) {
+            let result: Result<String, mlua::Error> = lua.call_function(
+                handler.clone(), (tool_call_id, tool_name, input),
+            );
+            if let Err(e) = result {
+                return Err(BlockReason::BlockedByPlugin(e.to_string()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Dispatches events to registered handlers by event name.
+    /// PluginEvent is converted to a Lua table via IntoLua before passing.
+    /// Handler errors are logged and never abort execution.
     fn dispatch_event(
         &self,
         event: &PluginEvent,
         handlers: &HashMap<String, Vec<mlua::RegistryKey>>,
         lua: &Lua,
-    ) -> Result<(), BlockReason> {
+    ) {
         let event_name = match event {
             PluginEvent::AgentStart => "agent_start",
             PluginEvent::AgentEnd => "agent_end",
@@ -195,24 +231,19 @@ impl EventBridge {
             PluginEvent::Error { .. } => "error",
         };
 
-        // For ToolCall, pass full input args so plugins can inspect arguments
-        if let PluginEvent::ToolCall { tool_call_id, tool_name, input } = event {
-            for handler in handlers.get("tool_call").unwrap_or(&vec![]) {
-                let result: Result<String, mlua::Error> = lua.call_function(
-                    handler.clone(), (tool_call_id, tool_name, input),
-                );
-                if let Err(e) = result {
-                    return Err(BlockReason::BlockedByPlugin(e.to_string()));
-                }
+        for handler in handlers.get(event_name).unwrap_or(&vec![]) {
+            let lua_event = event.to_lua_table(lua);
+            if let Err(e) = &lua_event {
+                log::warn!("PluginEvent to_lua_table failed: {}", e);
+                continue;
+            }
+            let result: Result<(), mlua::Error> = lua.call_function(
+                handler.clone(), lua_event.unwrap(),
+            );
+            if let Err(e) = result {
+                log::warn!("Plugin event handler '{}' error: {}", event_name, e);
             }
         }
-
-        // Dispatch to all handlers registered for this event name
-        for handler in handlers.get(event_name).unwrap_or(&vec![]) {
-            let _ = lua.call_function::<()>(handler.clone(), event);
-        }
-
-        Ok(())
     }
 }
 ```
@@ -348,8 +379,8 @@ All built-in tools are implemented as Lua plugins (Tier 0) using the same SDK as
 -- DEFAULT: bash requires user confirmation before execution.
 --   smith-harness emits PluginEvent::ToolCall before bash execution.
 --   If any event handler errors, the command is aborted with BlockReason::BlockedByPlugin.
---   User can add provider IDs to `auto_approve_bash` in ~/.smith/config.lua
---   to skip confirmation for trusted providers.
+--   User can set `auto_approve_bash = true` in ~/.smith/config.lua
+--   to skip confirmation. Use with caution.
 -- Default timeout: 120s. Max output: 50KB per stream (truncated with notice).
 -- Runs in smith's CWD, inherits smith's environment.
 ```
