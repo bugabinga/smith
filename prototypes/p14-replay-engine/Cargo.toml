@@ -1,0 +1,13 @@
+[package]
+name = "p14-replay-engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ciborium = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+rand = "0.8"
+zstd = "0.13"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

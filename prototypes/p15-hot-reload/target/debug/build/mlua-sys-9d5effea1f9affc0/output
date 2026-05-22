@@ -1,0 +1,14 @@
+cargo:rerun-if-changed=build
+LLVM (http://llvm.org/):
+  LLVM version 21.1.8
+  Optimized build.
+LLVM (http://llvm.org/):
+  LLVM version 21.1.8
+  Optimized build.
+LLVM (http://llvm.org/):
+  LLVM version 21.1.8
+  Optimized build.
+cargo:rustc-link-search=native=/data/data/com.termux/files/home/Workspace/smith/prototypes/p15-hot-reload/target/debug/build/mlua-sys-9d5effea1f9affc0/out/lua-build/lib
+cargo:rustc-link-lib=static=lua5.4
+cargo:include=/data/data/com.termux/files/home/Workspace/smith/prototypes/p15-hot-reload/target/debug/build/mlua-sys-9d5effea1f9affc0/out/lua-build/include
+cargo:lib=/data/data/com.termux/files/home/Workspace/smith/prototypes/p15-hot-reload/target/debug/build/mlua-sys-9d5effea1f9affc0/out/lua-build/lib
