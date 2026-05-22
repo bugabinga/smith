@@ -1,0 +1,12 @@
+[package]
+name = "p16-syntastica"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+syntastica = { version = "0.6", default-features = false, features = ["runtime-c2rust"] }
+syntastica-parsers = { version = "0.6", features = [
+    "rust", "lua", "javascript", "typescript", "bash", "json",
+] }
+syntastica-themes = "0.6"
+tft = "0.1"
