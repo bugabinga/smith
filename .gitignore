@@ -4,7 +4,13 @@
 # Pi runtime logs
 .pi/telemetry/
 
+# Generated build/test artifacts
+/target/
+/tmp/
+/.tmp_audit/
+/p*-run.txt
+prototypes/*/target/
+
 # Editor / OS
 *.swp
 .DS_Store
-prototypes/*/target/
