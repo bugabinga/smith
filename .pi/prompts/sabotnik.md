@@ -59,28 +59,31 @@ Focus on $ARGUMENTS.
 
 ## Output Contract
 
-Return structured JSON:
+Return Markdown, not JSON.
 
-```json
-{
-  "status": "complete|blocked|failed",
-  "slopFindings": [
-    {
-      "path": "file",
-      "pattern": "LLM slop pattern found",
-      "evidence": "specific code symptom",
-      "severity": "P0|P1|P2|P3"
-    }
-  ],
-  "expertRewrite": [
-    {
-      "path": "file",
-      "change": "expert Rust improvement",
-      "why": "type safety, dependability, clarity, or testability gain"
-    }
-  ],
-  "risks": ["behavior, API, security, or migration risks"],
-  "tests": ["tests run or needed"],
-  "nextSteps": ["remaining cleanup"]
-}
+Use this shape:
+
+```markdown
+## Status
+complete | blocked | failed
+
+## Slop Findings
+- `file`
+  - Pattern: LLM slop pattern found
+  - Evidence: specific code symptom
+  - Severity: P0 | P1 | P2 | P3
+
+## Expert Rewrite
+- `file`
+  - Change: expert Rust improvement
+  - Why: type safety, dependability, clarity, or testability gain
+
+## Risks
+- behavior, API, security, or migration risks
+
+## Tests
+- tests run or needed
+
+## Next Steps
+- remaining cleanup
 ```

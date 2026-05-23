@@ -40,23 +40,32 @@ Focus on $ARGUMENTS.
 
 ## Output Contract
 
-Return structured JSON:
+Return Markdown, not JSON.
 
-```json
-{
-  "status": "complete|blocked|failed",
-  "proved": ["spec claims supported by prototype evidence"],
-  "disproved": ["spec claims contradicted by prototype evidence"],
-  "specIssues": [
-    {
-      "file": "path",
-      "issue": "what spec must clarify or change",
-      "evidence": "prototype path, command, compiler/test result",
-      "severity": "P0|P1|P2|P3"
-    }
-  ],
-  "prototypeArtifacts": ["paths created"],
-  "commands": ["commands run"],
-  "nextSteps": ["concrete spec or design actions"]
-}
+Use this shape:
+
+```markdown
+## Status
+complete | blocked | failed
+
+## Proved
+- spec claims supported by prototype evidence
+
+## Disproved
+- spec claims contradicted by prototype evidence
+
+## Spec Issues
+- `path`
+  - Issue: what spec must clarify or change
+  - Evidence: prototype path, command, compiler/test result
+  - Severity: P0 | P1 | P2 | P3
+
+## Prototype Artifacts
+- paths created
+
+## Commands
+- commands run
+
+## Next Steps
+- concrete spec or design actions
 ```

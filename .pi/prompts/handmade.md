@@ -51,23 +51,30 @@ Focus on $ARGUMENTS.
 
 ## Output Contract
 
-Return structured JSON:
+Return Markdown, not JSON.
 
-```json
-{
-  "status": "complete|blocked|failed",
-  "compressionCandidates": [
-    {
-      "paths": ["files"],
-      "duplication": "what repeats or bloats",
-      "proposal": "simpler shared shape",
-      "benefit": "less drift, fewer concepts, smaller surface",
-      "risk": "behavior/public API/perf risk"
-    }
-  ],
-  "edits": ["files changed or proposed"],
-  "behaviorRisk": "low|medium|high",
-  "tests": ["tests run or needed"],
-  "nextSteps": ["follow-up cleanup"]
-}
+Use this shape:
+
+```markdown
+## Status
+complete | blocked | failed
+
+## Compression Candidates
+- `path/or/file`
+  - Duplication: what repeats or bloats
+  - Proposal: simpler shared shape
+  - Benefit: less drift, fewer concepts, smaller surface
+  - Risk: behavior/public API/perf risk
+
+## Edits
+- files changed or proposed
+
+## Behavior Risk
+low | medium | high
+
+## Tests
+- tests run or needed
+
+## Next Steps
+- follow-up cleanup
 ```

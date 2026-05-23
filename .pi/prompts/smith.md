@@ -23,15 +23,24 @@ Stay consistent with `docs/PROJECT-INVARIANTS.md`.
 Stop and ask on architectural decisions.
 Do not guess.
 
-Output structured JSON at end:
+End with Markdown, not JSON:
 
-```json
-{
-  "status": "complete | blocked | needs-user-input",
-  "summary": "...",
-  "files": ["docs/SPEC.md"],
-  "actions": ["Updated SPEC"],
-  "notDone": ["..."],
-  "nextSteps": ["..."]
-}
+```markdown
+## Status
+complete | blocked | needs-user-input
+
+## Summary
+...
+
+## Files
+- `docs/SPEC.md`
+
+## Actions
+- Updated SPEC
+
+## Not Done
+- ...
+
+## Next Steps
+- ...
 ```
