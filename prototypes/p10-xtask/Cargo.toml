@@ -1,0 +1,10 @@
+[package]
+name = "p10-xtask"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"
+tar = "0.4"

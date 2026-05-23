@@ -1,0 +1,4 @@
+[build]
+rustflags = []
+[registries.crates-io]
+protocol = "sparse"

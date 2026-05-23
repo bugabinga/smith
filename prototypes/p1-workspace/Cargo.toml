@@ -1,0 +1,33 @@
+[package]
+name = "p1-workspace"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mlua = { version = "0.10", features = ["luajit", "vendored", "serialize"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+minicbor = { version = "0.25", features = ["std", "derive"] }
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+clap = { version = "4", features = ["derive"] }
+crossterm = "0.28"
+ratatui = "0.29"
+unicode-width = "0.2"
+unicode-segmentation = "1"
+oauth2 = "4"
+url = "2"
+uuid = { version = "1", features = ["v7"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "5"
+jsonschema = "0.28"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
