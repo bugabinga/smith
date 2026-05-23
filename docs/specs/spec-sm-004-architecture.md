@@ -67,14 +67,24 @@ User Input → smith-cli (parse) → smith-harness (orchestrate)
 | Tool renderers (`renderCall`, `renderResult`) | **SM-009** (`smith-harness/`) + **SM-008** (`smith-tui/`) | Per-tool custom TUI rendering — inherited from pi |
 | ExtensionContext / ExtensionUIContext | **SM-009** (`smith-harness/`) | Plugin control over agent lifecycle and UI — inherited from pi |
 | Agent loop hooks (`beforeToolCall`, `afterToolCall`, `shouldStopAfterTurn`) | **SM-006** (`smith-core/`) | Pre/post tool interception and loop control — inherited from pi |
+| `TraceEntry`, `TraceRecorder`, `TraceCodec`, `TraceFileHeader` | **SM-006** (`smith-core/`) | Session recording — deterministic replay capture of all events |
+| `ReplayEngine`, `ReplaySpeed`, `ReplayMode`, `ReplayDiff` | **SM-006** (`smith-core/`) | Replay engine — reconstruct session from trace, compare mode |
+| `ModelAlias`, `ModelGroup`, `ProviderBucket` | **SM-005** (`smith/`) | Model aliasing, grouping, and provider buckets |
+| `ModelResolver`, `ResolvedModel`, `ResolveError` | **SM-005** (`smith/`) | Resolution pipeline with cycle detection |
+| `FailoverStrategy`, `BucketStrategy` | **SM-005** (`smith/`) | Failover and rotation strategies |
+| `MuxProvider` | **SM-007** (`smith-ai/`) | Multi-provider wrapper with failover/retry |
 
 SM-004 is the **architecture narrative** — for type definitions, see the canonical specs above.
 
 ### Core Principle: Everything is a Plugin
 
-smith-harness defines the plugin system. All extensibility comes through plugins:
+smith-harness defines the plugin system. All user-visible features are Lua plugins.
+Rust core exposes primitives only: data types, widget primitives, event routing,
+provider streams, tool execution, and SDK namespaces such as `smith.fs.*`,
+`smith.search.*`, `smith.tui.*`, and `smith.vcs.*`.
 
-- `read`, `write`, `edit`, `bash` — shipped as Lua plugins in smith's built-in package
+- `read`, `write`, `edit`, `bash`, `find`, `grep`, `ls` — shipped as Lua plugins in smith's built-in package
+- `/undo`, `/redo`, `/history`, time-travel, and VCS tools — shipped as Lua plugins using `smith.vcs.*`
 - Themes — Lua tables defining colors/styles
 - Keybindings — Lua tables mapping keys → actions
 - Default prompts — Lua strings
@@ -85,6 +95,7 @@ This means:
 2. Users can override ANY built-in with their own implementation
 3. Iteration on tools/themes/config doesn't require recompiling Rust
 4. No "second class" API — built-in and user plugins use the exact same interface
+5. Rust stays lean and open/closed: add features by composing primitives in Lua, not by growing core
 
 ### Configuration Language: Lua
 
@@ -154,19 +165,29 @@ smith
 ```
 data_dir/smith/
   sessions/              ← length-prefixed CBOR-seq files
-    2026-04-20T08-30-00.session
-    2026-04-20T09-15-22.session
+    {session-id}.session
+    {session-id}.trace    ← trace log for deterministic replay
   plugins/               ← installed user Lua plugins
   data/                  ← plugin persistent state (per-plugin)
+  vcs/                   ← smith-managed jj state, keyed by project hash
+    {project-hash}/
+      jj-state/           ← actual .jj directory; project has only a .jj symlink
 
 cache_dir/smith/
   bytecode/              ← compiled LuaJIT bytecode with source hash headers
 
 config_dir/smith/
   config.lua             ← user configuration
-  themes/                ← user theme overrides
+  themes/                ← user theme overrides (see SM-008 §theme.rs)
   keybindings/           ← user keybinding overrides
 ```
+
+**Internal VCS engine**: smith may initialize a transparent jj repository for
+operation-level undo/redo and time-travel. The actual `.jj` state is relocated to
+`data_dir/smith/vcs/{project-hash}/jj-state/`; the project root contains only a
+`.jj` symlink. For colocated git repositories, smith rewrites jj's `git_target`
+to an absolute `.git` path after relocation. Users do not need to use jj as their
+VCS; jj is an internal state engine exposed to plugins only via `smith.vcs.*`.
 
 **Session format**: Length-prefixed CBOR-seq (RFC 8949 entries with u32 BE length prefix).
 
@@ -181,6 +202,9 @@ Session format, entries, persistence, and fault-tolerant CBOR codec are
 defined in **SM-006** §session.rs and §session_format.rs.
 See SM-006 for: `SessionEntry` enum (12 variants), `SessionCodec`,
 `SessionStore` trait, compaction, and migration logic.
+Session discovery is keyed by canonical `SessionId` filenames. Legacy
+timestamp-shaped filenames may be discovered by reading the CBOR header and
+renamed to `{session-id}.session` / `{session-id}.trace` during migration.
 
 **Key properties** (narrative only -- types are canonical in SM-006):
 - CBOR-encoded, length-prefixed entries for crash recovery.
@@ -264,6 +288,9 @@ pub trait SecretProxy: Send + Sync {
 - Custom `Tool` implementations
 - Behavior-mutating hook implementations (`beforeToolCall`, `afterToolCall`) — see SM-006 §agent.rs
 - Agent loop control callbacks (`shouldStopAfterTurn`, `prepareNextTurn`) — see SM-006 §agent.rs
+- Add new `TraceEntry` variants for new event sources
+- Custom `TraceRecorder` implementations (e.g., network sink)
+- Replay compare mode strategies (custom diff functions)
 
 ## Crate: smith-ai
 
@@ -283,7 +310,7 @@ Provider trait, streaming types, model registry, and auth are defined in
 live in **SM-005** §types.rs to enable parallel builds.
 
 Provider implementations: AnthropicProvider, OpenAIProvider, GoogleProvider,
-OpenAICompatProvider. See also `docs/AI-CRATE-DESIGN.md`.
+OpenAICompatProvider. See also `docs/design/AI-CRATE-DESIGN.md`.
 
 ```rust
 // Re-exported from smith (shared types)
@@ -501,43 +528,36 @@ needed — trust is in the source, cache is just a performance optimization.
 
 
 
-### OCaml-Style Interface Modules
+### ~~OCaml-Style Interface Modules~~
 
-In OCaml, a library exposes a module signature (.mli) that others implement.
-In smith, a plugin can declare it implements one or more **interfaces**:
+> **⚠️ Superseded by SM-009 §7-9.** The OCaml-style `PluginInterface`
+> hierarchy was an early design. The canonical plugin system uses Lua
+> factory functions → `PluginRegistrations` → 4-phase materialization.
+> See SM-009 for the authoritative plugin architecture.
 
-```rust
-/// Interface that plugins can optionally implement.
-/// Each interface corresponds to an extension point in smith.
+~~```rust
+/// STALE — see SM-009 for canonical plugin traits.
 pub trait PluginInterface: Send + Sync {
-    /// Unique interface name (e.g., "tool", "widget")
     fn interface_name(&self) -> &str;
 }
 
-/// A plugin can implement multiple interfaces
 pub trait Plugin: Send + Sync {
-    /// Plugin metadata
     fn metadata(&self) -> PluginMetadata;
-    /// Return interfaces this plugin implements
     fn interfaces(&self) -> Vec<Box<dyn PluginInterface>>;
 }
 
-/// Tool interface — plugin provides a tool for the LLM
 pub trait ToolInterface: PluginInterface {
-    /// Returns the tool implementation. Canonical trait: `AgentTool` (SM-005 §tool.rs).
     fn tool(&self) -> Box<dyn AgentTool>;
 }
 
-/// Widget interface — plugin provides a TUI widget
 pub trait WidgetInterface: PluginInterface {
     fn widget(&self) -> Box<dyn Widget>;
 }
 
-/// Hook interface — plugin subscribes to engine events
 pub trait HookInterface: PluginInterface {
     fn hooks(&self) -> Vec<HookRegistration>;
 }
-```
+~~```
 
 ### Plugin Loading
 
@@ -557,7 +577,7 @@ pub struct LuaPluginLoader { /* TODO */ }
 ```
 
 ### Extension Points
-- New interface types (add to `PluginInterface` hierarchy)
+- New Lua plugin hooks (add to SM-009 §4 PluginEvent variants)
 - New plugin loaders (e.g., native Rust `.so` plugins)
 - Behavior-mutating event handlers (block tool calls, transform input, override system prompts)
 - Tool custom renderers (`renderCall`, `renderResult`)
@@ -634,16 +654,18 @@ sees (secret proxy), not from interrupting the user.
 - When LLM makes a tool call, arguments scanned for identifiers and rehydrated
 - Translation table: stored as session entries, restored on session resume
 
-Secret registration entries:
-```rust
-// Stored as session entries, not separate file
+Secret registration is represented as `SessionEntry::SecretRegister` (canonical: SM-006 §session.rs).
+> **Note:** The earlier `SecretRegisterEntry` struct below is historical.
+
+~~```rust
+// Historical — see SM-006 SessionEntry::SecretRegister
 struct SecretRegisterEntry {
-    secret_id: String, // "smith:sec:1"
-    value: String,  // actual secret (plaintext in session)
-    source: String,  // "env:SMITH_API_KEY", "manual"
+    secret_id: String,
+    value: String,
+    source: String,
     timestamp: u64,
 }
-```
+~~```
 
 Session resume builds translation table by scanning backward for most recent
 `secret_register` entry per ID. History is always restorable.
@@ -695,16 +717,17 @@ Two-tier error model:
 
 ```rust
 /// Recoverable errors — canonical definition in SM-005 §8 (`smith/src/error.rs`).
+/// Variants below are illustrative; SM-005 is authoritative.
 pub enum SmithError {
     Provider(ProviderError),
     Auth(AuthError),
     Tool(ToolError),
-    Plugin { plugin: String, message: String },
-    Session(std::io::Error),
+    Resolve(#[from] ResolveError),
     Config(String),
     Lua(mlua::Error),
-    Io(std::io::Error),
-    Cbor(minicbor::decode::Error),
+    Io(#[from] std::io::Error),
+    CborEncode(ciborium::ser::Error<std::io::Error>),
+    CborDecode(ciborium::de::Error<std::io::Error>),
 }
 ```
 
@@ -808,7 +831,7 @@ Both use the same API. Built-in tools have no special privileges.
 
 Traditional coding agents expose: `read`, `write`, `edit`, `bash`.
 Smith wants to explore richer tool primitives. Architecturally, the `AgentTool`
-trait (SM-005 §tool.rs) and `PluginInterface` system support this — any research
+trait (SM-005 §tool.rs) and Lua plugin system (SM-009) support this — any research
 into novel tools just implements the `AgentTool` trait.
 
 Ideas to explore (not implement now, just design space):
@@ -839,7 +862,7 @@ xtask/          — build subcrate (check, test, lint)
 | `ratatui` | Widget system, TestBackend for snapshots |
 | `crossterm` | Terminal I/O, cursor, Kitty keyboard flags |
 | `clap` | CLI argument parsing (derive macros) |
-| `minicbor` | CBOR-seq encode/decode for sessions |
+| `ciborium` | CBOR-seq encode/decode for sessions via Serde |
 | `dirs` | XDG directory paths |
 | `mlua` | LuaJIT bindings |
 | `mlua-pkg` | Lua module loader (custom require) |
@@ -848,6 +871,13 @@ xtask/          — build subcrate (check, test, lint)
 | `uuid` | Entry IDs (v7 for time-ordering) |
 | `serde_json` | Tool definitions, JSON handling |
 | `jsonschema` | Tool argument validation |
+| `ignore` | Gitignore-aware directory walking for `find` plugin |
+| `grep`, `grep-regex`, `grep-searcher` | Ripgrep engine for `grep` plugin |
+| `syntastica`, `syntastica-parsers` | Syntax highlighting primitive for TUI/plugin views |
+| `similar` | Unified/patience/word diffs for replay and plugin diff views |
+| `fuzzy-matcher` | Fuzzy filtering with match indices for Lua-driven TUI lists |
+| `clap_complete` | Shell completion generation for smith-cli |
+| `gix` | Targeted structured VCS queries behind `smith.vcs.*` |
 | `tracing` | Structured logging |
 | `tracing-subscriber` | Log formatting (JSON, pretty) |
 | `color-eyre` | **Deferred** — not used in v1 |
@@ -871,7 +901,7 @@ xtask/          — build subcrate (check, test, lint)
 
 ### 1. Architecture Document
 
-Create `docs/ARCHITECTURE.md` — the authoritative architecture reference:
+This spec (`spec-sm-004-architecture.md`) and `docs/PROJECT-INVARIANTS.md` are the authoritative architecture references:
 - Module overview with responsibilities
 - Data flow diagram (text-based)
 - Trait hierarchy for each module
@@ -879,7 +909,7 @@ Create `docs/ARCHITECTURE.md` — the authoritative architecture reference:
 - Security model layers
 - Plugin system design (interfaces, loading)
 - Dependency decisions with rationale
-- Open research questions
+- Research-question resolution status; no open architecture research questions remain for v1 after SM-005/006/007/009 contracts are normalized.
 
 ### 2. Skeleton Modules
 
@@ -968,7 +998,7 @@ src/
     keybinding.rs   — Keybinding types (schema — values come from Lua)
   plugins/
     mod.rs          — module root, re-exports
-    interface.rs    — PluginInterface, Plugin, ToolInterface, WidgetInterface, etc.
+    interface.rs    — ~~PluginInterface~~ (historical; see SM-009 §7-9)
     loader.rs       — PluginLoader trait, LuaPluginLoader
     sdk.rs          — Lua SDK module definition, bytecode caching
     sdk.rs          — smith.* Lua module definition (what plugins can call)
@@ -1002,25 +1032,25 @@ mod tests {
 
 These stubs serve as the test plan. Future tasks fill them in via TDD.
 
-### 4. Update CONTEXT.md
+### 4. Update PROJECT-INVARIANTS.md
 
-Add architecture section to `docs/CONTEXT.md`:
+Add architecture section to `docs/PROJECT-INVARIANTS.md`:
 - Module overview
 - Key traits and their relationships
 - Where to add new functionality (extension points)
 
 ## Steps
 
-- [ ] Step 1: Create `docs/ARCHITECTURE.md` — full architecture document
+- [ ] Step 1: Verify `docs/PROJECT-INVARIANTS.md` covers all architecture invariants
 - [ ] Step 2: Create `src/engine/` — trait definitions and type stubs
 - [ ] Step 3: Create `src/interface/` — config types and CLI skeleton
 - [ ] Step 4: Create `src/tui/` — backend trait, app state, widget trait
 - [ ] Step 5: Create `src/plugins/` — interface module hierarchy, loader traits
 - [ ] Step 6: Create `src/lib.rs` — re-export all modules
 - [ ] Step 7: Write test stubs for every module (document intended test behavior)
-- [ ] Step 8: Verify everything compiles: `cargo xtask check`
-- [ ] Step 9: Run `cargo xtask lint` — zero warnings
-- [ ] Step 10: Update `docs/CONTEXT.md` with architecture section
+- [ ] Step 8: Verify everything compiles: `cargo run -p xtask -- check`
+- [ ] Step 9: Run `cargo run -p xtask -- lint` — zero warnings
+- [ ] Step 10: Update `docs/PROJECT-INVARIANTS.md` with architecture section
 - [ ] Step 11: Commit with `jj describe -m "arch(SM-004): smith architecture design — engine, interface, tui, plugins"
 
 ### Edge Cases and Design Decisions
@@ -1057,7 +1087,7 @@ Add architecture section to `docs/CONTEXT.md`:
 ### Implementation Notes
 
 1. **Model capabilities**: Handled via model configuration.
-   - Each `Model` declares its supported features (thinking, vision, streaming, etc.)
+   - Each `Model` declares metadata: `context_window`, `max_output_tokens`, pricing, and supported features (thinking, vision, streaming, etc.)
    - No auto-detection — user configures their models
    - Provider decides which features to enable per-request
 
@@ -1072,7 +1102,7 @@ Add architecture section to `docs/CONTEXT.md`:
 
 4. **Cost calculation**: Like pi.
    - Track input/output/cache tokens per response
-   - Multiply by provider pricing (hardcoded per provider)
+   - Multiply by `ModelMetadata.cost` from the model registry or user provider config
 
 5. **Plugin secret access**: Like pi.
    - Plugins declare required secrets in manifest
@@ -1082,5 +1112,3 @@ Add architecture section to `docs/CONTEXT.md`:
 6. **Tool argument validation**: Use existing crate (jsonschema).
 
 ## Out of Scope
-
-

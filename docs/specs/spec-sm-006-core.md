@@ -25,13 +25,12 @@ smith-harness wires concrete providers into the stream function.
 name = "smith-core"
 version = "0.1.0"
 edition = "2024"
-rust-version.workspace = true
 
 [dependencies]
 smith = { path = "../smith" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-minicbor = { workspace = true }
+ciborium = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt"] }
 futures = { workspace = true }
 tracing = { workspace = true }
@@ -61,9 +60,10 @@ pub mod cost;
 pub mod trace;
 pub mod replay;
 
+pub use smith::{ToolExecutionMode};  // canonical: SM-005 §tool.rs
 pub use agent::{
     Agent, AgentContext, AgentEvent, AgentState, AgentLoopConfig,
-    ToolExecutionMode, QueueMode,
+    QueueMode,
     BeforeToolCallResult, AfterToolCallResult,
     BeforeToolCallContext, AfterToolCallContext,
     ShouldStopAfterTurnContext, AgentLoopTurnUpdate,
@@ -89,7 +89,7 @@ sends requests, processes responses, executes tools, and repeats.
 use smith::{
     StreamFn, AgentTool, AgentToolResult, ToolError,
     ProviderEvent, ProviderRequest, ProviderUsage,
-    Message, ContentBlock, Role, StopReason, ThinkingLevel, ToolDefinition,
+    Message, ContentBlock, Role, StopReason, ThinkingLevel, ToolDefinition, ModelMetadata,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -104,7 +104,9 @@ pub struct AgentContext {
 }
 
 /// Events emitted by the agent during a run. This is the canonical source of truth.
-#[derive(Clone, Debug)]
+/// All field types (Message, ContentBlock, ProviderUsage, StopReason) implement
+/// Serialize and Deserialize via SM-005.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum AgentEvent {
     // Lifecycle
     AgentStart,
@@ -230,13 +232,6 @@ pub struct AgentLoopTurnUpdate {
     pub context: Option<AgentContext>,
 }
 
-/// Tool execution concurrency mode.
-#[derive(Clone, Debug, Copy, PartialEq, Eq)]
-pub enum ToolExecutionMode {
-    Sequential,
-    Parallel,
-}
-
 /// Queue drain mode for steering/follow-up messages.
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum QueueMode {
@@ -248,6 +243,9 @@ pub enum QueueMode {
 pub struct AgentLoopConfig {
     pub model_id: String,
     pub provider_id: String,
+    /// Metadata for the active resolved model. Sourced from SM-005 `ResolvedModel.metadata`.
+    /// Used by compaction, context usage, capability checks, and cost accounting.
+    pub model_metadata: ModelMetadata,
     pub thinking_level: ThinkingLevel,
     pub max_tokens: Option<u32>,
     pub system_prompt: String,
@@ -333,18 +331,19 @@ The core loop:
 8. Emit TurnStart
    - Record trace: AgentEvent::TurnStart
 9. For each tool call (respecting tool_execution mode):
-   a. Record trace: ToolStart { tool_call_id, tool_name, args }
+   a. Record trace: ToolStart { tool_call_id, tool_name, args, op_id: None }
    b. Validate arguments against tool schema
    c. before_tool_call hook → if block, emit error tool result
       - Record trace: PluginEventResult::ToolCallBlock
    d. Execute tool (AgentTool::execute) with abort signal
-   e. after_tool_call hook → apply overrides (content/details/is_error/terminate)
+   e. If the tool mutates files, commit through smith's internal jj engine and capture op_id
+   f. after_tool_call hook → apply overrides (content/details/is_error/terminate)
       - Record trace: PluginEventResult::ToolResultOverride
-   f. Record trace: ToolEnd { result_hash, is_error }
-   g. Emit ToolExecutionStart/Update/End
+   g. Record trace: ToolEnd { result_hash, is_error, op_id }
+   h. Emit ToolExecutionStart/Update/End
       - Record trace: AgentEvent for each
-   h. Add tool result to messages
-   i. **Early termination check:** If all finalized tools in this batch
+   i. Add tool result to messages
+   j. **Early termination check:** If all finalized tools in this batch
       had `terminate=true` (from after_tool_call or original result),
       emit `AgentEnd` and exit immediately.
 10. Emit TurnEnd
@@ -429,7 +428,7 @@ pub struct Session {
 }
 
 /// Session entry — immutable record. Canonical definition lives here.
-#[derive(Clone, Debug, Serialize, Deserialize, minicbor::Encode, minicbor::Decode)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum SessionEntry {
     Session { version: u32, created: u64 },
     User { id: EntryId, parent_id: Option<EntryId>, content: Vec<ContentBlock>, timestamp: u64 },
@@ -461,6 +460,12 @@ pub struct SessionInfo {
     pub entry_count: usize,
 }
 ```
+
+**Session filename contract:** `SessionStore` maps each `SessionId` to
+`{session-id}.session`; the trace recorder maps the same id to
+`{session-id}.trace`. `list()` discovers canonical filenames first. During
+migration it may read legacy timestamp-shaped `.session` files, recover the
+embedded `SessionId`, then rename both session and trace files to canonical names.
 
 ### 6. `smith-core/src/session_format.rs` — CBOR Codec
 
@@ -618,9 +623,13 @@ impl TokenEstimator for HeuristicEstimator {
 **Token counting strategy:**
 - v1 uses `HeuristicEstimator` (chars/4) for compaction decisions.
 - Exact per-model tokenization (tiktoken, cl100k) is a smith-ai concern.
-- The agent loop checks `estimate(messages) > model.context_window * threshold_ratio`
+- The agent loop checks
+  `estimate(messages) > config.model_metadata.context_window * threshold_ratio`
   to trigger compaction.
-- Cost calculation uses `ModelCost` × tokens from `ProviderUsage` (exact where available).
+- `config.model_metadata.context_window` comes from `ResolvedModel.metadata`
+  after smith-harness resolves the active model via smith-ai's registry.
+- Cost calculation uses `config.model_metadata.cost` × tokens from `ProviderUsage`
+  (exact where available).
 
 ### 11. `smith-core/src/cost.rs`
 
@@ -702,7 +711,9 @@ Trace file wire format:
 
 ```rust
 /// Trace file header. Fixed 64 bytes at file start.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// This is a raw binary header, NOT CBOR-encoded. Written and read manually
+/// to guarantee fixed 64-byte layout for fast validation and seeking.
+#[derive(Clone, Debug)]
 pub struct TraceFileHeader {
     pub magic: [u8; 4],         // b"SMTH"
     pub version: u16,           // 1
@@ -714,8 +725,15 @@ pub struct TraceFileHeader {
 
 impl TraceFileHeader {
     pub const MAGIC: [u8; 4] = *b"SMTH";
+    pub const VERSION: u16 = 1;
     pub const FLAG_COMPRESSED: u16 = 0x01;
     pub const SIZE: usize = 64;
+
+    /// Write header as raw bytes to writer.
+    pub fn write(&self, writer: &mut impl Write) -> Result<()>;
+
+    /// Read header from raw bytes. Validates magic and version.
+    pub fn read(reader: &mut impl Read) -> Result<Self>;
 }
 ```
 
@@ -757,23 +775,23 @@ impl FileTraceRecorder {
 pub struct TraceWriter;
 
 /// A single trace entry. Append-only, immutable.
-#[derive(Clone, Debug, Serialize, Deserialize, minicbor::Encode, minicbor::Decode)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum TraceEntry {
     // === Agent loop events (also in SessionEntry, but with precise timing) ===
     AgentEvent { timestamp_ns: u64, event: AgentEvent },
     TurnStart { timestamp_ns: u64, turn_index: usize },
-    TurnEnd { timestamp_ns: u64, turn_index: usize, messages: Vec<Message> },
+    TurnEnd { timestamp_ns: u64, turn_index: usize, message: Message, tool_results: Vec<ContentBlock> },
     SteeringDrain { timestamp_ns: u64, messages: Vec<Message> },
     FollowUpDrain { timestamp_ns: u64, messages: Vec<Message> },
 
-    // === TUI events ===
-    TuiEvent { timestamp_ns: u64, event: TuiEvent },
+    // === TUI events (opaque — avoids smith-core → smith-tui dependency) ===
+    TuiEvent { timestamp_ns: u64, event_type: String, event_json: String },
     FocusChange { timestamp_ns: u64, widget_id: String, focused: bool },
     Scroll { timestamp_ns: u64, widget_id: String, offset: usize },
 
-    // === Plugin events ===
-    PluginEvent { timestamp_ns: u64, event: PluginEvent },
-    PluginEventResult { timestamp_ns: u64, event_name: String, result: PluginEventResult },
+    // === Plugin events (opaque — avoids smith-core → smith-harness dependency) ===
+    PluginEvent { timestamp_ns: u64, event_name: String, event_json: String },
+    PluginEventResult { timestamp_ns: u64, event_name: String, result_json: String },
     PluginLoaded { timestamp_ns: u64, path: String, success: bool },
     PluginError { timestamp_ns: u64, path: String, error: String },
 
@@ -782,20 +800,21 @@ pub enum TraceEntry {
     ProviderResponse { timestamp_ns: u64, request_id: u64, provider_id: String, model_id: String, status: u16, payload_hash: String },
 
     // === Tool execution ===
-    ToolStart { timestamp_ns: u64, tool_call_id: String, tool_name: String, args_json: String },
-    ToolEnd { timestamp_ns: u64, tool_call_id: String, tool_name: String, result_hash: String, is_error: bool },
+    ToolStart { timestamp_ns: u64, tool_call_id: String, tool_name: String, args_json: String, op_id: Option<VcsOpId> },
+    ToolEnd { timestamp_ns: u64, tool_call_id: String, tool_name: String, result_hash: String, is_error: bool, op_id: Option<VcsOpId> },
 
     // === System events ===
     SystemSignal { timestamp_ns: u64, signal: String },
     EnvSnapshot { timestamp_ns: u64, cwd: String, env_vars: Vec<(String, String)> }, // API keys hashed: KEY=sha256:abc...
     FileHashSnapshot { timestamp_ns: u64, files: Vec<(String, String)> }, // (path, sha256)
+    VcsSnapshot { timestamp_ns: u64, snapshot: VcsSnapshot }, // jj op id + structured changed files
 
     // === Snapshots (periodic state capture for deterministic replay) ===
     Snapshot { timestamp_ns: u64, agent_state: AgentStateSnapshot }, // rng_seed omitted — smith does not use RNG in v1
 }
 
 /// Lightweight agent state snapshot for deterministic replay.
-#[derive(Clone, Debug, Serialize, Deserialize, minicbor::Encode, minicbor::Decode)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentStateSnapshot {
     pub message_count: usize,
     pub model_id: String,
@@ -831,10 +850,13 @@ impl TraceCodec {
 }
 ```
 
-**Compression trade-off:** Individual entry zstd compression (level 3) gives ~60-70% size
-reduction on typical traces. Each entry compressed independently preserves random access —
-a reader can skip an entry by reading the length prefix and seeking past. Block-level
-compression (compressing N entries together) would give better ratios but loses random access.
+**Compression trade-off:** Individual entry zstd compression (level 3) is intended for
+typical production traces (100+ entries) where repeated structure amortizes zstd frame
+overhead. P11 showed per-entry compression is counterproductive for small traces
+(<50 entries): zstd frame overhead can produce output larger than raw CBOR. Each entry
+compressed independently preserves random access — a reader can skip an entry by reading
+the length prefix and seeking past. Block-level compression (compressing N entries together)
+would give better ratios for small traces but loses random access.
 
 #### 13.4 Snapshot Strategy
 
@@ -842,11 +864,20 @@ compression (compressing N entries together) would give better ratios but loses 
 |--------------|---------------|----------|
 | `EnvSnapshot` | Session start, every 5 minutes | Record cwd + env vars for replay env reconstruction |
 | `FileHashSnapshot` | Session start, before/after each tool execution | Detect file changes for comparison mode |
+| `VcsSnapshot` | After each mutating tool execution when internal jj is active | Correlate trace entries with jj operation IDs and structured changed files |
 | `Snapshot` (agent state) | Every 10s, on compaction, on model change | Agent state checkpoint for fast-forward during replay |
 
 **FileHashSnapshot scope:** Only files in CWD that were touched by tool executions
 (`read`, `write`, `edit`, `bash` tools). Not a full directory scan — tracked via
-a `touched_files: HashSet<PathBuf>` in the trace recorder.
+a `touched_files: HashSet<PathBuf>` in the trace recorder. When smith's internal
+jj engine is active, `gix-index`/`gix-status` may provide the changed-file set for
+`VcsSnapshot`; `FileHashSnapshot` remains the fallback and hash integrity record.
+
+**jj operation correlation:** Mutating tool executions (`write`, `edit`, `bash`,
+and plugin tools that call `smith.fs.write` or `smith.vcs.*`) create a jj operation.
+`ToolStart`/`ToolEnd` store `op_id: Option<VcsOpId>` so replay, `/undo`, `/redo`,
+and time-travel plugins can map trace entries to jj's operation log. Read-only
+entries leave `op_id = None`.
 
 **EnvSnapshot scope:** `CWD`, `PATH`, `HOME`, `TERM`, `SHELL`, plus any vars
 prefixed with `SMITH_`. Provider API keys and other secrets are captured as
@@ -890,7 +921,7 @@ Only conversation-relevant entries pass through:
 | `AgentEvent { AgentEvent::ToolExecutionEnd, .. }` | `ToolResult` | Tool results become session entries |
 | `AgentEvent { AgentEvent::MessageEnd, .. }` | `Assistant` | Finalized assistant messages |
 | `TurnEnd` (steering message detected) | `User` | Steering/follow-up messages become user entries |
-| `ToolStart` (bash) | `BashExecution` | Bash tool calls record command + output |
+| `ToolStart` (bash) | `BashExecution` | Command extracted from JSON args; output in ToolEnd trace entry only |
 | `Snapshot` (model change) | `ModelChange` | Model changes recorded |
 | `Snapshot` (thinking change) | `ThinkingLevelChange` | Thinking level changes recorded |
 | All other TraceEntry variants | _filtered out_ | TUI, plugin, provider events excluded from LLM context |
@@ -900,6 +931,9 @@ impl TraceEntry {
     /// Filter trace entries to produce SessionEntry for LLM context.
     pub fn to_session_entries(entries: &[TraceEntry]) -> Vec<SessionEntry> {
         let mut result = Vec::new();
+        // Track last seen agent state for provider/model attribution
+        let mut last_provider = String::new();
+        let mut last_model = String::new();
         for e in entries {
             match e {
                 TraceEntry::AgentEvent { timestamp_ns, event } => {
@@ -907,13 +941,13 @@ impl TraceEntry {
                         result.push(se);
                     }
                 }
-                TraceEntry::TurnEnd { timestamp_ns, messages } => {
+                TraceEntry::TurnEnd { timestamp_ns, message, .. } => {
                     // Steering/follow-up messages become user entries
-                    let text: String = messages.iter()
-                        .flat_map(|m| m.content.iter().filter_map(|c| match c {
+                    let text: String = message.content.iter()
+                        .filter_map(|c| match c {
                             ContentBlock::Text(t) => Some(t.as_str()),
                             _ => None,
-                        }))
+                        })
                         .collect::<Vec<_>>()
                         .join("\n");
                     if !text.is_empty() {
@@ -925,7 +959,7 @@ impl TraceEntry {
                         });
                     }
                 }
-                TraceEntry::ToolStart { timestamp_ns, tool_name, args_json }
+                TraceEntry::ToolStart { timestamp_ns, tool_name, args_json, .. }
                     if tool_name == "bash" =>
                 {
                     // Extract command string from JSON args {"command":"ls",...}
@@ -942,6 +976,9 @@ impl TraceEntry {
                     });
                 }
                 TraceEntry::Snapshot { timestamp_ns, agent_state } => {
+                    // Track provider/model for Assistant entry post-processing
+                    last_provider = agent_state.provider_id.clone();
+                    last_model = agent_state.model_id.clone();
                     // Emit both ModelChange and ThinkingLevelChange from agent state
                     result.push(SessionEntry::ModelChange {
                         id: EntryId::new(),
@@ -958,6 +995,17 @@ impl TraceEntry {
                     });
                 }
                 _ => {} // TUI, plugin, provider events excluded from LLM context
+            }
+        }
+        // Post-process: fill provider/model into Assistant entries
+        for se in &mut result {
+            if let SessionEntry::Assistant { provider, model, .. } = se {
+                if provider.is_empty() {
+                    *provider = last_provider.clone();
+                }
+                if model.is_empty() {
+                    *model = last_model.clone();
+                }
             }
         }
         result
@@ -1026,6 +1074,7 @@ pub struct ReplayDiff {
     /// New output hash (from re-execution).
     pub new_hash: String,
     /// Unified diff of the output text, if textual.
+    /// Generated with `similar` (patience/myers diff + unified hunk formatting).
     pub text_diff: Option<String>,
 }
 
@@ -1049,7 +1098,7 @@ impl ReplayEngine {
     ) -> Result<Self>;
 
     /// Run the replay. Calls `on_step` for each processed entry.
-    /// 
+    ///
     /// The callback is synchronous (`Fn`) and must not block. Use it for
     /// lightweight work only (log, channel send, flag check). Heavy work
     /// (disk I/O, network) should be done in a separate task, or the replay
@@ -1106,6 +1155,7 @@ impl ReplayEngine {
 - **Monotonic nanosecond timestamps** — `std::time::Instant::elapsed().as_nanos()` for ordering, not wall clock.
 - **Optional zstd compression** — per-entry, preserving random access. Trades ~10% worse compression vs block-level for seekability.
 - **FileHashSnapshot is incremental** — only files touched by tools, not full directory scans.
+- **VcsSnapshot links to jj** — mutating tools auto-commit through smith's internal jj state and store the operation ID for undo/time-travel.
 - **EnvSnapshot is selective** — only relevant env vars, not full environment.
 - **Compare mode is sandboxed** — never re-executes against real filesystem unless explicitly configured.
 
