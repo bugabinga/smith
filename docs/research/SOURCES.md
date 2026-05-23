@@ -19,6 +19,8 @@ research. Agents must not copy their style into Smith production code by default
 
 | Project | URL | Revision | Sparse paths | Question |
 |---------|-----|----------|--------------|----------|
+| `bumpalo` | https://github.com/fitzgen/bumpalo | `84654ace6be4444da3ff102a0a0af3b38c4df4fb` | full shallow clone | Evaluate mature bump allocation for phase-local scratch memory |
+| `arena-allocator` | https://github.com/emoon/arena-allocator | `266fd1f90c430523b08b7b76bb4ea43fd93c5896` | full shallow clone | Evaluate virtual-memory linear allocation risks/tradeoffs |
 | _TBD_ | | | | |
 
 ## Checkout Convention
