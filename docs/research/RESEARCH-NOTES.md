@@ -1,7 +1,7 @@
 # Research Notes: smith Architecture
 
-**Date:** 2026-04-20  
-**Status:** Research complete — informs SM-004 architecture design
+**Date:** 2026-05-21
+**Status:** Updated from pi source — github.com/earendil-works/pi
 
 ---
 
@@ -9,7 +9,7 @@
 
 ### Module Structure
 
-Pi has 4 modules in `@mariozechner/pi-coding-agent`:
+Pi has 4 modules in [github.com/earendil-works/pi](https://github.com/earendil-works/pi):
 
 | Module | Directory | Responsibility |
 |--------|-----------|---------------|
@@ -92,7 +92,7 @@ interface EventBus {
 ```
 
 **AgentSession**: Central coordinator. Shared across all modes (interactive, print, RPC).
-- Wraps the core `Agent` from `@mariozechner/pi-agent-core`
+- Wraps the core `Agent` from `pi`
 - Manages extension runtime, tools, compaction, model switching
 - Emits `AgentSessionEvent` (extends base `AgentEvent` with queue/compaction/retry events)
 
@@ -210,7 +210,7 @@ module MyPlugin = struct
   type 'a set = 'a list
   let singleton a = [a]
   let union l1 l2 = ...
-  
+
   (* also implements COMPARABLE interface *)
   type t = int
   let compare = Int.compare
@@ -302,7 +302,7 @@ pub trait ToolProvider: Plugin {
     fn tool(&self) -> Box<dyn Tool>;
 }
 
-/// Optional: plugin provides a TUI widget  
+/// Optional: plugin provides a TUI widget
 pub trait WidgetProvider: Plugin {
     fn widget(&self) -> Box<dyn Widget>;
 }
@@ -452,7 +452,7 @@ Not included in initial architecture. Re-evaluate during the project lifetime.
 ```
 Plugin (base trait)
 ├── ToolProvider        — implements Tool trait
-├── WidgetProvider      — implements Widget trait  
+├── WidgetProvider      — implements Widget trait
 ├── SecurityProvider    — implements SecurityPolicy trait
 ├── HookProvider        — subscribes to engine events
 ├── InterfacePublisher  — publishes new trait interfaces for others
@@ -508,3 +508,157 @@ pub struct InterfaceRegistry {
 ```
 
 This allows plugin A to define "I need things that format output" and plugin B to implement that interface, with the engine wiring them together.
+---
+
+## 5. Pi Source Analysis (2026-05-21)
+
+Source: https://github.com/earendil-works/pi
+Files analyzed: packages/agent/src/types.ts (419 lines), packages/coding-agent/src/core/extensions/types.ts (1568 lines)
+
+### Agent Loop Hooks (pi_agent_types.ts)
+
+Pi AgentLoopConfig provides six extension hooks that smith currently lacks:
+
+**1. beforeToolCall(context, signal) -> { block?, reason? }**
+Called before each tool executes. Can block execution by returning { block: true }.
+The loop emits an error tool result instead. reason becomes the error text.
+
+**2. afterToolCall(context, signal) -> { content?, details?, isError?, terminate? }**
+Called after each tool executes. Can override result content, details, error flag,
+or set an early termination hint. terminate: true on every tool in a batch stops the agent.
+
+**3. shouldStopAfterTurn(context) -> boolean**
+Called after each turn completes. Returns true to emit agent_end and exit before
+polling steering/follow-up queues. Graceful stop without starting another LLM call.
+
+**4. prepareNextTurn(context) -> { context?, model?, thinkingLevel? } | undefined**
+Called after turn_end and before the next provider request. Can dynamically switch
+model or thinking level for the next turn.
+
+**5. transformContext(messages, signal) -> AgentMessage[]**
+Optional transform applied before convertToLlm. Used for context window management
+(pruning) or injecting external context.
+
+**6. convertToLlm(messages) -> Message[]**
+Converts AgentMessage[] to LLM-compatible messages. Filters out UI-only messages
+(notifications, status). Required -- no default.
+
+### AgentToolResult.terminate
+
+Pi AgentToolResult has an optional terminate: boolean field. When every finalized
+tool in a batch sets terminate: true, the agent stops early.
+
+### ToolExecutionMode & QueueMode
+
+- ToolExecutionMode = "sequential" | "parallel" -- per-tool override
+- QueueMode = "all" | "one-at-a-time" -- controls queued message injection
+
+### ExtensionUIContext (Full API)
+
+Beyond the summary in section 1, pi UI context includes:
+- Dialogs: select(options), confirm(options), input(options)
+- Notifications: notify(message, type?)
+- Status: setStatus(status), setWorkingMessage(msg), setWidget(options),
+  setFooter(data), setHeader(data), setTitle(title)
+- Editor: pasteToEditor(text), setEditorText(text), getEditorText(), editor(),
+  addAutocompleteProvider(factory)
+- Theme: getTheme(), setTheme(theme)
+- Terminal input: onTerminalInput(handler) -- intercept raw terminal input
+- Custom components: custom(component, options) -- inject arbitrary React components
+
+### ExtensionAPI Actions (Beyond Registration)
+
+Pi ExtensionAPI provides runtime actions:
+- sendMessage(message, options) -- send custom message to session
+- sendUserMessage(content, options) -- trigger turn with user message
+- appendEntry(type, data) -- append persistent state not sent to LLM
+- setActiveTools(names) -- change active tool set dynamically
+- getAllTools() -- introspect all registered tools
+- getActiveTools() -- get currently active tools
+- setModel(model) -- switch model
+- setThinkingLevel(level) -- change thinking level
+- setSessionName(name) -- rename session
+- setLabel(entryId, label) -- bookmark entry
+- getCommands() -- list registered slash commands
+- registerProvider(name, config) / unregisterProvider(name) -- dynamic provider mgmt
+- events -- EventBus for inter-plugin communication
+- exec(command, options) -- execute shell commands from plugins
+- registerFlag(name, opts) / getFlag(name) -- CLI flag extension
+- registerMessageRenderer(type, renderer) -- custom message display
+
+### Typed Tool Events
+
+Pi has typed tool event variants with structured input fields:
+- BashToolCallEvent -- command, timeout, signal
+- ReadToolCallEvent -- path, offset, limit
+- WriteToolCallEvent -- path, content
+- EditToolCallEvent -- path, oldText, newText
+- FindToolCallEvent -- pattern, path, maxDepth
+- GrepToolCallEvent -- pattern, path, maxDepth
+- LsToolCallEvent -- path, recursive
+
+Similarly typed ToolResultEvent variants exist for each tool.
+
+### SourceInfo Tracking
+
+Every registered tool, command, and shortcut carries SourceInfo { path, resolvedPath }.
+Enables error attribution and debugging.
+
+### ReplacedSessionContext
+
+A special context type used when a session is being replaced. Extends
+ExtensionCommandContext with sendMessage() and sendUserMessage() methods for the new session.
+
+---
+
+## 6. Prototype-Derived Architecture Updates
+
+### Rust primitives, Lua features
+
+P17 validated the intended split: Rust exposes stable primitives through
+`smith.*` namespaces, and all user-visible behavior is assembled as Lua plugins.
+Built-in plugins and user plugins must use the same API. Time-travel, `/undo`,
+VCS tools, default layout, and core file tools are plugins, not hardcoded Rust
+features.
+
+### Internal jj engine
+
+jj is useful as a transparent smith implementation detail rather than as a user
+VCS requirement. P17 verified a symlinked `.jj` layout: project root contains
+only `.jj -> $XDG_DATA_HOME/smith/<project-hash>/jj-state`; the actual operation
+store lives under XDG. The colocated `git_target` must be rewritten to an
+absolute path after relocation.
+
+High-value smith features:
+- `/undo`, `/redo`, `/history` from jj operation log primitives.
+- Time-travel inspection via stored operation IDs in trace entries.
+- Selective restore for `/undo path`.
+- `interdiff` and `evolog` exposed as VCS query primitives for plugins.
+
+### Dependency findings
+
+| Area | Prototype finding | Decision |
+|------|-------------------|----------|
+| File traversal | `ignore` covers gitignore, hidden files, glob overrides, walking | Use for find primitives |
+| Grep | ripgrep crates expose reusable searcher/matcher pieces | Use `grep`, `grep-regex`, `grep-searcher` |
+| Diff | `similar` provides hunks, unified diff, word diff | Use for `DiffView` and replay compare |
+| Syntax highlighting | P16 proved `syntastica` + `runtime-c2rust` works on Android with zero C deps | Use for v1 highlighting |
+| Fuzzy filtering | `fuzzy-matcher` gives scores + indices with zero deps | Use for `SelectList`/timeline filters |
+| VCS queries | targeted `gix` features give structured blame/diff/revision data | Expose only via `smith.vcs.*` |
+
+### Edit tool edge cases
+
+P17/P15 analysis found mutating tools need stronger file-safety semantics:
+- File-level mutex for write/edit paths to prevent parallel last-writer-wins.
+- Stale content/hash check between read and write.
+- Reject empty `old_text`.
+- Reject binary files for text edit.
+- Normalize or explicitly handle CRLF/LF matching.
+- Validate symlinks and sandbox boundaries before write.
+
+### Syntax highlighting path
+
+Pi uses highlight.js -> HTML spans -> theme bridge -> ANSI. Smith should use the
+same conceptual split but with Rust-native `syntastica`: parse/highlight in Rust,
+theme/render through smith-tui primitives, and let Lua plugins decide where
+highlighted widgets appear.

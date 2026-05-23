@@ -1,5 +1,9 @@
 # smith Plugin SDK Design
 
+> **⚠️ Historical document.** This design doc captures early plugin system
+> exploration. The canonical plugin specification is **SM-009** (`smith-harness/`).
+> Sections below that contradict SM-009 are stale.
+
 ## Overview
 
 Smith's plugin system uses **Lua** (not TypeScript). Plugins are Lua modules that
@@ -16,6 +20,12 @@ Plugins are Lua scripts. They can:
 - Override/add providers and models
 - Control TUI layout and widgets
 - Access sandboxed filesystem and environment
+
+Smith keeps Rust core lean: Rust exposes **primitives** (tools, widgets,
+filesystem, VCS, provider registry, event routing), while user-visible features
+are Lua plugins. Built-in plugins and user plugins use the same SDK surface — no
+private second-class API. Features such as time-travel, `/undo`, VCS tools,
+default layout, and built-in file tools compose primitives from Lua.
 
 ## Plugin Locations
 
@@ -344,6 +354,48 @@ local all = smith.active_tools.all()
 smith.active_tools.set({ "read", "bash", "my_tool" })
 ```
 
+### smith.vcs - Version-Control Primitives
+
+`smith.vcs.*` exposes structured primitives backed by smith's internal jj state
+and targeted gitoxide (`gix`) queries. Higher-level behavior lives in Lua
+plugins. The API must not expose jj/gix implementation details directly; Lua
+receives stable smith-shaped tables.
+
+Read-only/query primitives:
+
+```lua
+smith.vcs.status()              -- { modified = {}, added = {}, deleted = {}, renamed = {} }
+smith.vcs.diff(opts)            -- { hunks = {}, text = "..." }
+smith.vcs.diff_revs(a, b)       -- diff between revisions/operations
+smith.vcs.op_log({ limit = 50 })-- { { id, description, time, op_type } }
+smith.vcs.op_show(op_id)        -- { id, description, diff, files }
+smith.vcs.annotate(path, opts)  -- line attribution/blame data
+smith.vcs.interdiff(a, b)       -- patch-vs-patch comparison (jj)
+smith.vcs.evolog(rev)           -- logical change evolution (jj)
+```
+
+Mutation primitives:
+
+```lua
+smith.vcs.commit(message)              -- internal/built-in use after mutating tools
+smith.vcs.undo()                       -- reverse latest operation
+smith.vcs.redo()                       -- re-apply latest undone operation
+smith.vcs.op_restore(op_id)            -- restore repo to an operation
+smith.vcs.restore_paths(paths, rev)    -- selective file restore
+smith.vcs.split(opts)                  -- split current change
+smith.vcs.squash(source, dest)         -- combine changes
+smith.vcs.parallelize(revs)            -- mark changes independent
+smith.vcs.sparse(paths)                -- materialize only selected paths
+smith.vcs.workspace_add(name, opts)    -- create additional jj workspace
+```
+
+Safety rules:
+- Validate operation IDs, paths, and commit messages before invoking jj.
+- Mutating primitives are explicit; inspection APIs are read-only by default.
+- Store jj state under `$XDG_DATA_HOME/smith/<project-hash>/jj-state` and use a
+  project `.jj` symlink with absolute `git_target` to avoid directory pollution.
+- Built-in time-travel and VCS tools are Lua plugins using this namespace.
+
 ## Context Object (ctx)
 
 Passed to event handlers, tool execute, command handlers:
@@ -466,32 +518,24 @@ All events from pi, plus smith-specific additions marked with ★.
 
 ## Sandbox
 
-### Capabilities
+> **⚠️ Superseded by SM-009 §10.** The capability-based sandbox below was an
+> early design. The canonical approach: Lua restricted runtime (no `io`, `os`,
+> `debug`, `package`, `require` globals) is the *only* sandbox. No capability
+> grants, no policy files, no tiers.
+
+~~### Capabilities
 
 ```lua
--- Plugin declares capabilities in manifest
-return function(smith)
-    -- Request capabilities (granted by user config)
-    smith.request_capability("fs_read", { paths = { "./src" } })
-    smith.request_capability("fs_write", { paths = { "./src" } })
-    smith.request_capability("env", { vars = { "HOME", "PATH" } })
-    smith.request_capability("network")          -- allow HTTP requests
-    smith.request_capability("credentials")       -- allow credential access
-end
-```
+-- STALE — capability model removed. See SM-009 §10.
+smith.request_capability("fs_read", { paths = { "./src" } })
+smith.request_capability("credentials")
+```~~
 
-### Default Sandbox Config
+~~### Default Sandbox Config
 
 ```lua
--- ~/.smith/sandbox.lua
-return {
-    fs_read = { "./" },          -- can read project directory
-    fs_write = { "./" },         -- can write project directory
-    env = {},                     -- no env access by default
-    network = false,              -- no network by default
-    credentials = false,          -- no credential access by default
-}
-```
+-- ~/.smith/sandbox.lua — STALE, no longer used
+```~~
 
 ## Built-in Plugins
 
@@ -512,8 +556,26 @@ Edit file tool (find-and-replace)
 ### 5. bash
 Execute bash commands
 
-### 6. compact
-Context compaction
+### ~~6. compact~~
+~~Context compaction~~ — removed; compaction is automatic in smith-core (SM-006 §10).
+
+### 7. find
+Find files using `smith.fs` primitives backed by the `ignore` crate.
+
+### 8. grep
+Search file contents using ripgrep crates (`grep`, `grep-regex`,
+`grep-searcher`) behind smith primitives.
+
+### 9. commands
+Registers core slash commands such as `/undo`, `/redo`, and `/history`.
+
+### 10. time-travel
+Timeline panel, state inspector, and diff views. Uses `smith.vcs.*`,
+`smith.tui.*`, and `smith.shortcut.*`; no special Rust UI path.
+
+### 11. vcs-tools
+Agent-facing VCS tools (`vcs_status`, `vcs_diff`, `vcs_blame`, `vcs_log`) built
+from `smith.vcs.*` primitives.
 
 ## Plugin Loading Order
 

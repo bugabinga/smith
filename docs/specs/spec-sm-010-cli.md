@@ -28,6 +28,7 @@ Entry point for all smith usage.
 16. **`smith replay <session-id> --speed 2`** — replay at 2x speed
 17. **`smith replay <session-id> --compare`** — compare old vs new tool outputs
 18. **Global flags:** `--model`, `--provider`, `--session`, `--config`, `--no-config`
+19. **Interactive slash commands are Lua plugins** — `/undo`, `/redo`, and `/history` are registered by built-in Lua plugins, not clap subcommands
 
 ## Deliverables
 
@@ -285,6 +286,99 @@ smith replay abc123 --speed 5.0 --format summary
 smith replay abc123 --speed 0 --from-turn 10 --turns 10
 ```
 
+### 4.1 Interactive Slash Commands
+
+Slash commands run inside an interactive or attached session. They are registered
+through `smith.command.register()` by built-in Lua plugins in smith-harness.
+They are not clap subcommands and must not be added to the `Commands` enum.
+
+Built-in command plugin registrations:
+
+```lua
+smith.command.register("undo", {
+  description = "Undo the last operation, N operations, or selected paths",
+  usage = "/undo [N|path...]",
+})
+
+smith.command.register("redo", {
+  description = "Redo the last undone operation",
+  usage = "/redo",
+})
+
+smith.command.register("history", {
+  description = "Open the time-travel operation timeline",
+  usage = "/history",
+})
+```
+
+Command behavior:
+- `/undo` → `smith.vcs.undo()`
+- `/undo 3` → plugin resolves the third previous operation via `smith.vcs.op_log()` and calls `smith.vcs.op_restore(op_id)`
+- `/undo path/to/file.rs` → `smith.vcs.restore_paths({ "path/to/file.rs" })`
+- `/redo` → `smith.vcs.redo()`
+- `/history` → plugin toggles the time-travel panel using `smith.tui.*`
+
+The CLI crate only boots the harness/TUI and loads plugins. Command parsing for
+these slash commands belongs to the Lua plugin so user plugins can override or
+extend the behavior with the same public API.
+
+### 5. Config Schema Examples
+
+Model aliasing, grouping, and bucket configuration (defined in `~/.smith/config.lua`):
+
+```lua
+-- ~/.smith/config.lua
+
+-- Model aliases: short name -> fully qualified model ID
+model_aliases = {
+  larry = "anthropic/claude-sonnet-4",
+}
+
+-- Model groups: group name -> list of models with failover strategy
+model_groups = {
+  agentic = {
+    models = {
+      "anthropic/claude-sonnet-4",
+      "anthropic/claude-opus-4-7",
+      "google/glm-5-1",
+    },
+    strategy = "failover",  -- "failover" | "round_robin" | "latency"
+  }
+}
+
+-- Provider buckets: bucket name -> provider accounts with rotation strategy
+provider_buckets = {
+  codex = {
+    provider = "openai",
+    accounts = {
+      { api_key = "sk-1..." },
+      { api_key = "sk-2..." },
+    },
+    strategy = "balance_fair",  -- "balance_fair" | "round_robin"
+  },
+  kimi = {
+    provider = "moonshot",
+    accounts = {
+      { api_key = "sk-a...", base_url = "https://api.moonshot.cn" },
+      { api_key = "sk-b...", base_url = "https://api.moonshot.cn" },
+      { api_key = "sk-c...", base_url = "https://api.moonshot.cn" },
+    },
+    strategy = "balance_fair",
+  }
+}
+```
+
+**Interaction rules:**
+- Alias can reference: direct model ID, another alias, a group, or a bucket.
+- Group can reference: direct model IDs, aliases, or other groups (but not buckets).
+- Bucket can reference: aliases or groups (resolved to find the provider).
+- Bucket members must all be for the same provider.
+
+**CLI overrides:**
+- `--model larry` resolves through ModelResolver
+- `--model agentic` expands to group with failover
+- `--provider codex` selects bucket with rotation
+
 ## Tests
 
 - CLI parsing: all subcommands parse correctly
@@ -307,6 +401,9 @@ smith replay abc123 --speed 0 --from-turn 10 --turns 10
 - `smith replay abc123 --compare --sandbox /tmp/test` replays with tool comparison
 - `smith replay abc123 --format json` outputs JSONL replay steps
 - `smith replay abc123 --from-turn 5 --turns 3` replays turns 5-7 only
+- Interactive: built-in Lua command plugin registers `/undo`, `/redo`, `/history`
+- Interactive: `/undo`, `/undo N`, and `/undo path` dispatch through `smith.vcs.*`
+- Interactive: slash commands are not clap subcommands
 
 ## Steps
 

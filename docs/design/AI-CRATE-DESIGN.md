@@ -1,5 +1,9 @@
 # smith-ai Crate Design
 
+> **⚠️ Historical document.** This design doc captures early AI crate
+> exploration. The canonical specification is **SM-007** (`smith-ai/`).
+> Sections below that contradict SM-007 are stale.
+
 ## Overview
 
 The `smith-ai` crate handles:
@@ -162,10 +166,12 @@ pub trait AuthResolver: Send + Sync {
 pub trait Provider: Send + Sync {
     fn id(&self) -> &str;
     fn name(&self) -> &str;
-    fn base_url(&self) -> &str;
     
-    fn complete(&self, request: ProviderRequest) -> ProviderStream;
-    fn authenticate(&self, auth: &AuthMethod) -> Result<(), AuthError>;
+    /// Stream LLM responses. Canonical: SM-007 §2.
+    fn stream(&self, request: ProviderRequest) -> Pin<Box<dyn Stream<Item = ProviderEvent> + Send>>;
+    
+    /// Validate authentication is configured. Canonical: SM-007 §6.
+    fn validate_auth(&self) -> Result<(), ProviderError>;
 }
 ```
 
@@ -289,6 +295,17 @@ sdk.override_model("anthropic", "claude-3-5-sonnet-20241022", ModelOverrides { .
 All providers from pi.dev + catwalk:
 - **pi.dev providers**: anthropic, openai, google, mistral, amazon-bedrock, google-vertex, google-gemini-cli, azure-openai, openai-codex, github-copilot, xai, groq, cerebras, openrouter, vercel-ai-gateway, zai, minimax, huggingface, opencode, kimi-coding
 - **catwalk providers**: openrouter, huggingface, and OpenAI-compatible APIs
+
+### MiniMax Token Plan Provider Notes
+
+P12 confirmed MiniMax Token Plan works through the OpenAI-compatible adapter:
+- Base URL: `https://api.minimax.io`
+- Auth: bearer API key with `sk-cp-` Token Plan prefix
+- Models: `MiniMax-M2.7`, `MiniMax-M2.7-highspeed`
+- Streaming and non-streaming both work
+- `stream_options.include_usage` returns final usage totals
+- Chain-of-thought/reasoning tokens may appear in `content` before final answer text
+- Error responses are structured JSON bodies, not necessarily SSE chunks
 
 ## TODO
 

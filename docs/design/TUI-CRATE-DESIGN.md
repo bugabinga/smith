@@ -1,5 +1,9 @@
 # smith-tui Crate Design
 
+> **⚠️ Historical document.** This design doc captures early TUI crate
+> exploration. The canonical specification is **SM-008** (`smith-tui/`).
+> Sections below that contradict SM-008 are stale.
+
 ## Overview
 
 The `smith-tui` crate provides terminal UI rendering primitives. It exposes
@@ -23,7 +27,8 @@ Based on pi's widget set, smith-tui exposes:
 |--------|-------------|
 | `Text` | Multi-line text with word wrap |
 | `TruncatedText` | Single-line text, truncated to viewport |
-| `Markdown` | Markdown rendering (headings, code blocks, links, tables) |
+| `Markdown` | Markdown rendering (headings, code blocks, links, tables) with syntax-highlighted fenced code blocks |
+| `DiffView` | Unified/split diff rendering with hunks, inline word highlights, and syntax-aware code styling |
 | `Box` | Container with optional border |
 | `Spacer` | Empty space filler |
 
@@ -58,8 +63,54 @@ Based on pi's widget set, smith-tui exposes:
 
 | Widget | Description |
 |--------|-------------|
-| `FuzzyFilter` | Fuzzy matching for search/filter |
+| `FuzzyFilter` | Fuzzy matching for search/filter using `fuzzy-matcher` scores and match indices |
 | `Overlay` | Floating panel with configurable anchor and size |
+
+## Rendering Helpers
+
+### Syntax highlighting
+
+`Markdown` code blocks and code-oriented tool renderers use `syntastica` with
+the `runtime-c2rust` feature. P16 verified this path on Android/Termux with zero
+C runtime dependencies. The TUI core owns the highlighter/processor cache; Lua
+plugins request highlighted content by language or file path.
+
+```rust
+pub struct SyntaxHighlighter {
+    // wraps syntastica Processor + language set
+}
+
+impl SyntaxHighlighter {
+    pub fn highlight_ansi(&mut self, code: &str, lang: Option<&str>) -> String;
+    pub fn supports_language(&self, lang: &str) -> bool;
+}
+```
+
+No automatic language detection for prose. Plugins pass explicit language or a
+file path. Unsupported languages fall back to plain text.
+
+### Diff rendering
+
+`DiffView` uses `similar` for line/word diffs and hunk iteration. The widget
+supports unified and side-by-side modes so Lua plugins can build time-travel,
+replay-compare, and tool-result diff UIs without custom Rust feature code.
+
+```rust
+pub enum DiffMode { Unified, SideBySide }
+
+pub struct DiffView {
+    mode: DiffMode,
+    old_label: String,
+    new_label: String,
+    hunks: Vec<DiffHunk>,
+}
+```
+
+### Fuzzy filtering
+
+`FuzzyFilter` wraps `fuzzy-matcher` and returns both score and matched indices.
+`SelectList` and plugin-built timelines use these indices to style matched
+characters in ratatui spans.
 
 ## Layout System: Border Layout
 
@@ -231,15 +282,17 @@ pub enum Size {
 ## Component Trait (Rust)
 
 ```rust
+/// Canonical: SM-008 §3. Uses ratatui-native signatures.
 pub trait Component: Send + Sync {
-    fn render(&self, width: u16) -> Vec<String>;
-    fn handle_input(&mut self, data: &str) -> bool;  // true = consumed
+    fn render(&self, area: Rect, buf: &mut Buffer);
+    fn handle_event(&mut self, event: &TuiEvent) -> bool;
     fn invalidate(&mut self);
 }
 
 pub trait Focusable: Component {
     fn focused(&self) -> bool;
     fn set_focused(&mut self, focused: bool);
+    fn as_focusable_mut(&mut self) -> Option<&mut dyn Focusable>;
 }
 ```
 
@@ -414,5 +467,5 @@ Default state: all panels invisible, center uses the default Lua plugin layout.
 
 - Vim-style normal mode editing
 - Inline image rendering (Kitty graphics protocol)
-- Split panes (Split layout primitive exists, resizing deferred)
+- Split pane resizing (Split layout primitive exists)
 - Multiple simultaneous sessions
