@@ -1,0 +1,20 @@
+# smith Clippy Configuration
+# See docs/PROJECT-INVARIANTS.md §3 and docs/research/CLIPPY-BEST-PRACTICES.md
+# for lint rationale and escape hatch policy.
+#
+# NOTE: clippy.toml only supports configuration VALUES (thresholds, MSRV).
+# Lint enablement/disablement belongs in .cargo/config.toml rustflags.
+# See PROJECT-INVARIANTS §3.2 for the full rustflags list.
+
+# -----------------------------------------------------------------------------
+# Cognitive Complexity Threshold
+# -----------------------------------------------------------------------------
+# TUI event routing naturally hits this. Review functions >20 during review.
+cognitive-complexity-threshold = 25
+
+# -----------------------------------------------------------------------------
+# MSRV
+# -----------------------------------------------------------------------------
+# Align with workspace rust-version. Clippy suggests modern idioms
+# only if they're available on the MSRV.
+msrv = "1.85"

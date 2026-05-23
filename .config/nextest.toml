@@ -1,0 +1,30 @@
+# nextest configuration for smith
+# See docs/research/TESTING-STRATEGY-RESEARCH.md and docs/PROJECT-INVARIANTS.md §4
+
+[profile.default]
+# Retry flaky tests up to 2 times
+retries = 2
+# Tests slower than 30s are marked slow
+slow-timeout = "30s"
+# Show test output for failures
+failure-output = "final"
+
+[profile.ci]
+# CI profile: fail fast disabled to see all failures
+fail-fast = false
+retries = 2
+slow-timeout = "60s"
+# Full output for debugging
+failure-output = "final"
+# JUnit XML for CI reporting
+junit = { path = "target/nextest/junit.xml" }
+
+[profile.fast]
+# Fast profile for local development: no retries, quick feedback
+retries = 0
+slow-timeout = "10s"
+
+[profile.thorough]
+# Thorough profile for pre-release: more retries, longer timeout
+retries = 3
+slow-timeout = "120s"

@@ -3,16 +3,22 @@
   "flowModelConfigs": {
     "smith": {
       "lite": {
-        "primary": "kimi-coding/kimi-for-coding",
-        "failover": ["zai/glm-5-turbo"]
+        "primary": "openai-codex/gpt-5.4-mini",
+        "failover": [
+          "zai/glm-4.5-air"
+        ]
       },
       "flash": {
-        "primary": "kimi-coding/kimi-for-coding",
-        "failover": ["zai/glm-5.1"]
+        "primary": "openai-codex/gpt-5.3-codex-spark",
+        "failover": [
+          "zai/glm-5-turbo"
+        ]
       },
       "full": {
-        "primary": "zai/glm-5.1",
-        "failover": ["kimi-coding/kimi-for-coding"]
+        "primary": "openai-codex/gpt-5.5",
+        "failover": [
+          "zai/glm-5.1"
+        ]
       }
     }
   },
