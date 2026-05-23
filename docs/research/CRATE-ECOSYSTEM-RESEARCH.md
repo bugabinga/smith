@@ -3,7 +3,7 @@
 **Date:** 2026-05-21
 **Status:** Research — informs Cargo.toml decisions and architecture
 
-This document records all crate evaluations, alternatives considered, and decisions made for smith's dependencies. It captures institutional knowledge that doesn't belong in formal specs but is essential for maintenance and future decisions.
+This document records crate evaluations, alternatives considered, and dependency tradeoffs for smith.
 
 ---
 
@@ -579,7 +579,7 @@ This document records all crate evaluations, alternatives considered, and decisi
 - Edition 2024 stays fixed in manifests; compiler channel follows stable.
 
 **Release policy:**
-- Do not set `rust-version` in workspace manifests during spec/planning.
+- Avoid setting `rust-version` in workspace manifests unless release policy requires it.
 - `rust-toolchain.toml` uses `channel = "stable"`.
 - If smith later needs long-term support, define a formal MSRV window then.
 
@@ -658,8 +658,8 @@ criterion = { version = "0.5", features = ["html_reports"] }
 | fancy-regex | Slower, backreferences not needed | Regex |
 | jsonschema | Deferred to v2 | Validation |
 | mini-cbor | Derive friction for complex enums; ciborium uses existing serde derives cleanly | CBOR serialization |
-| color-eyre | Not used in any crate spec | Error display |
-| indicatif | Not used in any crate spec | Progress bars |
+| color-eyre | Not selected for current dependency set | Error display |
+| indicatif | Not selected for current dependency set | Progress bars |
 | gix (full umbrella/default) | Deferred; use targeted features only behind `smith.vcs.*` structured query primitives | VCS integration |
 | viuer | Deferred until multi-protocol image rendering is required; kitty-first custom rendering is enough for v1 | Terminal images |
 | walkdir | Subsumed by `ignore`, which adds gitignore/glob/hidden-file semantics | File traversal |

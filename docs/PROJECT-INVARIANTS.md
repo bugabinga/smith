@@ -18,7 +18,7 @@ These invariants govern the smith codebase. They are non-negotiable rules that e
 **Prohibited:**
 - Makefile, justfile, package.json, build.sh
 - Shell scripts in repo root or scripts/
-- Any build step that requires tools not installable via `cargo install`
+- Any build step that requires tools not installable via `cargo install`, except pinned nightly rustup components required by the `cargo-pup` architecture gate
 
 ## 2. Directory Separation: Code vs. Project Management
 
@@ -36,18 +36,8 @@ smith/                          # ← code (crates, Cargo, .rs)
 ├── rust-toolchain.toml
 └── ...
 
-docs/                           # ← project management (specs, research)
-├── specs/                      # canonical subsystem specs
-│   ├── spec-sm-003-scaffolding.md
-│   ├── spec-sm-004-architecture.md
-│   ├── spec-sm-005-shared-types.md
-│   ├── spec-sm-006-core.md
-│   ├── spec-sm-007-ai.md
-│   ├── spec-sm-008-tui.md
-│   ├── spec-sm-009-harness.md
-│   ├── spec-sm-010-cli.md
-│   ├── spec-sm-011-workspace.md
-│   └── spec-sm-012-testing.md
+docs/                           # ← project management (spec, research)
+├── SPEC.md                     # canonical project specification
 ├── research/                   # ecosystem research, tool analysis
 │   ├── RESEARCH-NOTES.md
 │   ├── TERMINAL-CAPABILITIES-RESEARCH.md
@@ -71,6 +61,8 @@ docs/                           # ← project management (specs, research)
 ### 3.1 Rust Toolchain
 
 **Policy:** Smith follows latest stable Rust. Do not pin a numeric MSRV in docs or manifests unless release engineering later creates a formal support window.
+
+**Nightly exception:** `cargo-pup` architecture linting runs on pinned nightly `nightly-2026-01-22` because it uses rustc internals. Nightly may be used only by the pup gate. Stable remains required for build, test, run, and release.
 
 ```toml
 # rust-toolchain.toml
@@ -232,7 +224,7 @@ xtask is the single extension point for tasks cargo does not handle natively.
 
 | Command | Purpose | Frequency |
 |---------|---------|-----------|
-| `cargo run -p xtask -- check` | Full CI check: fmt, clippy, test, doc | CI |
+| `cargo run -p xtask -- check` | Full CI check: fmt, clippy, arch, pup, test, doc | CI |
 | `cargo run -p xtask -- test` | Run all tests (delegates to `cargo nextest run`) | Every commit |
 | `cargo run -p xtask -- lint` | Clippy + rustfmt check | Every commit |
 | `cargo run -p xtask -- fmt` | Auto-format (delegates to `cargo fmt`) | On demand |
@@ -241,6 +233,8 @@ xtask is the single extension point for tasks cargo does not handle natively.
 | `cargo run -p xtask -- verify-docs` | Completeness checks (every API documented) | CI |
 | `cargo run -p xtask -- doc-gen` | Generate man pages + docs bundle | Release |
 | `cargo run -p xtask -- spec-verify` | Verify spec cross-references, check for stale links | CI |
+| `cargo run -p xtask -- arch` | Stable architecture checks: dependency graph, forbidden imports, module hygiene | CI |
+| `cargo run -p xtask -- pup` | Required cargo-pup architecture gate on pinned nightly | CI |
 | `cargo run -p xtask -- audit` | `cargo deny check` + security audit | CI |
 | `cargo run -p xtask -- bench` | Run criterion benchmarks | Nightly |
 | `cargo run -p xtask -- coverage` | Generate coverage report (tarpaulin) | CI |
@@ -254,7 +248,7 @@ xtask commands must be thin orchestrators. They delegate to cargo, nextest, clip
 
 Files that coding agents MUST NOT modify without explicit user approval:
 - `docs/PROJECT-INVARIANTS.md`
-- `docs/specs/` (specs are source of truth — agents read, don't edit)
+- `docs/SPEC.md` (source of truth — agents read, don't edit without approval)
 - `Cargo.toml` workspace root (agents read dependencies, don't add/remove)
 - `.cargo/config.toml`
 - `rust-toolchain.toml`
@@ -266,15 +260,15 @@ Files that coding agents MAY modify freely:
 - `benches/*.rs` (benchmarks)
 
 Files that coding agents SHOULD read before modifying:
-- `docs/specs/spec-sm-NNN-*.md` (the spec for the subsystem being changed)
+- `docs/SPEC.md` (the canonical spec)
 - `AGENTS.md` (project overview)
 
 ## 6. Spec-Code Relationship
 
-1. **Spec before code.** No `.rs` changes without a corresponding spec update (or documented exception).
-2. **Specs live in `docs/specs/`.** Code lives in crate directories.
-3. **Cross-references are unidirectional:** specs reference code (`see smith-core/src/agent.rs`), code does NOT reference specs.
-4. **Spec changes require `cargo run -p xtask -- spec-verify`.**
+1. **Spec before code.** No `.rs` changes without corresponding `docs/SPEC.md` coverage (or documented exception).
+2. **The spec lives at `docs/SPEC.md`.** Code lives in crate directories.
+3. **Cross-references are unidirectional:** the spec may reference code paths; code does NOT reference the spec.
+4. **Spec changes require `cargo run -p xtask -- spec-verify` once xtask exists.**
 
 ## 7. Version Control
 
@@ -343,7 +337,7 @@ See `docs/research/RELEASE-BUILD-RESEARCH.md` for cross-platform build tooling a
 
 ## 9. Testing Invariants
 
-See `docs/specs/spec-sm-012-testing.md` for comprehensive testing strategy. Invariants here:
+See `docs/SPEC.md` for comprehensive testing strategy. Invariants here:
 
 - **100% unit coverage** for `smith/` (pure types, no I/O).
 - **≥ 95% coverage** for `smith-core/`.
@@ -353,6 +347,7 @@ See `docs/specs/spec-sm-012-testing.md` for comprehensive testing strategy. Inva
 - **≥ 80% coverage** for `smith-cli/`.
 - **Mutation score > 80%** caught by tests (nightly gate).
 - **All benchmarks pass** without regression > 10% (nightly gate).
+- **Architecture gates pass:** `cargo run -p xtask -- arch` and `cargo run -p xtask -- pup`.
 
 ## 10. Cargo Workspace Structure
 
@@ -383,8 +378,49 @@ license = "Apache-2.0"
 - `smith-cli/`: Binary entry point, argument parsing, session CLI.
 - `xtask/`: Build automation, task orchestration.
 
+
+## 11. Architecture Invariants
+
+Allowed internal crate dependencies are fixed:
+
+| Crate | May depend on |
+|-------|---------------|
+| `smith` | none |
+| `smith-core` | `smith` |
+| `smith-ai` | `smith` |
+| `smith-tui` | `smith` |
+| `smith-harness` | `smith`, `smith-core`, `smith-ai`, `smith-tui` |
+| `smith-cli` | `smith`, `smith-harness` |
+| `xtask` | none |
+
+Forbidden:
+- `smith` must never depend on any downstream crate.
+- `smith-core`, `smith-ai`, and `smith-tui` must not depend on each other.
+- `smith-cli` must not depend directly on `smith-core`, `smith-ai`, or `smith-tui`.
+- `mod.rs` files contain only module declarations and re-exports.
+- Wildcard imports are forbidden outside tests.
+
+Architecture gates:
+- `cargo run -p xtask -- arch` verifies stable Rust metadata/source invariants.
+- `cargo run -p xtask -- pup` runs `cargo +nightly-2026-01-22 pup`.
+- `cargo run -p xtask -- check` includes both gates.
+
+### Nightly Toolchain Exception
+
+Smith production code uses stable Rust.
+
+Exception: `cargo-pup` architecture linting runs on pinned nightly
+`nightly-2026-01-22` because it uses rustc internals.
+
+Rules:
+- Nightly may be used only by the pup gate.
+- Stable remains required for build, test, run, and release.
+- Nightly breakage is fixed by updating pup/toolchain config, not by moving smith production code to nightly.
+- Pup failure blocks commit, PR, and release.
+
 ## Change Log
 
 | Date | Change | Author |
 |------|--------|--------|
+| 2026-05-23 | Add architecture gates and pinned-nightly pup exception | smith-spec |
 | 2026-05-22 | Initial invariants | smith-spec |

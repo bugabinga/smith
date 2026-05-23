@@ -1,8 +1,8 @@
 # smith-ai Crate Design
 
-> **⚠️ Historical document.** This design doc captures early AI crate
-> exploration. The canonical specification is **SM-007** (`smith-ai/`).
-> Sections below that contradict SM-007 are stale.
+> **Historical document.** This design doc captures early AI crate
+> exploration. The canonical specification is `docs/SPEC.md` §7.
+> Sections below that contradict `docs/SPEC.md` are stale.
 
 ## Overview
 

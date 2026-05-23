@@ -445,7 +445,7 @@ Not included in initial architecture. Re-evaluate during the project lifetime.
 
 ---
 
-## 4. Implications for SM-004 Architecture
+## 4. Architecture Implications
 
 ### Plugin System Design
 

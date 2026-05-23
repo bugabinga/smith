@@ -1,7 +1,7 @@
 # CI/CD Patterns Research: smith
 
 **Date:** 2026-05-21
-**Status:** Research — informs SM-012 (testing spec) and CI setup
+**Status:** Research — CI patterns and gating strategies
 
 This document captures CI/CD patterns, test gating strategies, and agent-gating workflows for smith. It does not prescribe a specific CI technology (GitHub Actions, GitLab CI, Buildkite, etc.) but defines goals independent of platform.
 
@@ -358,7 +358,7 @@ These tests are excluded from CI by default and run only in manual/nightly jobs.
 
 ## 10. CI Platform Agnosticism
 
-This spec defines goals, not implementation. Any CI platform can implement the three-tier model.
+These notes describe goals, not implementation. Any CI platform can implement the three-tier model.
 
 ### Platform mapping
 

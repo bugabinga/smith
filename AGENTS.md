@@ -31,7 +31,7 @@ smith/ (types, StreamFn, AgentTool, Lua, config)
 AGENTS.md is a navigation index. Do not mirror individual source-of-truth file
 lists here; use the canonical directories and docs tree instead.
 
-- Specs: `docs/specs/` — canonical subsystem specifications.
+- Spec: `docs/SPEC.md` — canonical project specification.
 - Research: `docs/research/` — ecosystem research and tool analysis.
 - Design: `docs/design/` — subsystem design documents.
 - Plans: `docs/plans/` — task breakdowns and documentation plans.
@@ -40,11 +40,10 @@ lists here; use the canonical directories and docs tree instead.
 
 ## Rules
 
-1. Spec before code. No `.rs` files until spec is final.
-2. AGENTS.md is the navigation index. `docs/specs/` contains the canonical subsystem specs.
-3. Chunk large specs. One subsystem per doc.
-4. Every spec answers: interfaces, types, errors, tests.
-5. Open questions: stop and ask. No guessing.
-6. Invoke spec work: `/spec <topic>`.
-7. Cargo is the sole build system. See `docs/PROJECT-INVARIANTS.md` §1.
-8. Agents must not modify `docs/specs/` or `docs/PROJECT-INVARIANTS.md` without approval.
+1. Spec before code. No `.rs` files until `docs/SPEC.md` covers the work.
+2. AGENTS.md is the navigation index. `docs/SPEC.md` is the canonical project spec.
+3. Every spec section answers: interfaces, types, errors, tests.
+4. Open questions: stop and ask. No guessing.
+5. Invoke spec work: `/spec <topic>`.
+6. Cargo is the sole build system. See `docs/PROJECT-INVARIANTS.md` §1.
+7. Agents must not modify `docs/SPEC.md` or `docs/PROJECT-INVARIANTS.md` without approval.

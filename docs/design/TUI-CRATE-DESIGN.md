@@ -1,8 +1,8 @@
 # smith-tui Crate Design
 
-> **⚠️ Historical document.** This design doc captures early TUI crate
-> exploration. The canonical specification is **SM-008** (`smith-tui/`).
-> Sections below that contradict SM-008 are stale.
+> **Historical document.** This design doc captures early TUI crate
+> exploration. The canonical specification is `docs/SPEC.md` §8.
+> Sections below that contradict `docs/SPEC.md` are stale.
 
 ## Overview
 

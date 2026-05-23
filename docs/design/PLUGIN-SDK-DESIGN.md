@@ -1,8 +1,8 @@
 # smith Plugin SDK Design
 
-> **⚠️ Historical document.** This design doc captures early plugin system
-> exploration. The canonical plugin specification is **SM-009** (`smith-harness/`).
-> Sections below that contradict SM-009 are stale.
+> **Historical document.** This design doc captures early plugin system
+> exploration. The canonical plugin specification is `docs/SPEC.md` §9.
+> Sections below that contradict `docs/SPEC.md` are stale.
 
 ## Overview
 
@@ -518,7 +518,7 @@ All events from pi, plus smith-specific additions marked with ★.
 
 ## Sandbox
 
-> **⚠️ Superseded by SM-009 §10.** The capability-based sandbox below was an
+> **Historical note.** The capability-based sandbox below was an
 > early design. The canonical approach: Lua restricted runtime (no `io`, `os`,
 > `debug`, `package`, `require` globals) is the *only* sandbox. No capability
 > grants, no policy files, no tiers.
@@ -526,7 +526,7 @@ All events from pi, plus smith-specific additions marked with ★.
 ~~### Capabilities
 
 ```lua
--- STALE — capability model removed. See SM-009 §10.
+-- Historical only — capability model removed. See docs/SPEC.md §9.10.
 smith.request_capability("fs_read", { paths = { "./src" } })
 smith.request_capability("credentials")
 ```~~
@@ -557,7 +557,7 @@ Edit file tool (find-and-replace)
 Execute bash commands
 
 ### ~~6. compact~~
-~~Context compaction~~ — removed; compaction is automatic in smith-core (SM-006 §10).
+~~Context compaction~~ — removed; compaction is automatic in smith-core; see `docs/SPEC.md` §6.9.
 
 ### 7. find
 Find files using `smith.fs` primitives backed by the `ignore` crate.

@@ -1,9 +1,9 @@
 # Testing Strategy Research: smith
 
 **Date:** 2026-05-21
-**Status:** Research — informs SM-012 (testing spec) and implementation
+**Status:** Research — testing tools and patterns
 
-This document captures research on Rust testing tools, patterns, and strategies that don't belong in formal specs but inform test design decisions.
+This document captures research on Rust testing tools, patterns, and strategies.
 
 ---
 
