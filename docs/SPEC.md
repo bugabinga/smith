@@ -67,9 +67,12 @@ Forbidden:
 
 Architecture gates:
 
-- `cargo run -p xtask -- arch` checks stable metadata/source invariants.
+- `cargo run -p xtask -- arch` checks stable Cargo metadata and source
+  invariants not covered by pup.
 - `cargo run -p xtask -- pup` runs `cargo +nightly-2026-01-22 pup`.
-- `cargo run -p xtask -- check` includes both gates.
+- `cargo run -p xtask -- print-modules` prints crate roots from Cargo metadata
+  plus cargo-pup submodule output.
+- `cargo run -p xtask -- check` includes `arch` and `pup`.
 
 ### 2.3 Workspace Manifest
 
@@ -246,13 +249,34 @@ warned unless explicitly accepted.
 
 ### 3.5 cargo-pup
 
-Root `pup.ron` exists and is required. Initial rules enforce:
+Root `pup.ron` exists and is required. Cargo-pup is the pinned-nightly source
+architecture lint gate. `xtask arch` remains the stable Cargo metadata gate.
+
+Initial pup rules enforce:
 
 - hygienic `mod.rs`,
 - no wildcard imports,
 - `smith-core` imports no `smith-ai`, `smith-tui`, `smith-harness`, `smith-cli`,
 - `smith-ai` imports no `smith-core`, `smith-tui`, `smith-harness`, `smith-cli`,
 - `smith-tui` imports no `smith-core`, `smith-ai`, `smith-harness`, `smith-cli`.
+
+Crate-boundary module match patterns must include the crate root. Use
+`^crate($|::.*)`, not only `^crate::.*`. Cargo-pup sees root-owned items in
+`lib.rs`/`main.rs` under the crate name itself.
+
+Required boundary patterns:
+
+```ron
+matches: Module("^smith_core($|::.*)")
+matches: Module("^smith_ai($|::.*)")
+matches: Module("^smith_tui($|::.*)")
+```
+
+`cargo pup print-modules` is not a complete module inventory. It can omit crate
+roots and can emit synthetic `unknown_crate` for crates with no child `mod`
+items. Developer-facing module inventory uses `cargo run -p xtask -- print-modules`,
+which prefixes crate roots from stable Cargo metadata and then prints
+cargo-pup-discovered submodules.
 
 Required setup:
 
@@ -1433,6 +1457,7 @@ Required commands:
 | `spec-verify` | verify SPEC links and project invariants |
 | `arch` | stable architecture checks |
 | `pup` | pinned-nightly cargo-pup gate |
+| `print-modules` | module inventory: Cargo metadata crate roots + cargo-pup submodules |
 | `audit` | cargo-deny + cargo-audit |
 | `bench` | criterion benchmarks |
 | `coverage` | tarpaulin coverage |
