@@ -28,42 +28,20 @@ smith/ (types, StreamFn, AgentTool, Lua, config)
 
 ## Source of Truth
 
-### Specs (canonical subsystem specifications)
-- `docs/specs/spec-sm-003-scaffolding.md`
-- `docs/specs/spec-sm-004-architecture.md`
-- `docs/specs/spec-sm-005-shared-types.md`
-- `docs/specs/spec-sm-006-core.md`
-- `docs/specs/spec-sm-007-ai.md`
-- `docs/specs/spec-sm-008-tui.md`
-- `docs/specs/spec-sm-009-harness.md`
-- `docs/specs/spec-sm-010-cli.md`
-- `docs/specs/spec-sm-011-workspace.md`
-- `docs/specs/spec-sm-012-testing.md`
+AGENTS.md is a navigation index. Do not mirror individual source-of-truth file
+lists here; use the canonical directories and docs tree instead.
 
-### Research (ecosystem analysis, tool evaluation)
-- `docs/research/RESEARCH-NOTES.md`
-- `docs/research/TERMINAL-CAPABILITIES-RESEARCH.md`
-- `docs/research/TESTING-STRATEGY-RESEARCH.md`
-- `docs/research/CI-PATTERNS-RESEARCH.md`
-- `docs/research/CRATE-ECOSYSTEM-RESEARCH.md`
-- `docs/research/CLIPPY-BEST-PRACTICES.md`
-
-### Design (subsystem design documents)
-- `docs/design/TUI-CRATE-DESIGN.md`
-- `docs/design/PLUGIN-SDK-DESIGN.md`
-- `docs/design/AI-CRATE-DESIGN.md`
-
-### Plans (task breakdowns, documentation plans)
-- `docs/plans/TASK-BREAKDOWN.md`
-- `docs/plans/PLUGIN-DOC-PLAN.md`
-
-### Project Invariants
-- `docs/PROJECT-INVARIANTS.md` — build system, directory structure, coding standards
+- Specs: `docs/specs/` — canonical subsystem specifications.
+- Research: `docs/research/` — ecosystem research and tool analysis.
+- Design: `docs/design/` — subsystem design documents.
+- Plans: `docs/plans/` — task breakdowns and documentation plans.
+- Docs tree and invariants: `docs/PROJECT-INVARIANTS.md` — build system,
+  directory structure, coding standards, and canonical docs inventory.
 
 ## Rules
 
 1. Spec before code. No `.rs` files until spec is final.
-2. AGENTS.md is the index. Specs are the source of truth.
+2. AGENTS.md is the navigation index. `docs/specs/` contains the canonical subsystem specs.
 3. Chunk large specs. One subsystem per doc.
 4. Every spec answers: interfaces, types, errors, tests.
 5. Open questions: stop and ask. No guessing.
