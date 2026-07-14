@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "x_registry_note": "hand-maintained metadata; unknown fields must survive regeneration",
+  "providers": {
+    "anthropic": {
+      "name": "Anthropic",
+      "api_base": "https://api.anthropic.com/v1",
+      "x_smith_auth_hint": "env:ANTHROPIC_API_KEY",
+      "models": {
+        "claude-omega": {
+          "name": "Claude Omega",
+          "context_window": 300000,
+          "max_output_tokens": 32000,
+          "cost": { "input": 6.0, "output": 30.0 },
+          "x_release_notes": "https://example.invalid/omega-notes"
+        }
+      }
+    },
+    "openai": {
+      "name": "OpenAI",
+      "api_base": "https://api.openai.com/v1",
+      "models": {
+        "gpt-9": {
+          "context_window": 800000,
+          "cost": {
+            "input": { "cached": 2.5, "uncached": 10.0 },
+            "output": 30.0
+          },
+          "regional_endpoints": { "eu": "https://eu.api.openai.invalid/v1" }
+        }
+      }
+    }
+  }
+}

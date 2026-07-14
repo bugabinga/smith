@@ -1,0 +1,44 @@
+{
+  "source": "catwalk",
+  "providers": [
+    {
+      "id": "anthropic",
+      "name": "Anthropic",
+      "api_base": "https://api.anthropic.com/v1",
+      "models": [
+        {
+          "id": "claude-omega",
+          "name": "Claude Omega (community listing)",
+          "context_window": 400000,
+          "max_output_tokens": 64000,
+          "reasoning": true
+        },
+        {
+          "id": "claude-mini",
+          "max_output_tokens": 8192,
+          "reasoning": false
+        },
+        {
+          "id": "claude-legacy",
+          "name": "Claude Legacy",
+          "context_window": 100000,
+          "max_output_tokens": 4096,
+          "cost": { "input": 1.0, "output": 5.0 }
+        }
+      ]
+    },
+    {
+      "id": "mistral",
+      "name": "Mistral",
+      "api_base": "https://api.mistral.ai/v1",
+      "models": [
+        {
+          "id": "mistral-large-3",
+          "name": "Mistral Large 3",
+          "context_window": 128000,
+          "cost": { "input": 2.0, "output": 6.0 }
+        }
+      ]
+    }
+  ]
+}
