@@ -1,0 +1,8 @@
+[package]
+name = "p04-plugin-install-uninstall"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+mlua = { version = "0.10", features = ["luajit", "vendored", "serialize"] }
