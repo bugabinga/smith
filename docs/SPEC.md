@@ -448,6 +448,9 @@ Cascade order, later overrides earlier:
 Invalid values are rejected with clear errors. Unknown keys warn or fail
 according to the schema context.
 
+The cascade is re-evaluated at runtime by host configuration reload (§9.19);
+CLI flags stay fixed for the process lifetime.
+
 Example:
 
 ```lua
@@ -1132,6 +1135,7 @@ an error.
 - session lifecycle,
 - model changes,
 - context/compaction,
+- config reload (`config_changed`, §9.19),
 - TUI/input events,
 - commands,
 - provider/auth events,
@@ -1179,6 +1183,7 @@ SDK namespaces include:
 - `smith.tui.*`,
 - `smith.vcs.*`,
 - `smith.bus.*`,
+- `smith.config.*` (read access; `smith.config.reload()` triggers §9.19),
 - `smith.abort()`,
 - `smith.shutdown()`,
 - `smith.getContextUsage()`.
@@ -1200,7 +1205,8 @@ from these annotations, so annotations and runtime behavior stay in sync. The
 Built-ins are Lua plugins, not Rust special cases:
 
 - tools: `read`, `write`, `edit`, `bash`, `find`, `grep`, `ls`,
-- slash commands: `/undo`, `/redo`, `/history`, `/tree`, replay/time-travel,
+- slash commands: `/undo`, `/redo`, `/history`, `/tree`, `/reload-config`,
+  replay/time-travel,
 - VCS tools,
 - default layout,
 - default keybindings,
@@ -1477,6 +1483,70 @@ Rules:
 The bus is the only sanctioned direct plugin-to-plugin channel. Plugins otherwise
 compose through shared tool/command/provider registries and the core event
 bridge.
+
+### 9.19 Host Configuration Reload
+
+Smith reloads its own configuration at runtime without restarting the process or
+losing the active session. Host reload follows the same contract shape as plugin
+reload (§9.16): validate fully, swap atomically, roll back on failure.
+
+**Scope.** A host reload re-evaluates the config cascade (§5.6) layers 1–4:
+
+1. Rust type defaults/schema,
+2. built-in Lua defaults,
+3. plugin contributions,
+4. user config at `config_dir/smith/config.lua`.
+
+CLI flags (layer 5) are per-invocation. They were resolved at process start and
+continue to override the reloaded layers unchanged.
+
+**Triggers.** Reload is requested by:
+
+- the built-in `/reload-config` slash command (§9.11), a Lua plugin calling the
+  `smith.config.reload()` primitive (§9.10),
+- a change to `config_dir/smith/config.lua` when watch-reload is enabled in
+  config (same setting family as plugin watch-reload, §9.16),
+- a plugin reload (§9.16), which may change layer-3 contributions; after the
+  domain swap the cascade is re-evaluated automatically.
+
+Eval and RPC modes read config at startup; runtime reload triggers are
+interactive-mode behavior.
+
+**Sequence.** For a host reload:
+
+1. Re-evaluate the cascade into a candidate config. Validate every value against
+   the Rust schemas, and re-run model resolution (§5.7) including alias/group/
+   bucket cycle detection.
+2. If evaluation, validation, or resolution fails, discard the candidate and keep
+   the active config. The failure is reported with the exact key path and error;
+   nothing partially applies.
+3. On success, atomically swap the candidate in as the active config.
+4. Apply effects in order: theme, keybindings, active tool set, resolved
+   model/provider. TUI re-renders with the new theme on the next frame.
+5. Emit the `config_changed` plugin event (§9.8) carrying the changed key paths.
+   Plugins read the new values through their contexts (§9.9); the event does not
+   carry secrets.
+
+**Continuity.** Reload is invisible to in-flight work:
+
+- an in-flight agent turn keeps the resolved model, tools, and system prompt it
+  started with; the next turn uses the new config,
+- running tool executions complete under the old values,
+- the session, its entries, and plugin domains are untouched — a config reload
+  never loads, unloads, or reloads plugin code.
+
+**Restart-only.** The following are fixed for the process lifetime and never
+hot-reload:
+
+- CLI flags (layer 5),
+- config/data/cache directory locations (§4),
+- the active session identity and storage paths,
+- the run mode (interactive, eval, RPC),
+- the bundled `providers.json` (§7.3) — runtime provider changes go through
+  `smith.provider.*` plugin overrides, not registry reload.
+
+Credential resolution (§7.4) is not cached across reloads: the next provider
+stream after a reload resolves auth against the new config values.
 
 ## 10. CLI Crate: `smith-cli`
 
