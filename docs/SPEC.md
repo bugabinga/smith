@@ -824,6 +824,27 @@ conflict report.
 `replace_models` is a plugin provider-override flag (`smith.provider.*`,
 §9.10), not a `fetch-providers` merge input.
 
+**Canonical schema.** A JSON Schema at `smith-ai/src/providers.schema.json` is
+the normative definition of provider and model shapes. It is validated with the
+`jsonschema` workspace crate at three boundaries:
+
+1. `fetch-providers` source data after normalization — a source value that
+   fails the schema is a validation error at the source boundary, not a merge
+   conflict,
+2. the checked-in `providers.json` (CI gate),
+3. provider tables passed to `smith.provider.register` at runtime (§9.10).
+
+Schema rules:
+
+- Model entries carry the §5.7 `ModelMetadata` fields: IDs, context window,
+  max output tokens, cost, and capability flags.
+- `cost` is always an object with per-token prices `input`, `output`,
+  `cache_read`, `cache_write` — never a scalar. This resolves the
+  scalar-vs-object ambiguity that produced p05's type-mismatch conflict class.
+- Unknown fields are permitted everywhere (`additionalProperties` allowed) so
+  the preservation rule above stays schema-legal; the schema constrains known
+  fields only.
+
 Provider config correctness cannot be fully automated because Smith does not have
 all provider accounts, subscriptions, API keys, or regional access. Generated
 changes require review before commit. After the provider format stabilizes,
@@ -1164,6 +1185,22 @@ boundary hides whichever choice release engineering makes.
 Interfaces are plain Lua descriptor tables validated at runtime. This design is
 prototype-proven (p02, p03); the typed-Lua (Teal) and annotation-schema
 candidates are rejected.
+
+**Why Teal is rejected.** Teal's compile-time guarantees evaporate at the
+runtime boundary: Smith embeds LuaJIT, so Teal ships as compiled Lua and the
+host must re-validate conformance regardless — Teal would be additive toolchain
+cost, not a replacement for runtime descriptors. Making official interfaces
+Teal-authored would also split the ecosystem into typed and plain-Lua authors,
+the exact fragmentation §9.6 exists to prevent. The authoring-time typing Teal
+would provide is delivered instead by LuaLS annotations (below and §9.10)
+without a compile step.
+
+**Generated typing.** Interface descriptors mechanically generate LuaLS stub
+files (`---@class`/`---@field`/`---@param` annotations derived from the
+descriptor's `functions` table) as part of `cargo run -p xtask -- doc-gen`.
+Plugin authors targeting an interface get editor-time type checking against
+the same descriptor the runtime validates — one source of truth, two
+enforcement points.
 
 **Descriptor.** An interface package exports a descriptor: a pure data table
 with `name` (`<org>/<name>`), `generation` (integer), `functions` (map of
