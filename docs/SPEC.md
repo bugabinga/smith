@@ -1581,6 +1581,9 @@ Subcommands:
 - `smith uninstall <plugin>` — uninstall plugin.
 - `smith eval <prompt> [--json] [--session id]` — non-interactive eval.
 - `smith rpc` — JSON-RPC via stdio; methods include `config/reload` (§9.19).
+  The full method catalog is deferred: it is expected to mirror the Lua SDK
+  surface (§9.10), with mode-specific additions and omissions, rather than
+  define an independent API.
 - `smith help [topic] [--search q] [--list] [--examples] [--example name] [--guide name]`.
 - `smith replay <session> [--speed f64] [--compare] [--sandbox path]
   [--turns N] [--from-turn N] [--format text|json|summary] [--continue-on-diff bool]`.
