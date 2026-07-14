@@ -1507,10 +1507,11 @@ continue to override the reloaded layers unchanged.
 - a change to `config_dir/smith/config.lua` when watch-reload is enabled in
   config (same setting family as plugin watch-reload, §9.16),
 - a plugin reload (§9.16), which may change layer-3 contributions; after the
-  domain swap the cascade is re-evaluated automatically.
+  domain swap the cascade is re-evaluated automatically,
+- in RPC mode (§10.2), the `config/reload` JSON-RPC method. The response reports
+  success with the changed key paths, or the validation failure verbatim.
 
-Eval and RPC modes read config at startup; runtime reload triggers are
-interactive-mode behavior.
+Eval mode reads config at startup and has no runtime reload trigger.
 
 **Sequence.** For a host reload:
 
@@ -1579,7 +1580,7 @@ Subcommands:
 - `smith install <plugin>` — install plugin.
 - `smith uninstall <plugin>` — uninstall plugin.
 - `smith eval <prompt> [--json] [--session id]` — non-interactive eval.
-- `smith rpc` — JSON-RPC via stdio.
+- `smith rpc` — JSON-RPC via stdio; methods include `config/reload` (§9.19).
 - `smith help [topic] [--search q] [--list] [--examples] [--example name] [--guide name]`.
 - `smith replay <session> [--speed f64] [--compare] [--sandbox path]
   [--turns N] [--from-turn N] [--format text|json|summary] [--continue-on-diff bool]`.
