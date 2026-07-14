@@ -792,16 +792,21 @@ cargo run -p xtask -- fetch-providers
 
 Data source priority for generated suggestions:
 
-1. pi.dev model data,
+1. models.dev (`https://models.dev/api.json` — the open, community-maintained
+   model database with a CI-validated schema),
 2. catwalk provider configs,
 3. later shared provider repositories after review.
+
+Pi served as inspiration for Smith and continues to evolve independently; it is
+a philosophical guide, not a dependency. Smith has no data or format coupling
+to pi.
 
 Merge rule (prototype-proven, p05):
 
 - merge by provider/model ID at LEAF-FIELD granularity — a recursive
   field-level merge; subtree or whole-model replacement would clobber curated
   registry values (e.g. structured cost objects),
-- pi.dev primary,
+- models.dev primary,
 - catwalk fills gaps (missing field, missing model, missing provider),
 - unknown provider fields are preserved for forward compatibility but ignored
   by v1. Preservation is semantic (value-equal), not byte-for-byte — default
@@ -824,9 +829,16 @@ conflict report.
 `replace_models` is a plugin provider-override flag (`smith.provider.*`,
 §9.10), not a `fetch-providers` merge input.
 
-**Canonical schema.** A JSON Schema at `smith-ai/src/providers.schema.json` is
-the normative definition of provider and model shapes. It is validated with the
-`jsonschema` workspace crate at three boundaries:
+**Canonical schema.** Smith does not invent a provider/model schema — the shape
+is already pinned upstream by models.dev (TOML sources CI-validated against its
+published schema). Smith adopts that shape and keeps a pinned local snapshot:
+a JSON Schema at `smith-ai/src/providers.schema.json`, translated from the
+models.dev schema at a recorded upstream version. Local pinning keeps
+validation deterministic and offline; upstream schema evolution is reviewed and
+adopted like any dependency bump.
+
+The snapshot is validated with the `jsonschema` workspace crate at three
+boundaries:
 
 1. `fetch-providers` source data after normalization — a source value that
    fails the schema is a validation error at the source boundary, not a merge
@@ -836,19 +848,23 @@ the normative definition of provider and model shapes. It is validated with the
 
 Schema rules:
 
-- Model entries carry the §5.7 `ModelMetadata` fields: IDs, context window,
-  max output tokens, cost, and capability flags.
-- `cost` is always an object with per-token prices `input`, `output`,
-  `cache_read`, `cache_write` — never a scalar. This resolves the
+- Registry shapes follow models.dev naming: `cost` (USD per million tokens:
+  `input`, `output`, `cache_read`, `cache_write`, optionally `reasoning` and
+  audio variants), `limit` (`context`, `input`, `output`), modalities
+  (`input`/`output` type lists), and capability flags (`attachment`,
+  `reasoning`, `tool_call`, `structured_output`, `temperature`). Smith maps
+  these into the §5.7 `ModelMetadata` type internally.
+- `cost` is always an object — never a scalar. This resolves the
   scalar-vs-object ambiguity that produced p05's type-mismatch conflict class.
 - Unknown fields are permitted everywhere (`additionalProperties` allowed) so
-  the preservation rule above stays schema-legal; the schema constrains known
+  the preservation rule above stays schema-legal; the snapshot constrains known
   fields only.
 
 Provider config correctness cannot be fully automated because Smith does not have
 all provider accounts, subscriptions, API keys, or regional access. Generated
 changes require review before commit. After the provider format stabilizes,
-Smith may use a Pi agent to open provider-data PRs from `fetch-providers` diffs.
+Smith may use a coding agent to open provider-data PRs from `fetch-providers`
+diffs.
 
 ### 7.4 Auth
 
