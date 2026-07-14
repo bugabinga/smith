@@ -307,13 +307,19 @@ P12 confirmed MiniMax Token Plan works through the OpenAI-compatible adapter:
 - Chain-of-thought/reasoning tokens may appear in `content` before final answer text
 - Error responses are structured JSON bodies, not necessarily SSE chunks
 
-## TODO
+## Resolution
 
-- [x] Define exact JSON schema
-- [x] Design OAuth storage (auth JSON file)
-- [x] Design OAuth callback server integration
-- [x] Design plugin override mechanism
-- [ ] ~~Implement xtask fetch command~~ — tracked in SM-007 Steps
-- [ ] ~~Implement model registry~~ — tracked in SM-007 Steps
-- [ ] ~~Implement auth resolvers~~ — tracked in SM-007 Steps
-- [ ] ~~Implement all providers from pi.dev + catwalk~~ — tracked in SM-007 Steps
+All design questions are resolved; the canonical spec is `docs/SPEC.md` §7. The
+remaining items are implementation work, tracked as SM-007 steps in
+`docs/plans/TASK-BREAKDOWN.md`, not open design questions.
+
+| Question | Status | Location |
+|----------|--------|----------|
+| Define exact JSON schema | Resolved | §7 (provider/model/auth schema) |
+| Design OAuth storage (auth JSON file) | Resolved | §7 + §4 runtime files |
+| Design OAuth callback server integration | Resolved | §7 |
+| Design plugin override mechanism | Resolved | §9.10 `smith.provider.*` |
+| Implement xtask fetch command | Impl (deferred) | SM-007 / xtask `fetch-providers` (INVARIANTS §4) |
+| Implement model registry | Impl (deferred) | SM-007 |
+| Implement auth resolvers | Impl (deferred) | SM-007 |
+| Implement all providers from pi.dev + catwalk | Impl (deferred) | SM-007 |

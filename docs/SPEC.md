@@ -1178,12 +1178,22 @@ SDK namespaces include:
 - `smith.bucket.*`,
 - `smith.tui.*`,
 - `smith.vcs.*`,
+- `smith.bus.*`,
 - `smith.abort()`,
 - `smith.shutdown()`,
 - `smith.getContextUsage()`.
 
-All public Lua SDK functions have `---@` annotations and `@usage` blocks. Docs
-are generated from SDK annotations.
+All public Lua SDK functions carry LuaLS/EmmyLua `---@` annotations. LuaLS is the
+canonical annotation dialect; no other dialect is supported. Every public binding
+declares, at minimum:
+
+- `---@param` for each argument (name, type, description),
+- `---@return` for each result (type, description),
+- a `---@usage` block with a runnable example.
+
+Runtime argument schemas (used for validation) and generated docs both derive
+from these annotations, so annotations and runtime behavior stay in sync. The
+`xtask verify-docs` gate fails if any public binding lacks required annotations.
 
 ### 9.11 Built-in Plugins
 
@@ -1314,6 +1324,160 @@ Plugins are trusted but constrained to Smith SDK APIs:
 - no path capability system in v1,
 - built-in and user plugins use same API.
 
+### 9.15 Dependency Resolution
+
+Plugins may declare dependencies on other plugins in their manifest
+(`dependencies`, §9.2). v1 resolves dependencies from already-available plugins
+only; there is no central registry and no network resolution.
+
+Each dependency entry names a plugin and a minimum API generation:
+
+```lua
+dependencies = {
+  { name = "acme/logger", smith_api = 1 },
+}
+```
+
+Resolution runs once per plugin set (built-in, global, project) after manifests
+load and before entry code runs:
+
+1. Build the dependency graph from validated manifests.
+2. Fail loading a plugin whose declared dependency is absent from the resolved
+   set. The plugin is disabled with a diagnostic naming the missing dependency.
+3. Fail loading a plugin whose dependency is present but supports a lower API
+   generation than requested.
+4. Detect cycles. A dependency cycle disables every plugin in the cycle with a
+   diagnostic listing the cycle path. Smith never partially loads a cycle.
+5. Load plugins in topological order so a dependency's registrations exist before
+   its dependents run.
+
+v1 does not solve version ranges. `dependencies` express presence and API
+generation only. Semver range solving is deferred until a registry exists.
+Precedence (§9.7) still applies: a later plugin may override an earlier
+registration even across a dependency edge.
+
+### 9.16 Plugin Hot-Reload
+
+Smith reloads a single plugin without restarting the process or losing the active
+session. Reload is whole-domain replacement, not in-place mutation.
+
+**Plugin domain.** Each loaded plugin instance owns one reload domain. The domain
+owns all reloadable plugin state:
+
+- the plugin's `mlua` runtime state and registry handles,
+- registered tool/command/provider/shortcut/interface descriptors,
+- event subscriptions, including `smith.bus` subscriptions (§9.18),
+- TUI layout/widget registrations and render caches,
+- host-side scratch allocations and any cancellation token for plugin tasks.
+
+Nothing plugin-owned may outlive its domain. Registrations are keyed by domain so
+teardown removes them deterministically. A callback, task, or subscription that
+escapes its domain is a reload defect; the loader rejects registrations that
+cannot be tied to the domain.
+
+**Triggers.** Reload is requested by:
+
+- the `smith plugins reload <org>/<name>` CLI/command path,
+- a project plugin file change when watch-reload is enabled in config,
+- reinstall of an already-loaded plugin.
+
+Built-in `smith/*` plugins reload by the same mechanism.
+
+**Sequence.** For a reload of plugin `P`:
+
+1. Construct a new domain `D'` and load `P`'s manifest and entry code into it.
+2. If load or registration fails, drop `D'` and keep the old domain `D` active.
+   The old plugin keeps running. Reload reports failure with the load error.
+3. On success, atomically swap `D'` in for `D`: new registrations replace old,
+   subscriptions transfer to `D'`, then drop `D`.
+4. Dropping `D` tears down its Lua state, registrations, subscriptions, caches,
+   and scratch memory. Repeated reloads must plateau in live memory after warmup;
+   no stale callback from `D` may run after the swap.
+
+**Rollback.** Reload is all-or-nothing. Either `D'` fully replaces `D`, or `D`
+remains and no partial state from `D'` survives. A failed reload never leaves the
+plugin unregistered.
+
+**Session continuity.** Reload does not reset the session. Session entries, agent
+state, and other plugins' state are untouched. In-flight tool executions from the
+old domain run to completion under `D`; their results are still delivered. New
+invocations after the swap use `D'`.
+
+**Dependents.** Reloading `P` does not reload its dependents (§9.15). Dependents
+keep their handles to `P`'s registrations by stable name; the swap rebinds those
+names to `D'`. A reload that removes a registration a dependent relies on surfaces
+as a normal missing-registration error at next use, not a crash.
+
+### 9.17 Plugin Error Model
+
+Plugin faults are isolated. A plugin error never corrupts the host, the terminal,
+or another plugin. Errors are classified by phase:
+
+- **Manifest/validation error** (bad name, bad version, unsupported `smith_api`,
+  missing/cyclic dependency): the plugin does not load. It is disabled and listed
+  by `smith plugins` with the reason. Other plugins load normally.
+- **Entry-load error** (Lua error while running entry code or collecting
+  registrations): the plugin's partial registrations are discarded, the plugin is
+  disabled with the error, and loading continues for the rest of the set. On
+  reload (§9.16) this is a failed reload and the old domain is kept.
+- **Event-handler error** (Lua error inside a subscribed handler): the error is
+  caught, logged through `smith.log`, and the handler's result is treated as
+  absent. A non-blocking event proceeds; a blocking event (e.g. `tool_call`) is
+  treated as no decision — it does not block. One handler's failure never
+  prevents other handlers for the same event from running.
+- **Tool-execute error** (Lua error or returned error inside a plugin tool): it
+  surfaces to the agent as a normal tool error result, not a host crash. The
+  agent loop continues and the model may react to the error.
+- **Bus-handler error** (§9.18): same isolation as event-handler errors — caught,
+  logged, other subscribers still run.
+
+Host library code never panics on plugin input (PROJECT-INVARIANTS §3.5). Plugin
+errors carry the plugin name and phase so `smith plugins` and logs attribute them
+unambiguously.
+
+### 9.18 Inter-Plugin Messaging Bus
+
+`smith.bus.*` is a namespaced publish/subscribe channel for plugin-defined
+messages. It is separate from core lifecycle events (§9.8): the bus carries custom
+plugin topics, not engine events, and plugins cannot emit core event types on it.
+
+API:
+
+```lua
+-- Subscribe to a topic. Returns a handle usable to unsubscribe.
+local handle = smith.bus.on("acme/index-ready", function(payload, ctx)
+  ctx.ui.notify("index has " .. payload.count .. " files", "info")
+end)
+
+-- Publish to a topic. Delivers to all current subscribers.
+smith.bus.emit("acme/index-ready", { count = 128 })
+
+-- Stop receiving.
+smith.bus.off(handle)
+```
+
+Rules:
+
+- **Topic names are namespaced** `<org>/<topic>`, using the same character set as
+  plugin names (§9.2). A plugin may emit any topic; convention is to emit under
+  its own `org`. `smith/*` topics are reserved for built-in plugins.
+- **Payloads are plain Lua data tables** — the same value shape passed across the
+  SDK boundary. No functions, userdata, or host handles cross the bus.
+- **Delivery is synchronous, in registration order,** on the plugin thread within
+  the current tick. Emitting during delivery enqueues to run after the current
+  dispatch completes; the bus does not re-enter.
+- **Subscriptions are domain-owned** (§9.16). A subscription is dropped when its
+  plugin's domain is torn down on reload or unload, so no stale subscriber
+  survives.
+- **A subscriber error is isolated** (§9.17): caught, logged, remaining
+  subscribers still receive the message.
+- **No delivery guarantee across load order:** a message emitted before a
+  subscriber loads is not replayed. The bus is fire-and-forget, not a queue.
+
+The bus is the only sanctioned direct plugin-to-plugin channel. Plugins otherwise
+compose through shared tool/command/provider registries and the core event
+bridge.
+
 ## 10. CLI Crate: `smith-cli`
 
 Binary name: `smith`.
@@ -1340,7 +1504,8 @@ Subcommands:
 - `smith resume` — fuzzy select session in cwd.
 - `smith session list [--cwd]` — list sessions.
 - `smith session dump [id] [--last N] [--output path]` — JSONL dump.
-- `smith plugins` — list plugins.
+- `smith plugins` — list plugins, including disabled plugins with their reason.
+- `smith plugins reload <org>/<name>` — reload a single loaded plugin (§9.16).
 - `smith install <plugin>` — install plugin.
 - `smith uninstall <plugin>` — uninstall plugin.
 - `smith eval <prompt> [--json] [--session id]` — non-interactive eval.

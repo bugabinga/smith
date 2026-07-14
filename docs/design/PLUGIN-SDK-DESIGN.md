@@ -660,12 +660,17 @@ return function(smith)
 end
 ```
 
-## TODO
+## Resolution
 
-- [ ] Define exact Lua type annotations
-- [ ] Design plugin package distribution
-- [ ] Design plugin hot-reload
-- [ ] Design plugin dependency resolution
-- [ ] Implement sandbox enforcement in mlua
-- [ ] Design inter-plugin communication
-- [ ] Design error handling for Lua plugins
+Every open design question from this historical doc is now resolved in the
+canonical spec, `docs/SPEC.md` §9. This table records where each landed.
+
+| Question | Status | Canonical location |
+|----------|--------|--------------------|
+| Define exact Lua type annotations | Resolved | §9.10 — LuaLS/EmmyLua `---@` is the canonical dialect; required `@param`/`@return`/`@usage` tags; `xtask verify-docs` gate |
+| Design plugin package distribution | Resolved | §9.5 — v1 install/uninstall from local path or git URL; no central registry |
+| Design plugin hot-reload | Resolved | §9.16 — whole-domain replacement, triggers, rollback, session continuity |
+| Design plugin dependency resolution | Resolved | §9.15 — presence + API-generation checks, topological load order, cycle detection; no version-range solving in v1 |
+| Implement sandbox enforcement in mlua | Spec resolved; impl deferred | §9.14 — restricted-runtime policy (no `io`/`os`/`debug`); enforcement is a code-phase task |
+| Design inter-plugin communication | Resolved | §9.18 — `smith.bus.*` namespaced pub/sub, separate from core events |
+| Design error handling for Lua plugins | Resolved | §9.17 — per-phase fault model; faults isolated, host never crashes |
