@@ -1,0 +1,10 @@
+# Prototype-only cargo config.
+#
+# Prototypes are disposable evidence code (docs/SPEC.md §18). The workspace
+# root .cargo/config.toml enforces the production zero-warnings policy
+# (-D warnings, -D missing_docs, clippy restriction lints); that policy is
+# intentionally NOT applied to prototypes. Cargo merges this config after the
+# root one, and the later cap wins, so prototype builds run with lints capped
+# at warn while production crates remain fully gated.
+[build]
+rustflags = ["--cap-lints=warn"]

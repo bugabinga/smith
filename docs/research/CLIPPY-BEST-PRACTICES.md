@@ -1,5 +1,9 @@
 # Clippy Best Practices for Cross-Platform Rust TUIs
 
+> **Status: research candidates, non-canonical.** The canonical lint policy is
+> `docs/SPEC.md` §3.2/§3.3 (mirrored in `.cargo/config.toml`). Lints listed
+> here beyond that set are candidates for post-v1 escalation, not requirements.
+
 **Date:** 2026-05-22  
 **Scope:** Lint configuration, zero-warning policy, cross-platform TUI enforcement, unsafe restrictions, rustdoc rules.
 

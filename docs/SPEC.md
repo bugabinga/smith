@@ -110,7 +110,12 @@ clap_complete = "4"
 crossterm = "0.28"
 ratatui = "0.29"
 ciborium = "0.2"
+bumpalo = "3"
 thiserror = "2"
+anyhow = "1"
+toml = "0.8"
+regex = "1"
+tokio-stream = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
@@ -448,6 +453,9 @@ Cascade order, later overrides earlier:
 Invalid values are rejected with clear errors. Unknown keys warn or fail
 according to the schema context.
 
+The cascade is re-evaluated at runtime by host configuration reload (§9.19);
+CLI flags stay fixed for the process lifetime.
+
 Example:
 
 ```lua
@@ -589,6 +597,11 @@ Core hook result types:
 - `PrepareNextTurn`: mutate queued prompts/messages.
 - `TransformContext`: mutate LLM context before provider request.
 
+Blocked-call contract (prototype-proven, p07): a blocked tool call never
+executes the tool, still emits `ToolExecutionStart` and `ToolExecutionEnd`
+(with error flag and the block reason) so the UI can show it, and feeds the
+block reason to the provider as an error tool result so the model can react.
+
 `smith-harness` translates Lua plugin event returns into these core hook results.
 
 ### 6.5 Session Model
@@ -636,6 +649,17 @@ Properties:
 - `smith session dump` outputs JSONL,
 - session discovery is keyed by canonical `{session-id}.session` filenames.
 
+Recovery boundaries (prototype-proven, p06):
+
+- A corrupt entry BODY is precisely skippable — the intact length prefix
+  bounds the damage; prior and subsequent entries survive.
+- A corrupt LENGTH PREFIX desynchronizes framing: entries before it survive,
+  everything after is unrecoverable and indistinguishable from truncation.
+  "Skip + warn if possible" promises no more than this.
+- Unknown-vs-corrupt is decided by two-stage decode: first as raw CBOR, then
+  as a typed entry. Well-formed CBOR with an unknown variant tag is preserved
+  raw and survives rewrite roundtrips; invalid CBOR is corrupt and skipped.
+
 ### 6.7 Secret Proxy
 
 The secret proxy prevents LLM exposure of secrets:
@@ -660,6 +684,10 @@ Secrets are local plaintext. The protection target is the remote LLM.
 - user overrides.
 
 Plugins may transform prompts through typed hooks. No hidden global prompt mutation.
+
+The system prompt bootstraps SDK self-learning: it teaches the agent to
+discover plugin/SDK capabilities through `smith help --search`, `--guide`, and
+`--example` (§10.2) instead of embedding the full SDK reference inline.
 
 ### 6.9 Compaction and Cost
 
@@ -698,7 +726,10 @@ Rules:
 Trace files capture deterministic replay data:
 
 - file header with magic/version/session ID,
-- compressed entries via zstd,
+- compressed entries via zstd — per-entry compression inflates small traces
+  (measured ~115% of raw CBOR under ~50 entries from per-entry header
+  overhead); the codec uses block-level compression or a minimum entry-size
+  threshold so small traces never exceed their uncompressed size,
 - provider requests/events,
 - tool calls/results,
 - TUI events as opaque JSON,
@@ -753,10 +784,17 @@ Quirks handled at provider boundary:
 
 - streaming vs non-streaming APIs,
 - partial tool-call argument chunks,
-- thinking/reasoning fields,
+- thinking/reasoning fields (reasoning text may arrive inside `content` before
+  the final answer on some OpenAI-compatible endpoints),
 - provider-specific stop reasons,
 - cache usage fields,
 - model capability flags.
+
+Error detection: some providers return errors as plain JSON bodies with
+HTTP 200 instead of SSE (prototype-proven against a live OpenAI-compatible
+endpoint). A provider implementation must detect a non-streaming JSON error
+body on a streaming request and convert it to `ProviderEvent::Error` — never
+hang waiting for SSE frames that will not come.
 
 ### 7.3 Model Registry
 
@@ -772,22 +810,79 @@ cargo run -p xtask -- fetch-providers
 
 Data source priority for generated suggestions:
 
-1. pi.dev model data,
+1. models.dev (`https://models.dev/api.json` — the open, community-maintained
+   model database with a CI-validated schema),
 2. catwalk provider configs,
 3. later shared provider repositories after review.
 
-Merge rule:
+Pi served as inspiration for Smith and continues to evolve independently; it is
+a philosophical guide, not a dependency. Smith has no data or format coupling
+to pi.
 
-- merge by provider/model ID,
-- pi.dev primary,
-- catwalk fills gaps,
-- `replace_models` permits full provider override,
-- unknown provider fields are preserved for forward compatibility but ignored by v1.
+Merge rule (prototype-proven, p05):
+
+- merge by provider/model ID at LEAF-FIELD granularity — a recursive
+  field-level merge; subtree or whole-model replacement would clobber curated
+  registry values (e.g. structured cost objects),
+- models.dev primary,
+- catwalk fills gaps (missing field, missing model, missing provider),
+- unknown provider fields are preserved for forward compatibility but ignored
+  by v1. Preservation is semantic (value-equal), not byte-for-byte — default
+  JSON tooling reorders keys. Unknown fields must never appear in generated
+  diffs.
+
+Conflict policy: some conflicts cannot be auto-merged and are excluded from the
+suggestion and reported explicitly, at minimum:
+
+- ambiguous-primary-source: the primary source lists the same model ID twice
+  with differing metadata,
+- type-mismatch-vs-curated: a source proposes a value whose structure differs
+  from the hand-curated registry value (curated value kept).
+
+`fetch-providers` exits non-zero while unresolved conflicts remain, so PR
+automation can never auto-merge a corrupting suggestion. Its outputs are the
+suggested file, a reviewable source-attributed patch, and a machine-readable
+conflict report.
+
+`replace_models` is a plugin provider-override flag (`smith.provider.*`,
+§9.10), not a `fetch-providers` merge input.
+
+**Canonical schema.** Smith does not invent a provider/model schema — the shape
+is already pinned upstream by models.dev (TOML sources CI-validated against its
+published schema). Smith adopts that shape and keeps a pinned local snapshot:
+a JSON Schema at `smith-ai/src/providers.schema.json`, translated from the
+models.dev schema at a recorded upstream version. Local pinning keeps
+validation deterministic and offline; upstream schema evolution is reviewed and
+adopted like any dependency bump.
+
+The snapshot is validated with the `jsonschema` workspace crate at three
+boundaries:
+
+1. `fetch-providers` source data after normalization — a source value that
+   fails the schema is a validation error at the source boundary, not a merge
+   conflict,
+2. the checked-in `providers.json` (CI gate),
+3. provider tables passed to `smith.provider.register` at runtime (§9.10).
+
+Schema rules:
+
+- Registry shapes follow models.dev naming: `cost` (USD per million tokens:
+  `input`, `output`, `cache_read`, `cache_write`, optionally `reasoning` and
+  audio variants), `limit` (`context`, `input`, `output`), modalities
+  (`input`/`output` type lists), and capability flags (`attachment`,
+  `reasoning`, `tool_call`, `structured_output`, `temperature`). Smith maps
+  these into the §5.7 `ModelMetadata` type internally.
+- `cost` is always an object — never a scalar. This resolves the
+  scalar-vs-object ambiguity that produced p05's type-mismatch conflict class.
+- Unknown fields are permitted everywhere (`additionalProperties` allowed) so
+  the preservation rule above stays schema-legal; the snapshot constrains known
+  fields only.
 
 Provider config correctness cannot be fully automated because Smith does not have
 all provider accounts, subscriptions, API keys, or regional access. Generated
 changes require review before commit. After the provider format stabilizes,
-Smith may use a Pi agent to open provider-data PRs from `fetch-providers` diffs.
+Smith may use a coding agent to open provider-data PRs from `fetch-providers`
+diffs.
 
 ### 7.4 Auth
 
@@ -801,8 +896,29 @@ No OS keychain. No encryption.
 
 Auth errors fail fast before first provider stream.
 
-OAuth module supports mocked OAuth flow in tests and provider-specific OAuth where
-configured.
+Auth methods per provider are declared in the registry's `auth_types` map:
+`api_key` (with its `env_var` name), `oauth`, and `organization` (org-scoped
+key, e.g. OpenAI: api key + org ID). `AuthMethod` mirrors these three.
+
+`~/.smith/auth.json` is a per-provider object map:
+
+```json
+{
+  "anthropic": {
+    "access_token": "...",
+    "refresh_token": "...",
+    "expires_at": 1234567890
+  }
+}
+```
+
+OAuth module supports mocked OAuth flow in tests and provider-specific OAuth
+where configured. OAuth per provider is configured with `id`, `name`,
+`auth_url`, `token_url`, `scope`, and `client_id`; credentials are
+`access_token`, `refresh_token`, `expires_at` (Unix seconds), auto-refreshed on
+expiry. The login flow surfaces the auth URL to the user, receives the code via
+a local callback HTTP server on a random port (or manual paste), exchanges it
+for credentials, and persists them to `auth.json`.
 
 ### 7.5 MuxProvider
 
@@ -856,6 +972,17 @@ kind. Mouse events include button, scroll, position, and modifiers.
 
 No terminfo database. Probe directly. Unsupported optional features degrade to
 plain text without user-facing error.
+
+Probe contract:
+
+- capabilities are probed once per session at startup, with a 100ms timeout
+  per probe; on timeout the capability is treated as absent (fail
+  conservative),
+- image protocol is `ImageProtocol::{Kitty, Sixel}` — no other variants in v1,
+- Kitty keyboard protocol flags are pushed on TUI startup and popped on
+  shutdown (including error/signal paths, §10),
+- synchronized output (`CSI ?2026 h/l`) wraps render passes when the terminal
+  supports it.
 
 ### 8.4 Component Trait
 
@@ -913,34 +1040,54 @@ Required widget set includes:
 - overlay,
 - border layout panels.
 
-Syntax highlighting uses `syntastica`. Diffs use `similar`. Fuzzy matching uses
-`fuzzy-matcher`.
+Syntax highlighting uses `syntastica` with the `runtime-c2rust` runtime (no C
+runtime dependencies; prototype-proven). Diffs use `similar` and support
+unified and side-by-side modes. Fuzzy matching uses `fuzzy-matcher`.
+
+Overlays (modals, fuzzy search, autocomplete) are positioned by an anchor
+model: nine anchors (`Center`, four corners, four edge-centers) plus
+`offset_x`/`offset_y` and optional margin; overlay `width`/`max_height` are
+`Size::Absolute(cells)` or `Size::Percent`.
 
 ### 8.7 Layout
 
 Rust provides primitives; Lua defines layout.
 
-Primitives:
+Primitives and their shapes:
 
-- column,
-- row,
-- box,
-- expanded,
-- scrollable,
-- overlay,
-- spacer,
-- tabs,
-- split.
+- `column` / `row`: child list, stacked vertically/horizontally,
+- `box`: single child, optional `width`/`height` (`Size`), optional border
+  (`BorderStyle::{Single, Double, Rounded, Thick, None}` + optional title),
+- `expanded`: single child, takes remaining space after fixed siblings,
+- `scrollable`: single child, direction vertical/horizontal/both,
+- `overlay`: single child + overlay options (§8.6 anchor model),
+- `spacer`: optional fixed `Size`,
+- `tabs`: labeled child list + active index,
+- `split`: two children, horizontal/vertical, `split_ratio: f32`.
 
-One predefined border layout exists: center + north/east/south/west panels.
-Panels are invisible when empty. Default layout is a Lua plugin.
+One predefined border layout exists: center + north/east/south/west panels,
+each panel carrying `visible`, `size`, and its own layout. Panels are invisible
+when empty. Default layout is a Lua plugin.
 
 ### 8.8 Theme
 
-Themes are Lua tables validated by Rust schemas.
+Themes are Lua tables validated by Rust schemas (prototype-proven, p08).
 
 Theme values cover status bar, messages, assistant content, tool call/result,
 errors, input, borders, selections, diffs, syntax groups, and accents.
+
+Schema contract:
+
+- The Rust schema defines the required key set and nesting; every section above
+  is a named table of color/style values.
+- Colors are `#rrggbb` strings. Named/ANSI-indexed colors are not part of the
+  v1 schema.
+- A missing required key or malformed value is a validation error carrying the
+  exact key path (e.g. `theme.status_bar.fg: expected "#rrggbb"`). Unknown keys
+  warn.
+- A user theme that fails validation at runtime does not abort Smith: it falls
+  back to the built-in default theme with a visible warning naming the path
+  error.
 
 ### 8.9 Virtual Scroll
 
@@ -952,6 +1099,16 @@ to bottom or submits input.
 
 Tools may register `renderCall` and `renderResult` Lua renderers. TUI receives
 structured render instructions from harness, not arbitrary terminal writes.
+
+### 8.11 Deferred Scope (v1)
+
+Explicitly out of v1 TUI scope:
+
+- vim-style normal-mode editing,
+- inline image rendering (Kitty graphics protocol),
+- split-pane resizing (the `split` primitive exists; interactive resize does
+  not),
+- multiple simultaneous sessions.
 
 ## 9. Harness Crate: `smith-harness`
 
@@ -999,9 +1156,12 @@ Rules:
 - Installed global plugins live under `data_dir/smith/plugins/<org>/<name>/`.
 - Project plugins live under `.smith/plugins/<org>/<name>/`.
 
-Every plugin has a mandatory Lua manifest file. Plugin authors create it.
-Manifest loading uses a restricted manifest environment with no Smith SDK and no
-host I/O. The manifest returns a data table only.
+Every plugin has a mandatory Lua manifest file named `smith-plugin.lua` in the
+plugin root. Plugin authors create it. Manifest loading uses a restricted
+manifest environment — an empty Lua environment with no globals, no Smith SDK,
+and no host I/O — so the chunk can only build and return a pure data table.
+A manifest that reaches for `os`/`require`/any global, or that contains
+function values, is rejected (prototype-proven, p04).
 
 Required manifest fields:
 
@@ -1022,8 +1182,10 @@ Optional manifest fields:
 - repository,
 - dependencies,
 - declared secrets,
-- exported interfaces,
-- implemented interfaces.
+- `heap_limit` (bytes, §9.14),
+- `interfaces` — list of interface names this package exports descriptors for
+  (§9.6),
+- `implements` — list of interface names this package implements (§9.6).
 
 If `smith_api` is absent, Smith treats it as `1`.
 
@@ -1070,16 +1232,29 @@ No central registry exists in v1.
 
 `smith install <path-or-git-url>`:
 
-- resolves the source,
-- reads and validates the manifest,
-- validates namespace and API compatibility,
-- copies or clones into `data_dir/smith/plugins/<org>/<name>/`,
+- resolves the source into a temporary staging area,
+- reads and validates the manifest, namespace, and API compatibility in
+  staging — a rejected plugin never touches the plugins root,
+- copies into `data_dir/smith/plugins/<org>/<name>/` only after validation,
 - refuses duplicates unless `--force`,
-- does not run plugin entry code during install.
+- does not run plugin entry code during install (prototype-proven, p04).
+
+Install semantics:
+
+- A duplicate is defined as: the destination directory
+  `data_dir/smith/plugins/<org>/<name>/` already exists, regardless of version.
+- `--force` is full replacement: remove the old plugin directory, then place the
+  new one. Plugin data under `data_dir/smith/data/<org>/<name>/` survives a
+  forced reinstall.
+- Git installs strip the `.git` directory: an installed plugin is a pure file
+  snapshot, not a working clone. Updates go through reinstall.
 
 Git URL installs use Smith's internal git implementation boundary. The preferred
 implementation is `gix` if its required clone/fetch feature set stays bounded;
-otherwise the behavior remains the same behind the install boundary.
+otherwise the behavior remains the same behind the install boundary. Prototype
+evidence (p04): shell-out to a system git binary satisfies the boundary with
+zero added crates but adds a runtime dependency on git being installed — the
+boundary hides whichever choice release engineering makes.
 
 `smith uninstall <org>/<name>`:
 
@@ -1090,24 +1265,59 @@ otherwise the behavior remains the same behind the install boundary.
 
 ### 9.6 Plugin Interface Modules
 
-Plugin shape is mandatory. The exact interface/implementation module design is a
-prototype target before production implementation.
+Interfaces are plain Lua descriptor tables validated at runtime. This design is
+prototype-proven (p02, p03); the typed-Lua (Teal) and annotation-schema
+candidates are rejected.
 
-Desired ecosystem capability:
+**Why Teal is rejected.** Teal's compile-time guarantees evaporate at the
+runtime boundary: Smith embeds LuaJIT, so Teal ships as compiled Lua and the
+host must re-validate conformance regardless — Teal would be additive toolchain
+cost, not a replacement for runtime descriptors. Making official interfaces
+Teal-authored would also split the ecosystem into typed and plain-Lua authors,
+the exact fragmentation §9.6 exists to prevent. The authoring-time typing Teal
+would provide is delivered instead by LuaLS annotations (below and §9.10)
+without a compile step.
 
-- interface-only plugin packages,
-- implementation-only plugin packages,
-- implementations referencing external interfaces,
-- packages containing both interface and implementation.
+**Generated typing.** Interface descriptors mechanically generate LuaLS stub
+files (`---@class`/`---@field`/`---@param` annotations derived from the
+descriptor's `functions` table) as part of `cargo run -p xtask -- doc-gen`.
+Plugin authors targeting an interface get editor-time type checking against
+the same descriptor the runtime validates — one source of truth, two
+enforcement points.
 
-Smith must avoid a fractured plugin ecosystem. The candidate designs are:
+**Descriptor.** An interface package exports a descriptor: a pure data table
+with `name` (`<org>/<name>`), `generation` (integer), `functions` (map of
+function name → `{ params, returns }` with typed, optionally-optional named
+parameters), and `events` (list of bus topics, §9.18).
 
-1. declarative Lua interface tables validated at load time,
-2. a typed Lua superset such as Teal compiled to Lua,
-3. generated LuaLS/EmmyLua annotations plus runtime schemas.
+**Ecosystem shapes.** Interface-only packages, implementation-only packages,
+implementations referencing external interfaces, and combined packages are all
+supported through two manifest fields (§9.2): `interfaces` (list of interface
+names this package exports descriptors for) and `implements` (list of interface
+names this package implements).
 
-A prototype must prove the chosen design before this section becomes an
-implementation contract.
+**Adapters.** An adapter is an implementation package whose entry exports
+`adapts = "<org>/<name>"` (the wrapped plugin) plus a `make(wrapped)` factory
+returning a conforming implementation. The plugin manager injects the wrapped
+plugin's exports into `make`.
+
+**Binding.** User config selects the implementation backing an interface:
+
+```lua
+interfaces = { ["community/subagent"] = "org/name" }
+```
+
+Binding precedence: explicit config binding, else the last-loaded plugin
+declaring `implements` for that interface (§9.7 order). Conformance is checked
+at bind time. A conformance failure names the plugin, interface and generation,
+every missing/mis-shaped export with its exact path, the exports the plugin
+actually provides, and any installed adapter for it.
+
+**Views.** Consumers receive an interface view: only declared functions are
+visible (implementation-private fields are hidden), and arguments are validated
+against the descriptor at call time with errors naming function and parameter.
+A resolved binding is a singleton: all consumers of an interface share the one
+bound implementation instance.
 
 ### 9.7 Plugin Precedence
 
@@ -1123,35 +1333,49 @@ an error.
 
 ### 9.8 Event Bridge
 
-`PluginEvent` variants cover:
+Lua receives event tables with a `type` field. The canonical event catalog and
+per-event blocking capability:
 
-- agent lifecycle,
-- turns,
-- message deltas/end,
-- tool call/result,
-- session lifecycle,
-- model changes,
-- context/compaction,
-- TUI/input events,
-- commands,
-- provider/auth events,
-- VCS events,
-- errors and shutdown.
+| Event | Can block | Notes |
+|-------|-----------|-------|
+| `resources_discover` | No | contribute skill/prompt/theme paths |
+| `session_start`, `session_shutdown` | No | started/loaded/reloaded; shutting down |
+| `session_before_switch` | **Yes** | before switching sessions |
+| `session_before_fork` | **Yes** | before forking/cloning |
+| `session_before_compact` | **Yes** | can customize compaction |
+| `session_compact`, `session_tree` | No | completed notifications |
+| `before_agent_start` | No | may inject messages, modify system prompt |
+| `agent_start`, `agent_end`, `turn_start`, `turn_end` | No | lifecycle |
+| `model_select` | No | model changed |
+| `message_start`, `message_update`, `message_end` | No | streaming lifecycle |
+| `thinking_delta`, `text_delta` | No | token deltas |
+| `tool_execution_start` | No | execution began |
+| `tool_call` | **Yes** | before tool executes (§6.4 blocked-call contract) |
+| `tool_execution_update`, `tool_result`, `tool_execution_end` | No | `tool_result` may modify the result |
+| `input` | No | may intercept/transform/mark handled |
+| `user_bash` | No | user `!`/`!!` commands |
+| `context` | No | may modify messages before LLM call |
+| `before_provider_request`, `after_provider_response` | No | inspect/replace payload; response received |
+| `config_changed` | No | §9.19, carries changed key paths |
+| `plugin_loaded`, `plugin_unloaded` | No | plugin lifecycle |
+| `panel_toggle`, `resize` | No | TUI |
+| `provider_registered` | No | after provider add/override |
+| VCS events | No | §9.13 operations |
+| errors, shutdown | No | §9.17 |
 
-Lua receives event tables with a `type` field.
+Handler return-table contracts (Lua-facing):
 
-Plugin event results can:
+- `tool_call` → `{ block = true, reason = "..." }` or
+  `{ args = <replacement> }` or nil/`{}` (allow),
+- `tool_result` → `{ content = <replacement> }` or nil (keep),
+- `input` → `{ action = "handled" | "continue", text = <transformed>? }`,
+- `context` → `{ messages = <modified> }` or nil,
+- `session_before_*` → `{ block = true, reason = "..." }` or nil,
+- all other events: return value ignored.
 
-- block tool call,
-- transform tool args,
-- replace tool result,
-- retry/cancel,
-- transform input,
-- override system prompt/context,
-- request continue/stop,
-- emit UI actions.
-
-The bridge maps these into `AgentLoopConfig` hooks.
+The bridge maps these into `AgentLoopConfig` hooks (§6.4): block/transform
+tool calls, replace results, retry/cancel, transform input, override system
+prompt/context, request continue/stop, emit UI actions.
 
 ### 9.9 Extension Contexts
 
@@ -1160,6 +1384,32 @@ SDK contexts:
 - `ExtensionContext`: agent lifecycle, model, context, tools, config, logging.
 - `ExtensionCommandContext`: slash command args, selection, output, session.
 - `ExtensionUIContext`: selection, confirm, prompt, status, layout, widget APIs.
+
+The `ctx` table passed to event handlers, tool `execute`, and command handlers
+has this shape:
+
+```lua
+ctx = {
+  ui = {
+    notify = function(message, level) end, -- "info"|"success"|"error"|"warning"
+    confirm = function(title, message) end,      -- -> bool
+    select = function(title, items) end,         -- -> chosen item
+    input = function(title, placeholder) end,    -- -> string
+    set_status = function(key, text) end,
+    set_widget = function(key, lines) end,
+  },
+  session = {  -- read-only
+    id = "...", name = "...",
+    entries = function() end,      -- -> table
+    entry_count = function() end,  -- -> number
+    branch = function() end,       -- -> table
+  },
+  model = { id = "...", provider = "..." },
+  cwd = "/path/to/project",
+  signal = AbortSignal,
+  shutdown = function() end,
+}
+```
 
 ### 9.10 Lua SDK
 
@@ -1178,19 +1428,69 @@ SDK namespaces include:
 - `smith.bucket.*`,
 - `smith.tui.*`,
 - `smith.vcs.*`,
+- `smith.bus.*`,
+- `smith.config.*` (read access; `smith.config.reload()` triggers §9.19),
+- `smith.shortcut.*` (keyboard shortcut registration),
+- `smith.credentials.*` (`get(provider)`/`set(provider, value)` over the §7.4
+  auth store),
+- `smith.active_tools.*` (`get()`/`all()`/`set(names)`),
+- `smith.send_message(text, { deliver_as = "steer" | "followUp" })` and
+  `smith.send_user_message(text)`,
 - `smith.abort()`,
 - `smith.shutdown()`,
 - `smith.getContextUsage()`.
 
-All public Lua SDK functions have `---@` annotations and `@usage` blocks. Docs
-are generated from SDK annotations.
+Core registration shapes:
+
+```lua
+smith.tool.register({
+  name = "my_tool",
+  description = "shown to the LLM",
+  parameters = { --[[ JSON-schema table, validated per §5.3 ]] },
+  execute = function(input, ctx)
+    return { content = { { type = "text", text = "..." } } }
+  end,
+})
+
+smith.command.register("name", {
+  description = "...",
+  autocomplete = function(prefix) end, -- optional -> { {value, label}, ... }
+  handler = function(args, ctx) end,
+})
+
+smith.shortcut.register("ctrl+shift+p", {
+  description = "...",
+  handler = function(ctx) end,
+})
+```
+
+`smith.provider.register(name, table)` merges into an existing provider or adds
+a new one. Merge rules: `base_url`/`api_key`/`api` override; `headers` merge
+per-key; `oauth` replaces whole; `models` merge by ID field-by-field (same
+rules recursively); omitted fields keep existing values; `replace_models =
+true` drops all existing models first. `smith.provider.unregister(name)` and
+`smith.provider.unregister_model(provider, model_id)` remove entries. All
+tables are validated against the §7.3 schema.
+
+All public Lua SDK functions carry LuaLS/EmmyLua `---@` annotations. LuaLS is the
+canonical annotation dialect; no other dialect is supported. Every public binding
+declares, at minimum:
+
+- `---@param` for each argument (name, type, description),
+- `---@return` for each result (type, description),
+- a `---@usage` block with a runnable example.
+
+Runtime argument schemas (used for validation) and generated docs both derive
+from these annotations, so annotations and runtime behavior stay in sync. The
+`xtask verify-docs` gate fails if any public binding lacks required annotations.
 
 ### 9.11 Built-in Plugins
 
 Built-ins are Lua plugins, not Rust special cases:
 
 - tools: `read`, `write`, `edit`, `bash`, `find`, `grep`, `ls`,
-- slash commands: `/undo`, `/redo`, `/history`, `/tree`, replay/time-travel,
+- slash commands: `/undo`, `/redo`, `/history`, `/tree`, `/reload-config`,
+  replay/time-travel,
 - VCS tools,
 - default layout,
 - default keybindings,
@@ -1297,11 +1597,36 @@ Plugins interact only through `smith.vcs.*`.
 
 `smith.vcs.*` exposes:
 
-- init/status/snapshot,
-- op ID capture,
-- diff queries,
-- undo/redo/time-travel primitives,
-- structured file statuses and hunks.
+Read-only queries:
+
+```lua
+smith.vcs.status()               -- { modified={}, added={}, deleted={}, renamed={} }
+smith.vcs.diff(opts)             -- { hunks={}, text="..." }
+smith.vcs.diff_revs(a, b)        -- diff between revisions/operations
+smith.vcs.op_log({ limit = n })  -- { { id, description, time, op_type } }
+smith.vcs.op_show(op_id)         -- { id, description, diff, files }
+smith.vcs.annotate(path, opts)   -- line attribution data
+smith.vcs.interdiff(a, b)        -- patch-vs-patch comparison
+smith.vcs.evolog(rev)            -- logical change evolution
+```
+
+Mutations (explicit, validated inputs):
+
+```lua
+smith.vcs.commit(message)
+smith.vcs.undo()
+smith.vcs.redo()
+smith.vcs.op_restore(op_id)
+smith.vcs.restore_paths(paths, rev)
+smith.vcs.split(opts)
+smith.vcs.squash(source, dest)
+smith.vcs.parallelize(revs)
+smith.vcs.sparse(paths)
+smith.vcs.workspace_add(name, opts)
+```
+
+Lua receives stable smith-shaped tables; jj/gix implementation details never
+leak through this surface.
 
 `gix` is used only for targeted structured queries behind `smith.vcs.*`.
 
@@ -1313,6 +1638,257 @@ Plugins are trusted but constrained to Smith SDK APIs:
 - filesystem/env access only through SDK,
 - no path capability system in v1,
 - built-in and user plugins use same API.
+
+**Heap quota.** A plugin may be given a Lua heap limit via the optional
+`heap_limit` manifest field (§9.2) or config override. Prototype-proven (p10,
+p11) semantics:
+
+- The quota domain is the plugin's own Lua state — one `mlua::Lua` per plugin
+  (matching the §9.16 domain model). Per-plugin quotas in a shared Lua state are
+  not attributable and are not offered.
+- Enforcement is `Lua::set_memory_limit()`; under the locked vendored-LuaJIT
+  feature set this enforces exactly, and breach surfaces as a recoverable
+  memory error handled by the §9.17 error model. Targets where mlua reports
+  memory control as unavailable must fail plugin-quota configuration loudly,
+  never enforce silently at zero; per-target enforcement is CI-verified.
+- The quota covers the plugin's Lua heap only, including host-created Lua
+  values. Host-side Rust allocations held for a plugin are invisible to the
+  quota and are bounded by domain teardown (§9.16) instead.
+- After a plugin OOM, the preferred recovery is whole-domain replacement
+  (§9.16) rather than in-place retry.
+
+### 9.15 Dependency Resolution
+
+Plugins may declare dependencies on other plugins in their manifest
+(`dependencies`, §9.2). v1 resolves dependencies from already-available plugins
+only; there is no central registry and no network resolution.
+
+Each dependency entry names a plugin and a minimum API generation:
+
+```lua
+dependencies = {
+  { name = "acme/logger", smith_api = 1 },
+}
+```
+
+Resolution runs once per plugin set (built-in, global, project) after manifests
+load and before entry code runs:
+
+1. Build the dependency graph from validated manifests.
+2. Fail loading a plugin whose declared dependency is absent from the resolved
+   set. The plugin is disabled with a diagnostic naming the missing dependency.
+3. Fail loading a plugin whose dependency is present but supports a lower API
+   generation than requested.
+4. Detect cycles. A dependency cycle disables every plugin in the cycle with a
+   diagnostic listing the cycle path. Smith never partially loads a cycle.
+5. Load plugins in topological order so a dependency's registrations exist before
+   its dependents run.
+
+v1 does not solve version ranges. `dependencies` express presence and API
+generation only. Semver range solving is deferred until a registry exists.
+Precedence (§9.7) still applies: a later plugin may override an earlier
+registration even across a dependency edge.
+
+### 9.16 Plugin Hot-Reload
+
+Smith reloads a single plugin without restarting the process or losing the active
+session. Reload is whole-domain replacement, not in-place mutation.
+
+**Plugin domain.** Each loaded plugin instance owns one reload domain. The domain
+owns all reloadable plugin state:
+
+- the plugin's `mlua` runtime state and registry handles,
+- registered tool/command/provider/shortcut/interface descriptors,
+- event subscriptions, including `smith.bus` subscriptions (§9.18),
+- TUI layout/widget registrations and render caches,
+- host-side scratch allocations and any cancellation token for plugin tasks.
+
+Nothing plugin-owned may outlive its domain. Registrations are keyed by domain
+generation so teardown removes them deterministically. A callback, task, or
+subscription that escapes its domain is a reload defect; the loader rejects
+registrations that cannot be tied to the domain.
+
+**Callback discipline** (prototype-proven, p11): plugin callbacks are reachable
+exclusively through the generation-keyed registry. The host never clones or
+stashes a raw callback handle outside it — invoking a raw `mlua` function after
+its domain dropped is an unrecoverable panic, not a catchable error. Every
+dispatch path (hook, tool, command, bus) checks the callback's domain generation
+against the active set before touching any Lua value; stale generations are
+rejected with a diagnostic and the callback does not run. An audit sweep over
+the registries (anything registered under a non-active generation) is the
+loader's escape-detection mechanism.
+
+**Triggers.** Reload is requested by:
+
+- the `smith plugins reload <org>/<name>` CLI/command path,
+- a project plugin file change when watch-reload is enabled in config,
+- reinstall of an already-loaded plugin.
+
+Built-in `smith/*` plugins reload by the same mechanism.
+
+**Sequence.** For a reload of plugin `P`:
+
+1. Construct a new domain `D'` and load `P`'s manifest and entry code into it.
+2. If load or registration fails, drop `D'` and keep the old domain `D` active.
+   The old plugin keeps running. Reload reports failure with the load error.
+3. On success, atomically swap `D'` in for `D`: new registrations replace old,
+   subscriptions transfer to `D'`, then drop `D`.
+4. Dropping `D` tears down its Lua state, registrations, subscriptions, caches,
+   and scratch memory. Repeated reloads must plateau in live memory after
+   warmup; no stale callback from `D` may run after the swap. The plateau is
+   the enforceable observable — an instantaneous RSS decrease per teardown is
+   not required, since small freed heaps are legitimately retained by the
+   allocator for reuse (p11: ≤77KB growth over 80 cycles; a 31MB teardown
+   returned fully to the OS).
+
+**Rollback.** Reload is all-or-nothing. Either `D'` fully replaces `D`, or `D`
+remains and no partial state from `D'` survives. A failed reload never leaves the
+plugin unregistered.
+
+**Session continuity.** Reload does not reset the session. Session entries, agent
+state, and other plugins' state are untouched. In-flight tool executions from the
+old domain run to completion under `D`; their results are still delivered. New
+invocations after the swap use `D'`.
+
+**Dependents.** Reloading `P` does not reload its dependents (§9.15). Dependents
+keep their handles to `P`'s registrations by stable name; the swap rebinds those
+names to `D'`. A reload that removes a registration a dependent relies on surfaces
+as a normal missing-registration error at next use, not a crash.
+
+### 9.17 Plugin Error Model
+
+Plugin faults are isolated. A plugin error never corrupts the host, the terminal,
+or another plugin. Errors are classified by phase:
+
+- **Manifest/validation error** (bad name, bad version, unsupported `smith_api`,
+  missing/cyclic dependency): the plugin does not load. It is disabled and listed
+  by `smith plugins` with the reason. Other plugins load normally.
+- **Entry-load error** (Lua error while running entry code or collecting
+  registrations): the plugin's partial registrations are discarded, the plugin is
+  disabled with the error, and loading continues for the rest of the set. On
+  reload (§9.16) this is a failed reload and the old domain is kept.
+- **Event-handler error** (Lua error inside a subscribed handler): the error is
+  caught, logged through `smith.log`, and the handler's result is treated as
+  absent. A non-blocking event proceeds; a blocking event (e.g. `tool_call`) is
+  treated as no decision — it does not block. One handler's failure never
+  prevents other handlers for the same event from running.
+- **Tool-execute error** (Lua error or returned error inside a plugin tool): it
+  surfaces to the agent as a normal tool error result, not a host crash. The
+  agent loop continues and the model may react to the error.
+- **Bus-handler error** (§9.18): same isolation as event-handler errors — caught,
+  logged, other subscribers still run.
+
+Host library code never panics on plugin input (PROJECT-INVARIANTS §3.5). Plugin
+errors carry the plugin name and phase so `smith plugins` and logs attribute them
+unambiguously.
+
+### 9.18 Inter-Plugin Messaging Bus
+
+`smith.bus.*` is a namespaced publish/subscribe channel for plugin-defined
+messages. It is separate from core lifecycle events (§9.8): the bus carries custom
+plugin topics, not engine events, and plugins cannot emit core event types on it.
+
+API:
+
+```lua
+-- Subscribe to a topic. Returns a handle usable to unsubscribe.
+local handle = smith.bus.on("acme/index-ready", function(payload, ctx)
+  ctx.ui.notify("index has " .. payload.count .. " files", "info")
+end)
+
+-- Publish to a topic. Delivers to all current subscribers.
+smith.bus.emit("acme/index-ready", { count = 128 })
+
+-- Stop receiving.
+smith.bus.off(handle)
+```
+
+Rules:
+
+- **Topic names are namespaced** `<org>/<topic>`, using the same character set as
+  plugin names (§9.2). A plugin may emit any topic; convention is to emit under
+  its own `org`. `smith/*` topics are reserved for built-in plugins.
+- **Payloads are plain Lua data tables** — the same value shape passed across the
+  SDK boundary. No functions, userdata, or host handles cross the bus.
+- **Delivery is synchronous, in registration order,** on the plugin thread within
+  the current tick. Emitting during delivery enqueues to run after the current
+  dispatch completes; the bus does not re-enter.
+- **Subscriptions are domain-owned** (§9.16). A subscription is dropped when its
+  plugin's domain is torn down on reload or unload, so no stale subscriber
+  survives.
+- **A subscriber error is isolated** (§9.17): caught, logged, remaining
+  subscribers still receive the message.
+- **No delivery guarantee across load order:** a message emitted before a
+  subscriber loads is not replayed. The bus is fire-and-forget, not a queue.
+
+The bus is the only sanctioned direct plugin-to-plugin channel. Plugins otherwise
+compose through shared tool/command/provider registries and the core event
+bridge.
+
+### 9.19 Host Configuration Reload
+
+Smith reloads its own configuration at runtime without restarting the process or
+losing the active session. Host reload follows the same contract shape as plugin
+reload (§9.16): validate fully, swap atomically, roll back on failure.
+
+**Scope.** A host reload re-evaluates the config cascade (§5.6) layers 1–4:
+
+1. Rust type defaults/schema,
+2. built-in Lua defaults,
+3. plugin contributions,
+4. user config at `config_dir/smith/config.lua`.
+
+CLI flags (layer 5) are per-invocation. They were resolved at process start and
+continue to override the reloaded layers unchanged.
+
+**Triggers.** Reload is requested by:
+
+- the built-in `/reload-config` slash command (§9.11), a Lua plugin calling the
+  `smith.config.reload()` primitive (§9.10),
+- a change to `config_dir/smith/config.lua` when watch-reload is enabled in
+  config (same setting family as plugin watch-reload, §9.16),
+- a plugin reload (§9.16), which may change layer-3 contributions; after the
+  domain swap the cascade is re-evaluated automatically,
+- in RPC mode (§10.2), the `config/reload` JSON-RPC method. The response reports
+  success with the changed key paths, or the validation failure verbatim.
+
+Eval mode reads config at startup and has no runtime reload trigger.
+
+**Sequence.** For a host reload:
+
+1. Re-evaluate the cascade into a candidate config. Validate every value against
+   the Rust schemas, and re-run model resolution (§5.7) including alias/group/
+   bucket cycle detection.
+2. If evaluation, validation, or resolution fails, discard the candidate and keep
+   the active config. The failure is reported with the exact key path and error;
+   nothing partially applies.
+3. On success, atomically swap the candidate in as the active config.
+4. Apply effects in order: theme, keybindings, active tool set, resolved
+   model/provider. TUI re-renders with the new theme on the next frame.
+5. Emit the `config_changed` plugin event (§9.8) carrying the changed key paths.
+   Plugins read the new values through their contexts (§9.9); the event does not
+   carry secrets.
+
+**Continuity.** Reload is invisible to in-flight work:
+
+- an in-flight agent turn keeps the resolved model, tools, and system prompt it
+  started with; the next turn uses the new config,
+- running tool executions complete under the old values,
+- the session, its entries, and plugin domains are untouched — a config reload
+  never loads, unloads, or reloads plugin code.
+
+**Restart-only.** The following are fixed for the process lifetime and never
+hot-reload:
+
+- CLI flags (layer 5),
+- config/data/cache directory locations (§4),
+- the active session identity and storage paths,
+- the run mode (interactive, eval, RPC),
+- the bundled `providers.json` (§7.3) — runtime provider changes go through
+  `smith.provider.*` plugin overrides, not registry reload.
+
+Credential resolution (§7.4) is not cached across reloads: the next provider
+stream after a reload resolves auth against the new config values.
 
 ## 10. CLI Crate: `smith-cli`
 
@@ -1340,12 +1916,18 @@ Subcommands:
 - `smith resume` — fuzzy select session in cwd.
 - `smith session list [--cwd]` — list sessions.
 - `smith session dump [id] [--last N] [--output path]` — JSONL dump.
-- `smith plugins` — list plugins.
+- `smith plugins` — list plugins, including disabled plugins with their reason.
+- `smith plugins reload <org>/<name>` — reload a single loaded plugin (§9.16).
 - `smith install <plugin>` — install plugin.
 - `smith uninstall <plugin>` — uninstall plugin.
 - `smith eval <prompt> [--json] [--session id]` — non-interactive eval.
-- `smith rpc` — JSON-RPC via stdio.
+- `smith rpc` — JSON-RPC via stdio; methods include `config/reload` (§9.19).
+  The full method catalog is deferred: it is expected to mirror the Lua SDK
+  surface (§9.10), with mode-specific additions and omissions, rather than
+  define an independent API.
 - `smith help [topic] [--search q] [--list] [--examples] [--example name] [--guide name]`.
+  Topics support dotted function addressing: `smith help tool.register`
+  resolves the `register` entry within the `tool` topic.
 - `smith replay <session> [--speed f64] [--compare] [--sandbox path]
   [--turns N] [--from-turn N] [--format text|json|summary] [--continue-on-diff bool]`.
 
@@ -1417,6 +1999,31 @@ Responsiveness:
 - Agent loop turn target < 30s excluding provider/network stalls beyond timeout.
 - Bench regressions >10% fail nightly/release gates.
 
+### 13.1 Memory Policy
+
+Prototype-proven against the measured session corpus (p09; see
+`docs/research/SMITH-MEMORY-ALLOCATION-PROFILE.md`):
+
+- **Session discovery is lazy and metadata-only.** Discovery reads session
+  headers, never full bodies: O(session count), not O(corpus bytes). Fully
+  loading a realistic corpus would cost ~0.7–1.2GiB resident.
+- **Virtual scroll materializes at most viewport rows per frame.** Row
+  formatting stops at the visible window (lazy wrap); a single multi-MiB
+  message must not be fully formatted to render its visible slice.
+- **Arenas are scratch-only.** `bumpalo` is permitted solely for phase-local
+  render/request scratch in measured hot paths. Persisted and session data use
+  stable IDs and owned strings — never arena references. No custom or unsafe
+  arena code. Arena references never cross async, thread, or persistence
+  boundaries.
+- **Keep/drop gates for arena use** weigh allocator-call pressure, elapsed
+  time, and peak/plateau stability — not allocation count alone. Measured:
+  render-frame scratch is a clear win (−100% allocator calls, ~5× faster);
+  request-build scratch is marginal (−99% calls, ×1.00 elapsed, +22% peak) —
+  arenas are not a latency win where serialization dominates.
+- **Provider request assembly** at compaction-scale contexts (~250k tokens) has
+  a transient peak ~2.5× the serialized request size and must release it fully
+  after send; peak memory (not just CPU) is a test gate.
+
 ## 14. Release Artifacts
 
 Required targets:
@@ -1470,9 +2077,13 @@ xtask commands are thin orchestrators. No business logic.
 
 - `docs/SPEC.md` is the canonical spec.
 - `docs/PROJECT-INVARIANTS.md` contains non-negotiable repository invariants.
-- Design docs may expand implementation rationale but cannot contradict `SPEC.md`.
+- No standing design docs: subsystem design content lives in this spec. Any
+  future exploratory design doc is non-canonical and cannot contradict
+  `SPEC.md`.
 - SDK docs are generated from Lua `---@` annotations and `@usage` blocks.
-- `smith help` reads embedded generated docs.
+- `smith help` resolves docs in order: (1) embedded in the binary via
+  `include_str!`, (2) install directory `<prefix>/share/smith/docs/`,
+  (3) `SMITH_DOCS_PATH` environment override (development). First hit wins.
 
 Documentation gates:
 
@@ -1550,6 +2161,8 @@ Blocks release if mutation score <80% or benchmark regression exceeds threshold.
 | `smith-harness` | ≥90% |
 | `smith-cli` | ≥80% |
 
+Overall workspace coverage target is 85%; merges are blocked below 80%.
+
 ### 17.5 nextest
 
 `.config/nextest.toml`:
@@ -1574,6 +2187,12 @@ slow-timeout = "30s"
 [profile.thorough]
 retries = 1
 slow-timeout = "120s"
+
+[profile.ci]
+fail-fast = false
+retries = 2
+slow-timeout = "60s"
+# supports --partition for sharded CI runs
 ```
 
 ### 17.6 Property Tests
@@ -1603,6 +2222,12 @@ Use `insta` + ratatui `TestBackend` for:
 
 CI runs with `INSTA_UPDATE=no`.
 
+Snapshot contract (prototype-proven, p08): widget and theme snapshots serialize
+styled cells — symbol plus fg/bg/modifier per cell — not buffer text alone.
+Text-only snapshots cannot catch theme regressions: a theme swap changes styles
+while leaving text byte-identical. Text-only snapshots are permitted only for
+layout-only assertions.
+
 ### 17.8 Integration Tests
 
 Required integration coverage:
@@ -1629,6 +2254,40 @@ Criterion benchmarks:
 - `trace_filter_10000`,
 - `plugin_load_10`.
 
+Regression thresholds per benchmark: >5% warns, >10% fails the nightly gate
+(§13).
+
+### 17.10 Continuous Integration
+
+Test hermeticity — CI tests never touch real external state:
+
+- providers are mocked (`StreamFn` fakes; no network),
+- TUI renders through `TestBackend` (no TTY),
+- filesystem via temp dirs,
+- clock and randomness injected (mock clock, fixed seeds),
+- tests requiring real network live behind a `network-tests` feature and never
+  run in the default CI lane.
+
+Gate tiers by context:
+
+| Context | Gate |
+|---------|------|
+| every agent iteration | fast tier (§17.1) |
+| before merge | fast + medium tiers |
+| CI only | slow tier, coverage, mutation, benchmarks |
+
+Agent CI-safety rules (binding for any coding agent working on Smith):
+
+- never auto-merge,
+- never modify CI configuration to make a run pass,
+- never modify or delete tests to make them pass,
+- never skip tests to get green.
+
+Android/Termux (`aarch64-linux-android`) is a supported development
+environment, not a release target (§14): CI keeps a validation lane that
+smoke-builds vendored LuaJIT and syntastica for it; breakage there blocks
+source-compatibility fixes, not artifact publishing.
+
 ## 18. Prototype Policy
 
 Prototypes are disposable evidence for or against this spec. They live under
@@ -1646,3 +2305,7 @@ Prototype output must include:
 - next spec/design actions.
 
 Production code must not depend on prototype artifacts.
+
+The p02–p11 validation campaign (2026-07-14, x86_64-linux, rustc 1.94.1) ran
+all ten prototypes to completion; result blocks live in `prototypes/PLAN.md`.
+Sections marked "prototype-proven" in this spec cite that evidence.

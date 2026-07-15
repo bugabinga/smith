@@ -620,6 +620,241 @@ If viable, SPEC should define `PluginDomain`/reload ownership:
 If not viable, SPEC must define explicit cleanup registries and leak/stale-callback
 failure modes for plugin reload.
 
+## Results
+
+All prototypes implemented and run 2026-07-14, rustc 1.94.1,
+x86_64-unknown-linux-gnu, mlua 0.10.5 vendored LuaJIT. Commands per prototype
+section; each exits 0. Result blocks follow the reporting template, trimmed to
+decision-relevant content; full diagnostics are in each prototype's output and
+the corresponding commit message.
+
+### P02 result
+
+```json
+{
+  "status": "complete",
+  "proved": [
+    "plain Lua descriptor + runtime validation supports community interfaces",
+    "missing function fails with exact path (impl/missing_fn.lua.cancel)",
+    "bad shape fails with expected/actual (status: expected function, got string)",
+    "extra impl fields hidden through interface view",
+    "runtime arg validation rejects bad types naming fn/param"
+  ],
+  "disproved": [],
+  "specIssues": [
+    { "file": "../docs/SPEC.md", "issue": "§9.6 can adopt candidate 1 (plain Lua descriptors); note mlua reports Lua integers as 'integer' not 'number' in diagnostics", "evidence": "p02 cargo run, all PASS", "severity": "P2" }
+  ],
+  "commands": ["cd prototypes/p02-lua-interface-descriptor && cargo run"],
+  "nextSteps": ["make §9.6 candidate 1 canonical; P02b (Teal) not needed"]
+}
+```
+
+### P03 result
+
+```json
+{
+  "status": "complete",
+  "proved": [
+    "5-plugin ecosystem composes through one interface package; consumer source has no impl name",
+    "user config swaps alice <-> bob-adapted with zero consumer changes",
+    "pure-Lua adapter normalizes incompatible impl; passes same conformance check",
+    "direct incompatible binding fails naming plugin, interface+generation, exact missing fns, actual exports, adapter hint"
+  ],
+  "disproved": [],
+  "specIssues": [
+    { "file": "../docs/SPEC.md", "issue": "§9.6 lacks adapter registration semantics (invented `adapts` + make-factory)", "evidence": "p03 bob-adapted scenario", "severity": "P1" },
+    { "file": "../docs/SPEC.md", "issue": "no config syntax exists for interface->implementation binding (invented `interfaces = { [\"community/subagent\"] = \"org/name\" }`)", "evidence": "p03 configs/*.lua", "severity": "P1" },
+    { "file": "../docs/SPEC.md", "issue": "§9.2 `interfaces`/`implements` manifest field shapes undefined", "evidence": "p03 manifests", "severity": "P2" },
+    { "file": "../docs/SPEC.md", "issue": "conformance-check timing (load vs bind) and undeclared-implements policy unstated", "evidence": "p03 bob-direct-fails", "severity": "P2" },
+    { "file": "../docs/SPEC.md", "issue": "singleton vs per-consumer instance semantics open", "evidence": "alice module state vs adapter factory", "severity": "P3" }
+  ],
+  "commands": ["cargo run -- alice", "cargo run -- bob-adapted", "cargo run -- bob-direct-fails"],
+  "nextSteps": ["amend §9.2/§9.6/§9.7 with manifest fields, adapter convention, binding config + precedence"]
+}
+```
+
+### P04 result
+
+```json
+{
+  "status": "complete",
+  "proved": [
+    "local-path + git-URL install into data_dir/smith/plugins/<org>/<name>/ (git via local bare repo, shell-out)",
+    "name charset + smith/* reservation enforced before any write",
+    "restricted empty-env manifest eval: os/require blocked, function values rejected as non-data",
+    "smith_api defaults 1; smith_api=2 refused with required/supported generations",
+    "install never executes entry code (armed side effect did not fire)",
+    "duplicate refused without --force; --force = remove-then-copy, data kept",
+    "uninstall keeps data / --purge-data removes it / project plugins never touched"
+  ],
+  "disproved": [],
+  "specIssues": [
+    { "file": "../docs/SPEC.md", "issue": "§9.2 never states the manifest FILENAME (prototype: smith-plugin.lua)", "evidence": "p04 all commands", "severity": "P1" },
+    { "file": "../docs/SPEC.md", "issue": "§9.5 git boundary open: gix vs shell-out; shell-out worked with zero extra crates but adds runtime git-binary dependency", "evidence": "p04 install-git", "severity": "P1" },
+    { "file": "../docs/SPEC.md", "issue": "--force semantics, duplicate definition, .git stripping, data-dir lifecycle, exact restricted-env contents, staged validation before copy all unspecified", "evidence": "p04 output notes", "severity": "P2" }
+  ],
+  "commands": ["cargo run -- install-local|install-git|reject-bad-name|reject-smith-namespace|uninstall-keeps-data|uninstall-purge-data"],
+  "nextSteps": ["canonicalize manifest filename; define --force/duplicate/git-layout; decide git boundary"]
+}
+```
+
+### P05 result
+
+```json
+{
+  "status": "complete",
+  "proved": [
+    "pi-primary field-level recursive merge; catwalk fills gaps at field/model/provider granularity",
+    "generate writes nothing; suggestion + reviewable source-attributed patch on stdout",
+    "two unresolvable conflict classes detected, excluded, reported: ambiguous-primary-source, type-mismatch-vs-curated-registry"
+  ],
+  "disproved": [
+    "byte-for-byte unknown-field preservation with default serde_json (keys re-sort); preservation is semantic (Value-equal) only"
+  ],
+  "specIssues": [
+    { "file": "../docs/SPEC.md", "issue": "§7.3 source-vs-curated-registry merge granularity undefined; subtree merge would clobber curated cost objects", "evidence": "p05 diff", "severity": "P1" },
+    { "file": "../docs/SPEC.md", "issue": "§7.3 has no conflict taxonomy/policy at all", "evidence": "p05 conflict-fails", "severity": "P1" },
+    { "file": "../docs/SPEC.md", "issue": "fetch-providers PR-agent contract (outputs, non-zero exit on unresolved conflicts) unspecified; replace_models carrier undefined; no canonical provider/model schema", "evidence": "p05 output notes", "severity": "P2" }
+  ],
+  "commands": ["cargo run -- generate", "cargo run -- diff", "cargo run -- conflict-fails"],
+  "nextSteps": ["amend §7.3: merge granularity, conflict classes, semantic preservation, CLI contract"]
+}
+```
+
+### P06 result
+
+```json
+{
+  "status": "complete",
+  "proved": [
+    "truncated tail (mid-body, mid-prefix) stops parsing; prior entries survive",
+    "corrupt entry BODY skips precisely with warning while framing intact",
+    "unknown future variants distinguishable from corruption via two-stage decode (ciborium::Value then typed); preserved raw through v1 rewrite -> v2 read"
+  ],
+  "disproved": [],
+  "specIssues": [
+    { "file": "../docs/SPEC.md", "issue": "§6.6 'corrupt entry: skip + warn if possible' holds only while the length prefix is intact; corrupted length prefix desynchronizes framing and loses everything after (indistinguishable from truncation)", "evidence": "p06 corrupt-length scenario", "severity": "P1" }
+  ],
+  "commands": ["cd prototypes/p06-session-codec-recovery && cargo run"],
+  "nextSteps": ["state the framing boundary in §6.6"]
+}
+```
+
+### P07 result
+
+```json
+{
+  "status": "complete",
+  "proved": [
+    "agent loop drives text/tool/done through StreamFn only; deterministic AgentEvent sequences",
+    "tool results fed back to provider next turn",
+    "BeforeToolCall allow/block/replace-args verified; blocked call never executes tool"
+  ],
+  "disproved": [],
+  "specIssues": [
+    { "file": "../docs/SPEC.md", "issue": "§6.4 blocked-call event semantics unspecified; prototype chose ToolExecutionStart + End(is_error) + error tool result to provider", "evidence": "p07 hook-block", "severity": "P2" }
+  ],
+  "commands": ["cargo run -- basic|tool|hook-block|hook-replace"],
+  "nextSteps": ["state blocked-call event contract in §6.4"]
+}
+```
+
+### P08 result
+
+```json
+{
+  "status": "complete",
+  "proved": [
+    "TestBackend renders deterministic cell-by-cell (symbol + fg/bg/modifier); snapshot matches checked-in string; fully headless",
+    "Lua theme tables validated by Rust schema drive widget styles; invalid theme rejected with exact path",
+    "theme swap changes styles, leaves text byte-identical"
+  ],
+  "disproved": [],
+  "specIssues": [
+    { "file": "../docs/SPEC.md", "issue": "§8.8 has no theme schema (keys, nesting, color format, missing-key policy)", "evidence": "p08 load_theme invented all of it", "severity": "P1" },
+    { "file": "../docs/SPEC.md", "issue": "§17 snapshot contract undefined; text-only snapshots CANNOT catch theme regressions — style-aware cell comparison required", "evidence": "p08 theme swap: same text, different styles", "severity": "P1" },
+    { "file": "../docs/SPEC.md", "issue": "invalid-user-theme runtime fallback policy (refuse vs fall back to built-in) unstated", "evidence": "p08 hard-error by construction", "severity": "P2" }
+  ],
+  "commands": ["cd prototypes/p08-tui-testbackend && cargo run"],
+  "nextSteps": ["define §8.8 theme schema + §17 style-aware snapshot contract"]
+}
+```
+
+### P09 result
+
+```json
+{
+  "status": "complete",
+  "proved": [
+    "discovery O(session count): 535 sessions from 54.8KiB of 41.64MiB corpus (0.13%), 3.1ms",
+    "load/replay within research bands up to 29.78MiB pathological session; 4.6MiB message intact",
+    "virtual scroll O(visible rows): 41 allocs/frame constant across 143x entry spread; giant message capped by lazy viewport wrap",
+    "request-build ~250k tokens: transient peak 2.43MiB, zero live growth over 50 builds",
+    "bumpalo scratch: render -100% allocator calls, x0.19 elapsed (KEEP); request -99% calls, x1.00 elapsed, +22% peak (marginal KEEP)"
+  ],
+  "disproved": [
+    "arenas as a latency win for request-build: serde_json serialization dominates; win is allocator-call pressure only"
+  ],
+  "specIssues": [
+    { "file": "../docs/SPEC.md", "issue": "SPEC must require lazy metadata-only session discovery; full-loading corpus would be ~0.7-1.2GiB resident", "evidence": "p09 discover", "severity": "P1" },
+    { "file": "../docs/SPEC.md", "issue": "adopt scratch-only-bumpalo policy: phase-local render/request scratch only, measured hot paths, stable IDs + owned strings for persisted data, no unsafe arenas, keep/drop gates include allocator-call pressure and peak stability", "evidence": "p09 arena-scratch verdicts", "severity": "P2" },
+    { "file": "../docs/SPEC.md", "issue": "virtual-scroll cache bounds: per-frame materialized rows <= viewport (lazy wrap), else one 4.6MiB message allocates unboundedly", "evidence": "p09 render-giant-message-window", "severity": "P2" }
+  ],
+  "commands": ["cargo run --release -- discover|load-replay|render-window|request-build|arena-scratch|all"],
+  "nextSteps": ["add memory policy to SPEC; re-run keep/drop on real render code before production commitment"],
+  "deviation": "PLAN fixtures/*.jsonl not committed; synthetic sessions generated at runtime (deterministic seed) matching PLAN shapes within 2.5%"
+}
+```
+
+### P10 result
+
+```json
+{
+  "status": "complete",
+  "proved": [
+    "Lua::set_memory_limit() WORKS and enforces under mlua 0.10.5 + vendored LuaJIT (GC64 accepts mlua's tracking allocator) — PLAN's warning does not hold for the locked feature set",
+    "oom-table/oom-string rejected at exactly the 16MiB quota (overshoot 0) with recoverable MemoryError; state reusable after gc_collect; host survives",
+    "isolation: plugin B in its own state unaffected by A's OOM",
+    "host-created Lua strings charged to the quota (8MiB string -> delta 8388672)",
+    "quota domain: per-plugin heap quota = one Lua state per plugin"
+  ],
+  "disproved": [
+    "shared-state per-plugin quotas: only a whole-state limit exists, no attribution (B charged at A's retained 15.3MiB)",
+    "Lua quota covering host-side Rust allocations: 8MiB userdata payload registered 632 bytes",
+    "hook-based fallback under active JIT: count hooks never fire JIT-on (0 fires / 3e6 iterations); interpreter-only, ~3.4x slowdown"
+  ],
+  "specIssues": [
+    { "file": "../docs/SPEC.md", "issue": "add plugin heap-quota field; quota domain = per-plugin Lua state (aligns §9.16); shared runtime can never get per-plugin quotas", "evidence": "p10 oom-table + isolation", "severity": "P2" },
+    { "file": "../docs/SPEC.md", "issue": "scope quota wording to the Lua heap; host-side plugin memory bounded by domain teardown, not the Lua limit", "evidence": "p10 host-value accounting", "severity": "P2" },
+    { "file": "../docs/SPEC.md", "issue": "any future instruction watchdog cannot use LuaJIT count hooks (never fire under JIT)", "evidence": "p10 hook bench", "severity": "P3" }
+  ],
+  "commands": ["cargo run -- small|oom-table|oom-string|isolation|all"],
+  "nextSteps": ["add heap-quota to SPEC §9 with per-plugin-state domain; CI-verify enforcement per release target (non-GC64 -> MemoryControlNotAvailable)"]
+}
+```
+
+### P11 result
+
+```json
+{
+  "status": "complete",
+  "proved": [
+    "§9.16 full contract implementable as written: PluginDomain owns Lua + descriptors + generation-keyed registries + bus tokens + render cache + bump scratch + cancellation token; reload = construct -> swap -> drop, single Drop impl, no cleanup graph",
+    "100 reload cycles plateau: growth <=77KB over 80 cycles; Lua used_memory constant; threads joined every drop; reload avg 3.8-4.0ms incl. 450 registrations",
+    "rollback: broken entry keeps old domain serving; partial D' registrations discarded",
+    "31MB Lua heap 100% reclaimed by domain drop; fresh domain restarts at 45KB",
+    "every escape path (stale registry entry, leaked bus token, escaped thread) detected and rejected via generation gating; 0 stale callbacks ran; !Send containment stops Lua values crossing threads at compile time"
+  ],
+  "disproved": [],
+  "specIssues": [
+    { "file": "../docs/SPEC.md", "issue": "raw mlua::Function cloned out of the registry PANICS after domain drop (abort-grade under no-panic invariant); §9.16 must mandate generation-keyed-registry-only callback access + generation gate on every dispatch path", "evidence": "p11 escaped-callback-fails: 'call panicked: Lua instance is destroyed'", "severity": "P2" },
+    { "file": "../docs/SPEC.md", "issue": "plateau-after-warmup is the enforceable observable, not instantaneous RSS decrease (small heaps retained by allocator, large teardowns return to OS)", "evidence": "p11 reload-loop vs reload-with-heap-limit RSS traces", "severity": "P3" }
+  ],
+  "commands": ["cargo run -- reload-loop|reload-with-heap-limit|escaped-callback-fails|all"],
+  "nextSteps": ["fold registry/generation-gate discipline into §9.16; re-verify !Send containment if mlua 'send' feature is ever enabled"]
+}
+```
+
 ## Reporting Template
 
 Each completed prototype updates this plan with a result block:

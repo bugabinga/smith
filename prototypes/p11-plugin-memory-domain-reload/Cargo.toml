@@ -1,0 +1,9 @@
+[package]
+name = "p11-plugin-memory-domain-reload"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+mlua = { version = "0.10", features = ["luajit", "vendored", "serialize"] }
+bumpalo = "3"

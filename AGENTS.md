@@ -33,8 +33,10 @@ lists here; use the canonical directories and docs tree instead.
 
 - Spec: `docs/SPEC.md` — canonical project specification.
 - Research: `docs/research/` — ecosystem research and tool analysis.
-- Design: `docs/design/` — subsystem design documents.
 - Plans: `docs/plans/` — task breakdowns and documentation plans.
+
+Former `docs/design/` subsystem docs and the P1–P20 prototype report are fully
+absorbed into `docs/SPEC.md` and deleted (see git history).
 - Docs tree and invariants: `docs/PROJECT-INVARIANTS.md` — build system,
   directory structure, coding standards, and canonical docs inventory.
 
