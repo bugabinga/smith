@@ -726,13 +726,50 @@ discover plugin/SDK capabilities through `smith help --search`, `--guide`, and
 
 ### 6.9 Compaction and Cost
 
-Compaction:
+Compaction never rewrites history. Entries are append-only (§6.5), so
+compaction is a mask applied at context-assembly time, not a storage
+mutation:
 
-- uses `AgentLoopConfig.model_metadata.context_window`,
-- starts with old non-essential/redundant entries,
-- runs summarization when trimming is insufficient,
-- repeats until context fits or configured iteration limit reached,
-- preserves secret registrations and necessary lineage.
+- **Storage never shrinks.** The session file keeps every entry verbatim;
+  memory stays bounded by lazy loading (§13.1).
+- **A compaction pass appends a summary entry** to the current path,
+  recording the covered span (from/to `EntryId`), the summary text, and
+  before/after token estimates.
+- **Context assembly folds the path** (§6.5 read path): spans covered by a
+  summary entry collapse into the summary; trim-masked content collapses
+  into stubs. What the model sees is the folded path; the file is untouched.
+
+Because the summary rides the path like any entry, branching needs no
+special case: switching the leaf to a pre-compaction entry yields a path
+without the summary — full history visible again, eligible to re-compact —
+and branches created after the compaction point inherit the mask.
+
+Trigger: before each provider request, when the estimated folded-path tokens
+exceed the configured threshold — by default a fraction of
+`AgentLoopConfig.model_metadata.context_window` minus the output-token
+reserve. The threshold is a named config key (§5.6; reloadable per §9.19).
+
+Trim ladder, cheapest first, repeated until the context fits or the
+configured iteration limit is reached:
+
+1. mask old tool-result bodies to stubs (dominant bytes per the memory
+   profile),
+2. mask old thinking blocks,
+3. LLM-summarize the oldest span. Summarization uses the active model unless
+   the `compaction_model` config key selects another (resolved via §5.7, so
+   aliases/groups work); its usage is tracked as normal cost.
+
+Survives verbatim, always:
+
+- secret registrations (§6.7),
+- the system prompt snapshot,
+- existing compaction summary entries,
+- the recency window: the most recent entries up to a configured fraction of
+  the context window (token-budget based, so it adapts to model size).
+
+`session_before_compact` (§9.8, blockable) may veto the round, adjust the
+span, or replace the summarization prompt; `session_compact` reports the
+result.
 
 Token estimator:
 
