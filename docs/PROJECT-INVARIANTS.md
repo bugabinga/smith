@@ -18,7 +18,7 @@ These invariants govern the smith codebase. They are non-negotiable rules that e
 **Prohibited:**
 - Makefile, justfile, package.json, build.sh
 - Shell scripts in repo root or scripts/
-- Any build step that requires tools not installable via `cargo install`, except pinned nightly rustup components required by the `cargo-pup` architecture gate
+- Any build step that requires tools not installable via `cargo install`, with two named exceptions: pinned nightly rustup components required by the `cargo-pup` architecture gate, and the `zig` toolchain required by `cargo-zigbuild` for release cross-builds (§8a)
 
 ## 2. Directory Separation: Code vs. Project Management
 
@@ -233,7 +233,7 @@ xtask is the single extension point for tasks cargo does not handle natively.
 | `cargo run -p xtask -- test` | Run all tests (delegates to `cargo nextest run`) | Every commit |
 | `cargo run -p xtask -- lint` | Clippy + rustfmt check | Every commit |
 | `cargo run -p xtask -- fmt` | Auto-format (delegates to `cargo fmt`) | On demand |
-| `cargo run -p xtask -- fetch-providers` | Fetch pi.dev + catwalk → `providers.json` | On demand |
+| `cargo run -p xtask -- fetch-providers` | Fetch models.dev + catwalk → `providers.json` | On demand |
 | `cargo run -p xtask -- doc-test` | Extract + run Lua code blocks from docs | CI |
 | `cargo run -p xtask -- verify-docs` | Completeness checks (every API documented) | CI |
 | `cargo run -p xtask -- doc-gen` | Generate man pages + docs bundle | Release |
@@ -336,7 +336,9 @@ No debug info in release builds. Debug symbols are produced only by the default 
 1. `cargo run -p xtask -- release` — builds all targets via cargo-zigbuild, creates archives, generates checksums.
 2. OpenBSD (Tier 3) is best-effort — build natively if possible, skip otherwise.
 
-No CI, no automated distribution, no code signing yet. These are deferred.
+No CI-driven *release* automation yet: no automated distribution, no code
+signing — these are deferred. The test/lint/coverage CI gates themselves
+(SPEC §17.10) exist and are required.
 
 See `docs/research/RELEASE-BUILD-RESEARCH.md` for cross-platform build tooling analysis.
 
@@ -427,6 +429,7 @@ Rules:
 
 | Date | Change | Author |
 |------|--------|--------|
+| 2026-07-15 | §8a CI wording scoped to release automation; §4 fetch-providers source models.dev; §1 zig/cargo-zigbuild exception (user-approved) | smith-spec |
 | 2026-07-15 | §2 tree: design/ absorbed into SPEC.md and deleted; prototypes/ added (user-approved) | smith-spec |
 | 2026-05-23 | Add architecture gates and pinned-nightly pup exception | smith-spec |
 | 2026-05-22 | Initial invariants | smith-spec |
