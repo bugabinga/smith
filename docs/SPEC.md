@@ -29,6 +29,8 @@ Core design principles:
   keybindings, prompts, layouts, and feature UI are Lua plugins.
 - **LLM is the only untrusted actor.** Local user, local plugins, local files,
   and Smith itself are trusted.
+- **Pi is Smith's philosophical ancestor, not a dependency.** Smith improves
+  on pi's ideas with no data or format coupling to it.
 
 ## 2. Workspace
 
@@ -324,11 +326,12 @@ cache_dir/smith/
 
 config_dir/smith/
   config.lua
+  auth.json
 ```
 
 Session files are plaintext length-prefixed CBOR sequences. Trace files are
 compressed deterministic replay logs. Secrets in sessions are plaintext after
-local registration; the security boundary is the LLM, not the local user.
+local registration (§6.7, §11).
 
 ## 5. Shared Crate: `smith`
 
@@ -453,8 +456,7 @@ Cascade order, later overrides earlier:
 Invalid values are rejected with clear errors. Unknown keys warn or fail
 according to the schema context.
 
-The cascade is re-evaluated at runtime by host configuration reload (§9.19);
-CLI flags stay fixed for the process lifetime.
+The cascade is re-evaluated at runtime by host configuration reload (§9.19).
 
 Example:
 
@@ -477,7 +479,7 @@ return {
 - provider/model IDs,
 - context window,
 - max output tokens,
-- pricing,
+- cost,
 - capabilities: thinking, vision, tool use, streaming.
 
 `ModelResolver` is pure. It resolves:
@@ -544,8 +546,6 @@ The loop uses two nested loops:
 
 - outer loop: turns and follow-up messages,
 - inner loop: provider streaming, tool calls, steering.
-
-It never imports provider implementations. Providers are `StreamFn` only.
 
 Important config:
 
@@ -641,24 +641,18 @@ Session files are length-prefixed CBOR sequences:
 u32 BE len | CBOR entry bytes | u32 BE len | CBOR entry bytes | ...
 ```
 
-Properties:
+Properties (recovery boundaries prototype-proven, p06):
 
-- crash recovery: truncated tail stops parsing,
-- corrupt entry: skip + warn if possible,
-- unknown future entry: preserve when round-tripping,
+- truncated tail stops parsing; prior entries survive,
+- a corrupt entry BODY is precisely skippable with a warning — the intact
+  length prefix bounds the damage,
+- a corrupt LENGTH PREFIX desynchronizes framing: entries before it survive,
+  everything after is unrecoverable and indistinguishable from truncation,
+- unknown-vs-corrupt is decided by two-stage decode (raw CBOR, then typed):
+  well-formed CBOR with an unknown variant tag is preserved raw and survives
+  rewrite roundtrips; invalid CBOR is corrupt and skipped,
 - `smith session dump` outputs JSONL,
 - session discovery is keyed by canonical `{session-id}.session` filenames.
-
-Recovery boundaries (prototype-proven, p06):
-
-- A corrupt entry BODY is precisely skippable — the intact length prefix
-  bounds the damage; prior and subsequent entries survive.
-- A corrupt LENGTH PREFIX desynchronizes framing: entries before it survive,
-  everything after is unrecoverable and indistinguishable from truncation.
-  "Skip + warn if possible" promises no more than this.
-- Unknown-vs-corrupt is decided by two-stage decode: first as raw CBOR, then
-  as a typed entry. Well-formed CBOR with an unknown variant tag is preserved
-  raw and survives rewrite roundtrips; invalid CBOR is corrupt and skipped.
 
 ### 6.7 Secret Proxy
 
@@ -670,7 +664,7 @@ The secret proxy prevents LLM exposure of secrets:
 - rehydrates tool arguments before local execution,
 - rebuilds table on resume by scanning session entries backward.
 
-Secrets are local plaintext. The protection target is the remote LLM.
+Secrets are stored as local plaintext; the trust model is §11's.
 
 ### 6.8 System Prompt
 
@@ -727,9 +721,9 @@ Trace files capture deterministic replay data:
 
 - file header with magic/version/session ID,
 - compressed entries via zstd — per-entry compression inflates small traces
-  (measured ~115% of raw CBOR under ~50 entries from per-entry header
-  overhead); the codec uses block-level compression or a minimum entry-size
-  threshold so small traces never exceed their uncompressed size,
+  (p11 evidence, `prototypes/PLAN.md`), so the codec uses block-level
+  compression or a minimum entry-size threshold; small traces never exceed
+  their uncompressed size,
 - provider requests/events,
 - tool calls/results,
 - TUI events as opaque JSON,
@@ -815,10 +809,6 @@ Data source priority for generated suggestions:
 2. catwalk provider configs,
 3. later shared provider repositories after review.
 
-Pi served as inspiration for Smith and continues to evolve independently; it is
-a philosophical guide, not a dependency. Smith has no data or format coupling
-to pi.
-
 Merge rule (prototype-proven, p05):
 
 - merge by provider/model ID at LEAF-FIELD granularity — a recursive
@@ -847,13 +837,11 @@ conflict report.
 `replace_models` is a plugin provider-override flag (`smith.provider.*`,
 §9.10), not a `fetch-providers` merge input.
 
-**Canonical schema.** Smith does not invent a provider/model schema — the shape
-is already pinned upstream by models.dev (TOML sources CI-validated against its
-published schema). Smith adopts that shape and keeps a pinned local snapshot:
-a JSON Schema at `smith-ai/src/providers.schema.json`, translated from the
-models.dev schema at a recorded upstream version. Local pinning keeps
-validation deterministic and offline; upstream schema evolution is reviewed and
-adopted like any dependency bump.
+**Canonical schema.** Smith does not invent a provider/model schema — it adopts
+the models.dev shape and keeps a pinned local snapshot: a JSON Schema at
+`smith-ai/src/providers.schema.json`, translated from the models.dev schema at
+a recorded upstream version. Local pinning keeps validation deterministic and
+offline; upstream schema evolution is reviewed like any dependency bump.
 
 The snapshot is validated with the `jsonschema` workspace crate at three
 boundaries:
@@ -864,32 +852,40 @@ boundaries:
 2. the checked-in `providers.json` (CI gate),
 3. provider tables passed to `smith.provider.register` at runtime (§9.10).
 
-Schema rules:
+Registry shapes follow models.dev naming: `cost` (USD per million tokens:
+`input`, `output`, `cache_read`, `cache_write`, optionally `reasoning` and
+audio variants), `limit` (`context`, `input`, `output`), modalities
+(`input`/`output` type lists), and capability flags (`attachment`,
+`reasoning`, `tool_call`, `structured_output`, `temperature`). `cost` is
+always an object — never a scalar (the p05 type-mismatch class). Unknown
+fields remain schema-legal (`additionalProperties` allowed) per the
+preservation rule above.
 
-- Registry shapes follow models.dev naming: `cost` (USD per million tokens:
-  `input`, `output`, `cache_read`, `cache_write`, optionally `reasoning` and
-  audio variants), `limit` (`context`, `input`, `output`), modalities
-  (`input`/`output` type lists), and capability flags (`attachment`,
-  `reasoning`, `tool_call`, `structured_output`, `temperature`). Smith maps
-  these into the §5.7 `ModelMetadata` type internally.
-- `cost` is always an object — never a scalar. This resolves the
-  scalar-vs-object ambiguity that produced p05's type-mismatch conflict class.
-- Unknown fields are permitted everywhere (`additionalProperties` allowed) so
-  the preservation rule above stays schema-legal; the snapshot constrains known
-  fields only.
+Mapping into `ModelMetadata` (§5.7):
 
-Provider config correctness cannot be fully automated because Smith does not have
-all provider accounts, subscriptions, API keys, or regional access. Generated
-changes require review before commit. After the provider format stabilizes,
-Smith may use a coding agent to open provider-data PRs from `fetch-providers`
-diffs.
+| §5.7 field | models.dev source |
+|------------|-------------------|
+| context window | `limit.context` |
+| max output tokens | `limit.output` |
+| cost | `cost` |
+| thinking | `reasoning` |
+| vision | `"image"` in `modalities.input` |
+| tool use | `tool_call` |
+| streaming | assumed true; provider config may disable |
+
+`structured_output`, `temperature`, and `attachment` are not represented in v1
+`ModelMetadata` and are preserved, not consumed.
+
+Provider config correctness cannot be fully automated because Smith does not
+have all provider accounts, subscriptions, API keys, or regional access.
+Generated changes require review before commit.
 
 ### 7.4 Auth
 
 Auth resolver sources:
 
 - environment variables,
-- `~/.smith/auth.json`,
+- `config_dir/smith/auth.json` (§4),
 - plaintext Lua config values when explicitly supplied.
 
 No OS keychain. No encryption.
@@ -900,7 +896,7 @@ Auth methods per provider are declared in the registry's `auth_types` map:
 `api_key` (with its `env_var` name), `oauth`, and `organization` (org-scoped
 key, e.g. OpenAI: api key + org ID). `AuthMethod` mirrors these three.
 
-`~/.smith/auth.json` is a per-provider object map:
+`auth.json` is a per-provider object map:
 
 ```json
 {
@@ -978,7 +974,9 @@ Probe contract:
 - capabilities are probed once per session at startup, with a 100ms timeout
   per probe; on timeout the capability is treated as absent (fail
   conservative),
-- image protocol is `ImageProtocol::{Kitty, Sixel}` — no other variants in v1,
+- image protocol is `ImageProtocol::{Kitty, Sixel}`; the capability is
+  detected but has no v1 consumer — inline image rendering is deferred
+  (§8.11),
 - Kitty keyboard protocol flags are pushed on TUI startup and popped on
   shutdown (including error/signal paths, §10),
 - synchronized output (`CSI ?2026 h/l`) wraps render passes when the terminal
@@ -1249,12 +1247,9 @@ Install semantics:
 - Git installs strip the `.git` directory: an installed plugin is a pure file
   snapshot, not a working clone. Updates go through reinstall.
 
-Git URL installs use Smith's internal git implementation boundary. The preferred
-implementation is `gix` if its required clone/fetch feature set stays bounded;
-otherwise the behavior remains the same behind the install boundary. Prototype
-evidence (p04): shell-out to a system git binary satisfies the boundary with
-zero added crates but adds a runtime dependency on git being installed — the
-boundary hides whichever choice release engineering makes.
+Git URL installs go through Smith's internal git boundary; the concrete
+implementation (`gix` or system-git shell-out) is release engineering's choice,
+hidden behind the boundary (p04 evidence, `prototypes/PLAN.md`).
 
 `smith uninstall <org>/<name>`:
 
@@ -1286,9 +1281,11 @@ the same descriptor the runtime validates — one source of truth, two
 enforcement points.
 
 **Descriptor.** An interface package exports a descriptor: a pure data table
-with `name` (`<org>/<name>`), `generation` (integer), `functions` (map of
-function name → `{ params, returns }` with typed, optionally-optional named
-parameters), and `events` (list of bus topics, §9.18).
+with `name` (`<org>/<name>`), `generation` (integer — the interface's own
+version, distinct from the plugin API generation of §9.3 and the reload domain
+generation of §9.16), `functions` (map of function name → `{ params, returns }`
+with typed, optionally-optional named parameters), and `events` (list of bus
+topics, §9.18).
 
 **Ecosystem shapes.** Interface-only packages, implementation-only packages,
 implementations referencing external interfaces, and combined packages are all
@@ -1349,7 +1346,7 @@ per-event blocking capability:
 | `model_select` | No | model changed |
 | `message_start`, `message_update`, `message_end` | No | streaming lifecycle |
 | `thinking_delta`, `text_delta` | No | token deltas |
-| `tool_execution_start` | No | execution began |
+| `tool_execution_start` | No | execution began or call was blocked (§6.4) |
 | `tool_call` | **Yes** | before tool executes (§6.4 blocked-call contract) |
 | `tool_execution_update`, `tool_result`, `tool_execution_end` | No | `tool_result` may modify the result |
 | `input` | No | may intercept/transform/mark handled |
@@ -1361,21 +1358,23 @@ per-event blocking capability:
 | `panel_toggle`, `resize` | No | TUI |
 | `provider_registered` | No | after provider add/override |
 | VCS events | No | §9.13 operations |
-| errors, shutdown | No | §9.17 |
+| errors | No | §9.17 |
+| shutdown | No | host shutdown (§10, §12) |
 
-Handler return-table contracts (Lua-facing):
+Handler return-table contracts (Lua-facing, one per §6.4 hook capability):
 
 - `tool_call` → `{ block = true, reason = "..." }` or
-  `{ args = <replacement> }` or nil/`{}` (allow),
-- `tool_result` → `{ content = <replacement> }` or nil (keep),
+  `{ args = <replacement> }` or `{ cancel = true }` or nil/`{}` (allow),
+- `tool_result` → `{ content = <replacement> }` or `{ retry = true }` or
+  `{ cancel = true }` or nil (keep),
+- `turn_end` → `{ stop = true }` to end the agent loop after this turn
+  (ShouldStopAfterTurn), or nil (continue),
 - `input` → `{ action = "handled" | "continue", text = <transformed>? }`,
 - `context` → `{ messages = <modified> }` or nil,
 - `session_before_*` → `{ block = true, reason = "..." }` or nil,
 - all other events: return value ignored.
 
-The bridge maps these into `AgentLoopConfig` hooks (§6.4): block/transform
-tool calls, replace results, retry/cancel, transform input, override system
-prompt/context, request continue/stop, emit UI actions.
+The bridge maps these into `AgentLoopConfig` hooks (§6.4).
 
 ### 9.9 Extension Contexts
 
@@ -1536,21 +1535,16 @@ Inputs:
 - `new_text`,
 - `allow_multiple?: bool`.
 
-Behavior:
+Behavior (ordering is the contract):
 
-1. read file,
-2. reject empty `old_text`,
-3. reject binary,
-4. count exact matches,
-5. fail if zero matches,
-6. fail if multiple and `allow_multiple` false,
-7. re-read/hash before write,
-8. fail stale if file changed,
-9. write atomically,
-10. return change count and before/after hashes.
-
-Errors include `ENOENT`, `EEMPTY`, `EBINARY`, `ENOMATCH`, `EMULTI`, `ESTALE`,
-`ELOCK`.
+1. read the file (`ENOENT`),
+2. validate: non-empty `old_text`, non-binary content (`EEMPTY`, `EBINARY`),
+3. count exact matches: zero fails; multiple fails unless `allow_multiple`
+   (`ENOMATCH`, `EMULTI`),
+4. re-read and hash immediately before write; fail if the file changed
+   (`ESTALE`),
+5. write atomically via temp file + rename (`ELOCK`),
+6. return change count and before/after hashes.
 
 #### `bash`
 
@@ -1585,7 +1579,10 @@ output, and explicit errors.
 
 ### 9.13 VCS SDK
 
-Smith uses jj internally for operation-level undo/redo/time travel.
+Smith uses jj internally for operation-level undo/redo/time travel. jj is
+driven through the same kind of internal boundary as §9.5's git installs: the
+concrete integration (`jj-lib` crate or jj binary shell-out) is release
+engineering's choice, hidden behind `smith.vcs.*`.
 
 State:
 
@@ -1639,21 +1636,22 @@ Plugins are trusted but constrained to Smith SDK APIs:
 - no path capability system in v1,
 - built-in and user plugins use same API.
 
-**Heap quota.** A plugin may be given a Lua heap limit via the optional
-`heap_limit` manifest field (§9.2) or config override. Prototype-proven (p10,
-p11) semantics:
+**Heap limit.** A plugin may be given a Lua heap limit via the optional
+`heap_limit` manifest field (§9.2) or config override; when both are set, the
+config override wins (§5.6 cascade: user config over plugin contributions).
+Prototype-proven (p10, p11) semantics:
 
-- The quota domain is the plugin's own Lua state — one `mlua::Lua` per plugin
-  (matching the §9.16 domain model). Per-plugin quotas in a shared Lua state are
-  not attributable and are not offered.
+- The limit's domain is the plugin's own Lua state — one `mlua::Lua` per
+  plugin (matching the §9.16 domain model). Per-plugin limits in a shared Lua
+  state are not attributable and are not offered.
 - Enforcement is `Lua::set_memory_limit()`; under the locked vendored-LuaJIT
   feature set this enforces exactly, and breach surfaces as a recoverable
   memory error handled by the §9.17 error model. Targets where mlua reports
-  memory control as unavailable must fail plugin-quota configuration loudly,
+  memory control as unavailable must fail heap-limit configuration loudly,
   never enforce silently at zero; per-target enforcement is CI-verified.
-- The quota covers the plugin's Lua heap only, including host-created Lua
-  values. Host-side Rust allocations held for a plugin are invisible to the
-  quota and are bounded by domain teardown (§9.16) instead.
+- The limit covers the plugin's Lua heap only, including host-created Lua
+  values. Host-side Rust allocations held for a plugin are invisible to it
+  and are bounded by domain teardown (§9.16) instead.
 - After a plugin OOM, the preferred recovery is whole-domain replacement
   (§9.16) rather than in-place retry.
 
@@ -1738,8 +1736,7 @@ Built-in `smith/*` plugins reload by the same mechanism.
    warmup; no stale callback from `D` may run after the swap. The plateau is
    the enforceable observable — an instantaneous RSS decrease per teardown is
    not required, since small freed heaps are legitimately retained by the
-   allocator for reuse (p11: ≤77KB growth over 80 cycles; a 31MB teardown
-   returned fully to the OS).
+   allocator for reuse (p11 evidence, `prototypes/PLAN.md`).
 
 **Rollback.** Reload is all-or-nothing. Either `D'` fully replaces `D`, or `D`
 remains and no partial state from `D'` survives. A failed reload never leaves the
@@ -1749,6 +1746,12 @@ plugin unregistered.
 state, and other plugins' state are untouched. In-flight tool executions from the
 old domain run to completion under `D`; their results are still delivered. New
 invocations after the swap use `D'`.
+
+**Interface bindings.** If the reloaded plugin backs an interface binding
+(§9.6), the swap re-resolves the binding to `D'` and re-runs bind-time
+conformance against it. Consumers' interface views rebind transparently — the
+next call through a view dispatches into `D'`. A conformance failure is a
+reload failure: rollback keeps `D` and its binding active.
 
 **Dependents.** Reloading `P` does not reload its dependents (§9.15). Dependents
 keep their handles to `P`'s registrations by stable name; the swap rebinds those
@@ -1831,15 +1834,9 @@ Smith reloads its own configuration at runtime without restarting the process or
 losing the active session. Host reload follows the same contract shape as plugin
 reload (§9.16): validate fully, swap atomically, roll back on failure.
 
-**Scope.** A host reload re-evaluates the config cascade (§5.6) layers 1–4:
-
-1. Rust type defaults/schema,
-2. built-in Lua defaults,
-3. plugin contributions,
-4. user config at `config_dir/smith/config.lua`.
-
-CLI flags (layer 5) are per-invocation. They were resolved at process start and
-continue to override the reloaded layers unchanged.
+**Scope.** A host reload re-evaluates config cascade layers 1–4 (§5.6). CLI
+flags (layer 5) are per-invocation: resolved at process start, they continue to
+override the reloaded layers unchanged.
 
 **Triggers.** Reload is requested by:
 
@@ -1922,6 +1919,7 @@ Subcommands:
 - `smith uninstall <plugin>` — uninstall plugin.
 - `smith eval <prompt> [--json] [--session id]` — non-interactive eval.
 - `smith rpc` — JSON-RPC via stdio; methods include `config/reload` (§9.19).
+- `smith completions <shell>` — generate shell completions (`clap_complete`).
   The full method catalog is deferred: it is expected to mirror the Lua SDK
   surface (§9.10), with mode-specific additions and omissions, rather than
   define an independent API.
@@ -1957,17 +1955,12 @@ Untrusted:
 
 Security mechanisms:
 
-1. Tool registry controls which tools the LLM can invoke.
-2. Secret proxy prevents real secrets from reaching LLM context.
-3. Restricted Lua runtime removes raw OS/file APIs.
+1. Tool registry (§6.10) controls which tools the LLM can invoke.
+2. Secret proxy (§6.7) prevents real secrets from reaching LLM context.
+3. Restricted Lua runtime (§5.5) removes raw OS/file APIs.
 4. Users configure active tools; no confirmation-dialog security theater.
 
-Credentials:
-
-- environment vars preferred,
-- plaintext config/auth file allowed,
-- no keychain,
-- no encryption.
+Credential storage follows §7.4: plaintext, no keychain, no encryption.
 
 ## 12. Concurrency and Async
 
@@ -1997,7 +1990,7 @@ Responsiveness:
 - TUI frame draw < 2ms within 16ms frame budget.
 - Session encode 1000 entries < 5ms.
 - Agent loop turn target < 30s excluding provider/network stalls beyond timeout.
-- Bench regressions >10% fail nightly/release gates.
+- Bench regressions fail nightly/release gates (thresholds in §17.9).
 
 ### 13.1 Memory Policy
 
@@ -2005,8 +1998,7 @@ Prototype-proven against the measured session corpus (p09; see
 `docs/research/SMITH-MEMORY-ALLOCATION-PROFILE.md`):
 
 - **Session discovery is lazy and metadata-only.** Discovery reads session
-  headers, never full bodies: O(session count), not O(corpus bytes). Fully
-  loading a realistic corpus would cost ~0.7–1.2GiB resident.
+  headers, never full bodies: O(session count), not O(corpus bytes).
 - **Virtual scroll materializes at most viewport rows per frame.** Row
   formatting stops at the visible window (lazy wrap); a single multi-MiB
   message must not be fully formatted to render its visible slice.
@@ -2016,13 +2008,13 @@ Prototype-proven against the measured session corpus (p09; see
   arena code. Arena references never cross async, thread, or persistence
   boundaries.
 - **Keep/drop gates for arena use** weigh allocator-call pressure, elapsed
-  time, and peak/plateau stability — not allocation count alone. Measured:
-  render-frame scratch is a clear win (−100% allocator calls, ~5× faster);
-  request-build scratch is marginal (−99% calls, ×1.00 elapsed, +22% peak) —
-  arenas are not a latency win where serialization dominates.
-- **Provider request assembly** at compaction-scale contexts (~250k tokens) has
-  a transient peak ~2.5× the serialized request size and must release it fully
-  after send; peak memory (not just CPU) is a test gate.
+  time, and peak/plateau stability — not allocation count alone. Render-frame
+  scratch is a clear win; request-build scratch is marginal — arenas are not a
+  latency win where serialization dominates (p09 measurements,
+  `prototypes/PLAN.md`).
+- **Provider request assembly** at compaction-scale contexts has a transient
+  peak of a small multiple of the serialized request size and must release it
+  fully after send; peak memory (not just CPU) is a test gate.
 
 ## 14. Release Artifacts
 
@@ -2122,15 +2114,10 @@ Scope:
 
 ### 17.2 Medium Tier
 
-Every PR:
+Every PR: the fast tier (§17.1, with `--profile default` instead of `fast`),
+plus:
 
 ```bash
-cargo fmt --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo run -p xtask -- arch
-cargo +nightly-2026-01-22 pup
-cargo nextest run --profile default
-cargo test --doc
 cargo tarpaulin --out Lcov
 cargo nextest run --profile integration
 cargo doc --workspace --no-deps
@@ -2237,6 +2224,7 @@ Required integration coverage:
 - plugin load/order/override/event dispatch,
 - provider registry/custom provider/auth/mock streaming/MuxProvider failover,
 - TUI startup/shutdown/capabilities/mouse/layout/theme/scroll,
+- interactive PTY smoke tests via `expectrl` (real terminal I/O paths),
 - docs/help/search/examples.
 
 Fixtures live under `tests/fixtures/` with plugins, sessions, configs, providers,
@@ -2273,8 +2261,8 @@ Gate tiers by context:
 | Context | Gate |
 |---------|------|
 | every agent iteration | fast tier (§17.1) |
-| before merge | fast + medium tiers |
-| CI only | slow tier, coverage, mutation, benchmarks |
+| before merge | fast + medium tiers (coverage gate included, §17.4) |
+| CI only | slow tier, mutation, benchmarks |
 
 Agent CI-safety rules (binding for any coding agent working on Smith):
 
