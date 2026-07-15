@@ -44,7 +44,10 @@ absorbed into `docs/SPEC.md` and deleted (see git history).
 
 1. Spec before code. No `.rs` files until `docs/SPEC.md` covers the work.
 2. AGENTS.md is the navigation index. `docs/SPEC.md` is the canonical project spec.
-3. Every spec section answers: interfaces, types, errors, tests.
+3. Every spec section answers: interfaces, data, errors, tests — as named
+   shapes and behavior, not code. Exact only at boundaries others program
+   against (files, wire formats, CLI, config, Lua SDK); code blocks are
+   illustrative unless the section says otherwise.
 4. Open questions: stop and ask. No guessing.
 5. Invoke spec work: `/spec <topic>`.
 6. Cargo is the sole build system. See `docs/PROJECT-INVARIANTS.md` §1.

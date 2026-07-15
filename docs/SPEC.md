@@ -31,6 +31,10 @@ Core design principles:
   and Smith itself are trusted.
 - **Pi is Smith's philosophical ancestor, not a dependency.** Smith improves
   on pi's ideas with no data or format coupling to it.
+- **Exact at boundaries, shapes inside.** This spec is exact where others
+  program against it — files, wire formats, CLI, config, Lua SDK — and
+  shape-level (named types, behavior, properties) for internal Rust. Code
+  blocks are illustrative unless a section says otherwise.
 
 ## 2. Workspace
 
@@ -338,25 +342,16 @@ local registration (§6.7, §11).
 `smith` owns shared types and utilities. It has no business logic and no
 downstream dependencies.
 
-Exports:
+Exposed surface (names, not module layout):
 
-```rust
-pub mod types;
-pub mod stream;
-pub mod tool;
-pub mod lua;
-pub mod config;
-pub mod error;
-pub mod mux;
-
-pub use types::*;
-pub use stream::StreamFn;
-pub use tool::{AgentTool, AgentToolResult, AgentToolUpdate, ToolExecutionMode};
-pub use lua::LuaRuntime;
-pub use config::Config;
-pub use error::SmithError;
-pub use mux::{ModelAlias, ModelGroup, ProviderBucket, ModelResolver, ResolvedModel, ResolveError};
-```
+- the shared types of §5.1–§5.3 (IDs, messages, provider types, tool types:
+  `AgentTool`, `AgentToolResult`, `AgentToolUpdate`, `ToolExecutionMode`),
+- `StreamFn` (§5.4),
+- `LuaRuntime` (§5.5),
+- `Config` (§5.6),
+- the model-resolution types (§5.7): `ModelAlias`, `ModelGroup`,
+  `ProviderBucket`, `ModelResolver`, `ResolvedModel`, `ResolveError`,
+- `SmithError` (§5.8).
 
 `smith` must not re-export `smith-core` types. Domain types are imported from
 their owning crates.
@@ -515,21 +510,10 @@ code must not panic for external failures.
 `smith-core` owns pure business logic: agent loop, sessions, tools, hooks,
 secret proxy, compaction, cost, trace, and replay. It depends only on `smith`.
 
-Exports:
-
-```rust
-pub mod agent;
-pub mod session;
-pub mod session_format;
-pub mod tools;
-pub mod events;
-pub mod secret_proxy;
-pub mod system_prompt;
-pub mod compaction;
-pub mod cost;
-pub mod trace;
-pub mod replay;
-```
+Responsibilities (names, not module layout): the agent loop (§6.1), agent and
+engine events (§6.2–§6.3), hooks (§6.4), session model and format (§6.5–§6.6),
+secret proxy (§6.7), system prompt (§6.8), compaction and cost (§6.9), tool
+registry (§6.10), trace and replay (§6.11).
 
 ### 6.1 Agent Loop
 
@@ -706,7 +690,7 @@ Cost tracking:
 
 ### 6.10 Tool Registry
 
-`ToolRegistry` stores `Arc<dyn AgentTool>` by name.
+`ToolRegistry` stores shared, thread-safe `AgentTool` handles by name.
 
 Rules:
 
@@ -751,17 +735,16 @@ Replay modes:
 
 ### 7.1 Provider Trait
 
-```rust
-pub trait Provider: Send + Sync {
-    fn id(&self) -> &str;
-    fn name(&self) -> &str;
-    fn validate_auth(&self) -> Result<(), ProviderError>;
-    fn stream(&self, request: ProviderRequest) -> Pin<Box<dyn Stream<Item = ProviderEvent> + Send>>;
-}
-```
+`Provider` is thread-safe and object-safe (usable as a trait object without
+async-trait machinery — a prototype-verified property). It exposes:
 
-`provider_to_stream_fn(Arc<dyn Provider>)` returns the `StreamFn` consumed by
-`smith-core`.
+- identity: id and display name,
+- auth validation, failing fast before the first stream (§7.4),
+- `stream`: takes a `ProviderRequest`, returns a boxed async stream of
+  `ProviderEvent` — a plain method returning a stream, not an async method.
+
+`provider_to_stream_fn` adapts a shared `Provider` handle into the `StreamFn`
+consumed by `smith-core`.
 
 ### 7.2 Provider Implementations
 
