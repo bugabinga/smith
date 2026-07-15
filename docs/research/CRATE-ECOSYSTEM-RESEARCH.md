@@ -421,7 +421,7 @@ This document records crate evaluations, alternatives considered, and dependency
 
 ## 18. JSON Schema: jsonschema
 
-### Decision: jsonschema (future consideration)
+### Decision: jsonschema (SUPERSEDED — active in v1 per SPEC §7.3)
 
 **Why not yet:**
 - Tool definition validation uses JSON Schema
@@ -505,7 +505,7 @@ This document records crate evaluations, alternatives considered, and dependency
 - `nucleo` is stronger for editor-scale fuzzy matching but overkill for smith v1.
 
 **Versions:**
-- `similar = "3"`
+- `similar = "2"` (SPEC §2.3 canonical)
 - `syntastica = { version = "0.6", default-features = false, features = ["runtime-c2rust"] }`
 - `syntastica-parsers = "0.6"`
 - `fuzzy-matcher = "0.3"`
@@ -596,7 +596,7 @@ resolver = "3"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"  # canonical per docs/SPEC.md §2.3 / PROJECT-INVARIANTS §10
 
 [workspace.dependencies]
 tokio = { version = "1.43", features = ["full"] }
@@ -613,7 +613,7 @@ ignore = "0.4"
 grep = "0.4"
 grep-regex = "0.1"
 grep-searcher = "0.1"
-similar = "3"
+similar = "2"  # SPEC §2.3 pins 2; "3" here was stale
 syntastica = { version = "0.6", default-features = false, features = ["runtime-c2rust"] }
 syntastica-parsers = "0.6"
 fuzzy-matcher = "0.3"
@@ -656,7 +656,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 | ulid | Less standard than UUIDv7 | ID generation |
 | blake3 | Less standard than SHA-256 | Hashing |
 | fancy-regex | Slower, backreferences not needed | Regex |
-| jsonschema | Deferred to v2 | Validation |
+| jsonschema | Superseded: active in v1 (SPEC §2.3, §5.3, §7.3) | Validation |
 | mini-cbor | Derive friction for complex enums; ciborium uses existing serde derives cleanly | CBOR serialization |
 | color-eyre | Not selected for current dependency set | Error display |
 | indicatif | Not selected for current dependency set | Progress bars |

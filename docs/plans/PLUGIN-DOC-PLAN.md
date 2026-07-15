@@ -281,6 +281,11 @@ xtask/
     └── doc_gen.rs           -- generate man pages + docs bundle
 ```
 
+> Normative pieces of this plan are now canonical in SPEC: doc resolution
+> order + `SMITH_DOCS_PATH` (§16), `smith help <topic>.<function>` dotted
+> addressing (§10.2), system-prompt SDK self-learn bootstrap (§6.8). This
+> file remains the execution plan for file inventories and tooling.
+
 ## TODO
 
 - [ ] Create SDK annotation files in `smith-harness/src/lua/sdk/`

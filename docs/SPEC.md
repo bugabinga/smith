@@ -112,6 +112,10 @@ ratatui = "0.29"
 ciborium = "0.2"
 bumpalo = "3"
 thiserror = "2"
+anyhow = "1"
+toml = "0.8"
+regex = "1"
+tokio-stream = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 reqwest = { version = "0.12", features = ["json", "stream"] }
@@ -681,6 +685,10 @@ Secrets are local plaintext. The protection target is the remote LLM.
 
 Plugins may transform prompts through typed hooks. No hidden global prompt mutation.
 
+The system prompt bootstraps SDK self-learning: it teaches the agent to
+discover plugin/SDK capabilities through `smith help --search`, `--guide`, and
+`--example` (§10.2) instead of embedding the full SDK reference inline.
+
 ### 6.9 Compaction and Cost
 
 Compaction:
@@ -718,7 +726,10 @@ Rules:
 Trace files capture deterministic replay data:
 
 - file header with magic/version/session ID,
-- compressed entries via zstd,
+- compressed entries via zstd — per-entry compression inflates small traces
+  (measured ~115% of raw CBOR under ~50 entries from per-entry header
+  overhead); the codec uses block-level compression or a minimum entry-size
+  threshold so small traces never exceed their uncompressed size,
 - provider requests/events,
 - tool calls/results,
 - TUI events as opaque JSON,
@@ -773,10 +784,17 @@ Quirks handled at provider boundary:
 
 - streaming vs non-streaming APIs,
 - partial tool-call argument chunks,
-- thinking/reasoning fields,
+- thinking/reasoning fields (reasoning text may arrive inside `content` before
+  the final answer on some OpenAI-compatible endpoints),
 - provider-specific stop reasons,
 - cache usage fields,
 - model capability flags.
+
+Error detection: some providers return errors as plain JSON bodies with
+HTTP 200 instead of SSE (prototype-proven against a live OpenAI-compatible
+endpoint). A provider implementation must detect a non-streaming JSON error
+body on a streaming request and convert it to `ProviderEvent::Error` — never
+hang waiting for SSE frames that will not come.
 
 ### 7.3 Model Registry
 
@@ -878,8 +896,29 @@ No OS keychain. No encryption.
 
 Auth errors fail fast before first provider stream.
 
-OAuth module supports mocked OAuth flow in tests and provider-specific OAuth where
-configured.
+Auth methods per provider are declared in the registry's `auth_types` map:
+`api_key` (with its `env_var` name), `oauth`, and `organization` (org-scoped
+key, e.g. OpenAI: api key + org ID). `AuthMethod` mirrors these three.
+
+`~/.smith/auth.json` is a per-provider object map:
+
+```json
+{
+  "anthropic": {
+    "access_token": "...",
+    "refresh_token": "...",
+    "expires_at": 1234567890
+  }
+}
+```
+
+OAuth module supports mocked OAuth flow in tests and provider-specific OAuth
+where configured. OAuth per provider is configured with `id`, `name`,
+`auth_url`, `token_url`, `scope`, and `client_id`; credentials are
+`access_token`, `refresh_token`, `expires_at` (Unix seconds), auto-refreshed on
+expiry. The login flow surfaces the auth URL to the user, receives the code via
+a local callback HTTP server on a random port (or manual paste), exchanges it
+for credentials, and persists them to `auth.json`.
 
 ### 7.5 MuxProvider
 
@@ -933,6 +972,17 @@ kind. Mouse events include button, scroll, position, and modifiers.
 
 No terminfo database. Probe directly. Unsupported optional features degrade to
 plain text without user-facing error.
+
+Probe contract:
+
+- capabilities are probed once per session at startup, with a 100ms timeout
+  per probe; on timeout the capability is treated as absent (fail
+  conservative),
+- image protocol is `ImageProtocol::{Kitty, Sixel}` — no other variants in v1,
+- Kitty keyboard protocol flags are pushed on TUI startup and popped on
+  shutdown (including error/signal paths, §10),
+- synchronized output (`CSI ?2026 h/l`) wraps render passes when the terminal
+  supports it.
 
 ### 8.4 Component Trait
 
@@ -990,27 +1040,34 @@ Required widget set includes:
 - overlay,
 - border layout panels.
 
-Syntax highlighting uses `syntastica`. Diffs use `similar`. Fuzzy matching uses
-`fuzzy-matcher`.
+Syntax highlighting uses `syntastica` with the `runtime-c2rust` runtime (no C
+runtime dependencies; prototype-proven). Diffs use `similar` and support
+unified and side-by-side modes. Fuzzy matching uses `fuzzy-matcher`.
+
+Overlays (modals, fuzzy search, autocomplete) are positioned by an anchor
+model: nine anchors (`Center`, four corners, four edge-centers) plus
+`offset_x`/`offset_y` and optional margin; overlay `width`/`max_height` are
+`Size::Absolute(cells)` or `Size::Percent`.
 
 ### 8.7 Layout
 
 Rust provides primitives; Lua defines layout.
 
-Primitives:
+Primitives and their shapes:
 
-- column,
-- row,
-- box,
-- expanded,
-- scrollable,
-- overlay,
-- spacer,
-- tabs,
-- split.
+- `column` / `row`: child list, stacked vertically/horizontally,
+- `box`: single child, optional `width`/`height` (`Size`), optional border
+  (`BorderStyle::{Single, Double, Rounded, Thick, None}` + optional title),
+- `expanded`: single child, takes remaining space after fixed siblings,
+- `scrollable`: single child, direction vertical/horizontal/both,
+- `overlay`: single child + overlay options (§8.6 anchor model),
+- `spacer`: optional fixed `Size`,
+- `tabs`: labeled child list + active index,
+- `split`: two children, horizontal/vertical, `split_ratio: f32`.
 
-One predefined border layout exists: center + north/east/south/west panels.
-Panels are invisible when empty. Default layout is a Lua plugin.
+One predefined border layout exists: center + north/east/south/west panels,
+each panel carrying `visible`, `size`, and its own layout. Panels are invisible
+when empty. Default layout is a Lua plugin.
 
 ### 8.8 Theme
 
@@ -1042,6 +1099,16 @@ to bottom or submits input.
 
 Tools may register `renderCall` and `renderResult` Lua renderers. TUI receives
 structured render instructions from harness, not arbitrary terminal writes.
+
+### 8.11 Deferred Scope (v1)
+
+Explicitly out of v1 TUI scope:
+
+- vim-style normal-mode editing,
+- inline image rendering (Kitty graphics protocol),
+- split-pane resizing (the `split` primitive exists; interactive resize does
+  not),
+- multiple simultaneous sessions.
 
 ## 9. Harness Crate: `smith-harness`
 
@@ -1266,36 +1333,49 @@ an error.
 
 ### 9.8 Event Bridge
 
-`PluginEvent` variants cover:
+Lua receives event tables with a `type` field. The canonical event catalog and
+per-event blocking capability:
 
-- agent lifecycle,
-- turns,
-- message deltas/end,
-- tool call/result,
-- session lifecycle,
-- model changes,
-- context/compaction,
-- config reload (`config_changed`, §9.19),
-- TUI/input events,
-- commands,
-- provider/auth events,
-- VCS events,
-- errors and shutdown.
+| Event | Can block | Notes |
+|-------|-----------|-------|
+| `resources_discover` | No | contribute skill/prompt/theme paths |
+| `session_start`, `session_shutdown` | No | started/loaded/reloaded; shutting down |
+| `session_before_switch` | **Yes** | before switching sessions |
+| `session_before_fork` | **Yes** | before forking/cloning |
+| `session_before_compact` | **Yes** | can customize compaction |
+| `session_compact`, `session_tree` | No | completed notifications |
+| `before_agent_start` | No | may inject messages, modify system prompt |
+| `agent_start`, `agent_end`, `turn_start`, `turn_end` | No | lifecycle |
+| `model_select` | No | model changed |
+| `message_start`, `message_update`, `message_end` | No | streaming lifecycle |
+| `thinking_delta`, `text_delta` | No | token deltas |
+| `tool_execution_start` | No | execution began |
+| `tool_call` | **Yes** | before tool executes (§6.4 blocked-call contract) |
+| `tool_execution_update`, `tool_result`, `tool_execution_end` | No | `tool_result` may modify the result |
+| `input` | No | may intercept/transform/mark handled |
+| `user_bash` | No | user `!`/`!!` commands |
+| `context` | No | may modify messages before LLM call |
+| `before_provider_request`, `after_provider_response` | No | inspect/replace payload; response received |
+| `config_changed` | No | §9.19, carries changed key paths |
+| `plugin_loaded`, `plugin_unloaded` | No | plugin lifecycle |
+| `panel_toggle`, `resize` | No | TUI |
+| `provider_registered` | No | after provider add/override |
+| VCS events | No | §9.13 operations |
+| errors, shutdown | No | §9.17 |
 
-Lua receives event tables with a `type` field.
+Handler return-table contracts (Lua-facing):
 
-Plugin event results can:
+- `tool_call` → `{ block = true, reason = "..." }` or
+  `{ args = <replacement> }` or nil/`{}` (allow),
+- `tool_result` → `{ content = <replacement> }` or nil (keep),
+- `input` → `{ action = "handled" | "continue", text = <transformed>? }`,
+- `context` → `{ messages = <modified> }` or nil,
+- `session_before_*` → `{ block = true, reason = "..." }` or nil,
+- all other events: return value ignored.
 
-- block tool call,
-- transform tool args,
-- replace tool result,
-- retry/cancel,
-- transform input,
-- override system prompt/context,
-- request continue/stop,
-- emit UI actions.
-
-The bridge maps these into `AgentLoopConfig` hooks.
+The bridge maps these into `AgentLoopConfig` hooks (§6.4): block/transform
+tool calls, replace results, retry/cancel, transform input, override system
+prompt/context, request continue/stop, emit UI actions.
 
 ### 9.9 Extension Contexts
 
@@ -1304,6 +1384,32 @@ SDK contexts:
 - `ExtensionContext`: agent lifecycle, model, context, tools, config, logging.
 - `ExtensionCommandContext`: slash command args, selection, output, session.
 - `ExtensionUIContext`: selection, confirm, prompt, status, layout, widget APIs.
+
+The `ctx` table passed to event handlers, tool `execute`, and command handlers
+has this shape:
+
+```lua
+ctx = {
+  ui = {
+    notify = function(message, level) end, -- "info"|"success"|"error"|"warning"
+    confirm = function(title, message) end,      -- -> bool
+    select = function(title, items) end,         -- -> chosen item
+    input = function(title, placeholder) end,    -- -> string
+    set_status = function(key, text) end,
+    set_widget = function(key, lines) end,
+  },
+  session = {  -- read-only
+    id = "...", name = "...",
+    entries = function() end,      -- -> table
+    entry_count = function() end,  -- -> number
+    branch = function() end,       -- -> table
+  },
+  model = { id = "...", provider = "..." },
+  cwd = "/path/to/project",
+  signal = AbortSignal,
+  shutdown = function() end,
+}
+```
 
 ### 9.10 Lua SDK
 
@@ -1324,9 +1430,47 @@ SDK namespaces include:
 - `smith.vcs.*`,
 - `smith.bus.*`,
 - `smith.config.*` (read access; `smith.config.reload()` triggers §9.19),
+- `smith.shortcut.*` (keyboard shortcut registration),
+- `smith.credentials.*` (`get(provider)`/`set(provider, value)` over the §7.4
+  auth store),
+- `smith.active_tools.*` (`get()`/`all()`/`set(names)`),
+- `smith.send_message(text, { deliver_as = "steer" | "followUp" })` and
+  `smith.send_user_message(text)`,
 - `smith.abort()`,
 - `smith.shutdown()`,
 - `smith.getContextUsage()`.
+
+Core registration shapes:
+
+```lua
+smith.tool.register({
+  name = "my_tool",
+  description = "shown to the LLM",
+  parameters = { --[[ JSON-schema table, validated per §5.3 ]] },
+  execute = function(input, ctx)
+    return { content = { { type = "text", text = "..." } } }
+  end,
+})
+
+smith.command.register("name", {
+  description = "...",
+  autocomplete = function(prefix) end, -- optional -> { {value, label}, ... }
+  handler = function(args, ctx) end,
+})
+
+smith.shortcut.register("ctrl+shift+p", {
+  description = "...",
+  handler = function(ctx) end,
+})
+```
+
+`smith.provider.register(name, table)` merges into an existing provider or adds
+a new one. Merge rules: `base_url`/`api_key`/`api` override; `headers` merge
+per-key; `oauth` replaces whole; `models` merge by ID field-by-field (same
+rules recursively); omitted fields keep existing values; `replace_models =
+true` drops all existing models first. `smith.provider.unregister(name)` and
+`smith.provider.unregister_model(provider, model_id)` remove entries. All
+tables are validated against the §7.3 schema.
 
 All public Lua SDK functions carry LuaLS/EmmyLua `---@` annotations. LuaLS is the
 canonical annotation dialect; no other dialect is supported. Every public binding
@@ -1453,11 +1597,36 @@ Plugins interact only through `smith.vcs.*`.
 
 `smith.vcs.*` exposes:
 
-- init/status/snapshot,
-- op ID capture,
-- diff queries,
-- undo/redo/time-travel primitives,
-- structured file statuses and hunks.
+Read-only queries:
+
+```lua
+smith.vcs.status()               -- { modified={}, added={}, deleted={}, renamed={} }
+smith.vcs.diff(opts)             -- { hunks={}, text="..." }
+smith.vcs.diff_revs(a, b)        -- diff between revisions/operations
+smith.vcs.op_log({ limit = n })  -- { { id, description, time, op_type } }
+smith.vcs.op_show(op_id)         -- { id, description, diff, files }
+smith.vcs.annotate(path, opts)   -- line attribution data
+smith.vcs.interdiff(a, b)        -- patch-vs-patch comparison
+smith.vcs.evolog(rev)            -- logical change evolution
+```
+
+Mutations (explicit, validated inputs):
+
+```lua
+smith.vcs.commit(message)
+smith.vcs.undo()
+smith.vcs.redo()
+smith.vcs.op_restore(op_id)
+smith.vcs.restore_paths(paths, rev)
+smith.vcs.split(opts)
+smith.vcs.squash(source, dest)
+smith.vcs.parallelize(revs)
+smith.vcs.sparse(paths)
+smith.vcs.workspace_add(name, opts)
+```
+
+Lua receives stable smith-shaped tables; jj/gix implementation details never
+leak through this surface.
 
 `gix` is used only for targeted structured queries behind `smith.vcs.*`.
 
@@ -1757,6 +1926,8 @@ Subcommands:
   surface (§9.10), with mode-specific additions and omissions, rather than
   define an independent API.
 - `smith help [topic] [--search q] [--list] [--examples] [--example name] [--guide name]`.
+  Topics support dotted function addressing: `smith help tool.register`
+  resolves the `register` entry within the `tool` topic.
 - `smith replay <session> [--speed f64] [--compare] [--sandbox path]
   [--turns N] [--from-turn N] [--format text|json|summary] [--continue-on-diff bool]`.
 
@@ -1906,9 +2077,13 @@ xtask commands are thin orchestrators. No business logic.
 
 - `docs/SPEC.md` is the canonical spec.
 - `docs/PROJECT-INVARIANTS.md` contains non-negotiable repository invariants.
-- Design docs may expand implementation rationale but cannot contradict `SPEC.md`.
+- No standing design docs: subsystem design content lives in this spec. Any
+  future exploratory design doc is non-canonical and cannot contradict
+  `SPEC.md`.
 - SDK docs are generated from Lua `---@` annotations and `@usage` blocks.
-- `smith help` reads embedded generated docs.
+- `smith help` resolves docs in order: (1) embedded in the binary via
+  `include_str!`, (2) install directory `<prefix>/share/smith/docs/`,
+  (3) `SMITH_DOCS_PATH` environment override (development). First hit wins.
 
 Documentation gates:
 
@@ -1986,6 +2161,8 @@ Blocks release if mutation score <80% or benchmark regression exceeds threshold.
 | `smith-harness` | ≥90% |
 | `smith-cli` | ≥80% |
 
+Overall workspace coverage target is 85%; merges are blocked below 80%.
+
 ### 17.5 nextest
 
 `.config/nextest.toml`:
@@ -2010,6 +2187,12 @@ slow-timeout = "30s"
 [profile.thorough]
 retries = 1
 slow-timeout = "120s"
+
+[profile.ci]
+fail-fast = false
+retries = 2
+slow-timeout = "60s"
+# supports --partition for sharded CI runs
 ```
 
 ### 17.6 Property Tests
@@ -2070,6 +2253,40 @@ Criterion benchmarks:
 - `config_resolve_3level`,
 - `trace_filter_10000`,
 - `plugin_load_10`.
+
+Regression thresholds per benchmark: >5% warns, >10% fails the nightly gate
+(§13).
+
+### 17.10 Continuous Integration
+
+Test hermeticity — CI tests never touch real external state:
+
+- providers are mocked (`StreamFn` fakes; no network),
+- TUI renders through `TestBackend` (no TTY),
+- filesystem via temp dirs,
+- clock and randomness injected (mock clock, fixed seeds),
+- tests requiring real network live behind a `network-tests` feature and never
+  run in the default CI lane.
+
+Gate tiers by context:
+
+| Context | Gate |
+|---------|------|
+| every agent iteration | fast tier (§17.1) |
+| before merge | fast + medium tiers |
+| CI only | slow tier, coverage, mutation, benchmarks |
+
+Agent CI-safety rules (binding for any coding agent working on Smith):
+
+- never auto-merge,
+- never modify CI configuration to make a run pass,
+- never modify or delete tests to make them pass,
+- never skip tests to get green.
+
+Android/Termux (`aarch64-linux-android`) is a supported development
+environment, not a release target (§14): CI keeps a validation lane that
+smoke-builds vendored LuaJIT and syntastica for it; breakage there blocks
+source-compatibility fixes, not artifact publishing.
 
 ## 18. Prototype Policy
 

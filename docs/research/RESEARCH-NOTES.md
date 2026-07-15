@@ -447,31 +447,13 @@ Not included in initial architecture. Re-evaluate during the project lifetime.
 
 ## 4. Architecture Implications
 
-### Plugin System Design
+### Plugin System Design (REJECTED ALTERNATIVE)
 
-```
-Plugin (base trait)
-├── ToolProvider        — implements Tool trait
-├── WidgetProvider      — implements Widget trait
-├── SecurityProvider    — implements SecurityPolicy trait
-├── HookProvider        — subscribes to engine events
-├── InterfacePublisher  — publishes new trait interfaces for others
-└── CommandProvider     — registers slash commands
-```
-
-Each is optional. A plugin implements only what it needs. The engine discovers interfaces via `InterfacePublisher` and builds a registry.
-
-### Security Architecture
-
-```
-Plugin Load → Sandbox Tier Assignment
-  ├─ Tier 0 (built-in)    → Full access
-  ├─ Tier 1 (trusted Lua) → Cooperative sandbox, no JIT, disabled io/os/debug
-  └─ Tier 2 (WASM)        → wasmtime sandbox, capability-gated, fuel-limited
-
-Tool Call Flow:
-  LLM requests tool → SecurityPolicy.validate() → Sandbox permission check → Execute → SecurityPolicy.inspect() → Return to LLM
-```
+> An early Rust-trait plugin architecture (`Plugin`/`ToolProvider`/
+> `InterfacePublisher` traits, sandbox tiers 0/1/2 with WASM) was explored
+> here and rejected. Canonical: Lua plugins with plain-Lua interface
+> descriptors and a single restricted-runtime sandbox — SPEC §9.4, §9.6,
+> §9.14. Retained only as a record of the road not taken.
 
 ### Event System
 
@@ -486,28 +468,12 @@ Pi's 28-event model is excellent. smith should have a similar lifecycle event sy
 
 Events can return results that **mutate behavior** (block tool calls, transform input, override prompts).
 
-### OCaml-Style Interface Publishing
+### OCaml-Style Interface Publishing (REJECTED ALTERNATIVE)
 
-```rust
-/// A plugin that publishes a new interface
-pub trait InterfacePublisher: Plugin {
-    fn published_interfaces(&self) -> Vec<InterfaceDescriptor>;
-}
-
-pub struct InterfaceDescriptor {
-    name: String,           // e.g. "output-formatter"
-    schema: Schema,         // JSON schema for the interface
-    rust_trait: TypeId,     // Rust trait that implementors must satisfy
-}
-
-/// Engine maintains a registry
-pub struct InterfaceRegistry {
-    interfaces: HashMap<String, InterfaceDescriptor>,
-    implementations: HashMap<String, Vec<Box<dyn Any>>>,
-}
-```
-
-This allows plugin A to define "I need things that format output" and plugin B to implement that interface, with the engine wiring them together.
+> A Rust-side `InterfacePublisher`/`InterfaceRegistry` (TypeId-based) was
+> explored and rejected; the concept landed as plain-Lua interface
+> descriptors with bind-time conformance — SPEC §9.6, prototype-proven
+> (p02, p03).
 ---
 
 ## 5. Pi Source Analysis (2026-05-21)
@@ -517,7 +483,10 @@ Files analyzed: packages/agent/src/types.ts (419 lines), packages/coding-agent/s
 
 ### Agent Loop Hooks (pi_agent_types.ts)
 
-Pi AgentLoopConfig provides six extension hooks that smith currently lacks:
+Pi AgentLoopConfig provides six extension hooks. Five are now smith hook types
+in SPEC §6.4 (BeforeToolCall, AfterToolCall, ShouldStopAfterTurn,
+PrepareNextTurn, TransformContext); convertToLlm remains pi-specific — smith
+handles message conversion at the provider boundary (§7.2). Original analysis:
 
 **1. beforeToolCall(context, signal) -> { block?, reason? }**
 Called before each tool executes. Can block execution by returning { block: true }.
