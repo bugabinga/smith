@@ -37,22 +37,27 @@ smith/                          # ← code (crates, Cargo, .rs)
 └── ...
 
 docs/                           # ← project management (spec, research)
-├── SPEC.md                     # canonical project specification
-├── research/                   # ecosystem research, tool analysis
+├── SPEC.md                     # canonical project specification (self-contained;
+│                               #   subsystem design content lives here)
+├── research/                   # ecosystem research, tool analysis (evidence,
+│   │                           #   non-normative)
 │   ├── RESEARCH-NOTES.md
 │   ├── TERMINAL-CAPABILITIES-RESEARCH.md
 │   ├── TESTING-STRATEGY-RESEARCH.md
 │   ├── CI-PATTERNS-RESEARCH.md
 │   └── CRATE-ECOSYSTEM-RESEARCH.md
-├── design/                     # subsystem design documents
-│   ├── TUI-CRATE-DESIGN.md
-│   ├── PLUGIN-SDK-DESIGN.md
-│   └── AI-CRATE-DESIGN.md
 ├── plans/                      # task breakdowns, documentation plans
 │   ├── TASK-BREAKDOWN.md
 │   └── PLUGIN-DOC-PLAN.md
 └── PROJECT-INVARIANTS.md       # this file
+
+prototypes/                     # ← disposable spec-validation prototypes
+├── AGENTS.md                   # prototype rules
+└── PLAN.md                     # prototype plan + result blocks
 ```
+
+Former `docs/design/` subsystem docs were fully absorbed into `docs/SPEC.md`
+and deleted (2026-07-15; see git history).
 
 **Rule:** Code review gates on `src/`, `Cargo.toml`, `tests/`. Project management review gates on `docs/`. No code in `docs/`, no specs in `src/`.
 
@@ -422,5 +427,6 @@ Rules:
 
 | Date | Change | Author |
 |------|--------|--------|
+| 2026-07-15 | §2 tree: design/ absorbed into SPEC.md and deleted; prototypes/ added (user-approved) | smith-spec |
 | 2026-05-23 | Add architecture gates and pinned-nightly pup exception | smith-spec |
 | 2026-05-22 | Initial invariants | smith-spec |
