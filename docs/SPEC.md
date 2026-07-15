@@ -364,14 +364,22 @@ Required shared types:
 - `SessionId(String)`.
 - `SecretId(String)`.
 - `VcsOpId(String)`.
-- `Role`: `System`, `User`, `Assistant`, `Tool`, `ToolResult`, `Custom`, `BashExecution`.
-- `ContentBlock`:
+- `Role`: `System`, `User`, `Assistant`, `Tool`.
+- `ContentBlock` — the authoritative content representation:
   - `Text(String)`,
   - `Image { data, media_type }`,
-  - `ToolCall { id, name, arguments }`,
+  - `ToolCall { id, name, arguments (JSON) }`,
   - `ToolResult { id, result, is_error }`,
-  - `Thinking { content }`.
-- `Message { role, content }`.
+  - `Thinking { content, provider_metadata? }` — `provider_metadata` is opaque
+    and preserved, never consumed by Smith; provider adapters attach it (e.g.
+    thinking signatures) and replay it on later requests (§7.2), so signed
+    thinking round-trips across turns.
+- `Message { role, content: list of ContentBlock }`.
+
+Roles say who speaks; entry kinds say what happened. Tool results are
+`Tool`-role messages carrying `ToolResult` blocks — there is no tool-result
+role. Events like user bash executions are `SessionEntry` kinds (§6.5), not
+roles.
 
 ### 5.2 Provider Types
 
@@ -379,11 +387,15 @@ Required shared types:
 - `StopReason`: `EndTurn`, `ToolUse`, `OverMaxTokens`, `Aborted`, `StopSequence`, `Error`.
 - `ThinkingLevel`: `Off`, `Minimal`, `Low`, `Medium`, `High`, `XHigh`.
 - `ProviderEvent`:
-  - `TextDelta`,
-  - `ToolCall`,
-  - `ThinkingDelta`,
-  - `Done`,
-  - `Error`.
+  - `TextDelta { text }`,
+  - `ThinkingDelta { text }`,
+  - `ToolCall { id, name, arguments }` — assembled and complete; partial
+    argument chunks are joined at the provider boundary (§7.2),
+  - `Done { usage, stop_reason }`,
+  - `Error(ProviderError)`.
+- `ProviderError` kinds — the failover-relevant classification consumed by
+  `MuxProvider` (§7.5), each carrying a message: `RateLimit`, `AuthFailed`,
+  `Network`, `ServerError`, `InvalidRequest`, `ModelNotFound`, `Timeout`.
 - `ProviderRequest` contains messages, system prompt, model/provider IDs, tool
   definitions, thinking level, token limit, and stop sequences.
 
@@ -499,11 +511,24 @@ Failover:
 
 ### 5.8 Errors
 
-`SmithError` is the shared recoverable error enum. It wraps provider, auth, tool,
-config, Lua, I/O, CBOR, and resolver errors.
+`SmithError` is the shared error enum. It wraps the domain errors defined at
+their subsystems: `ProviderError` (§5.2), auth (§7.4), tool errors including
+the §9.12 codes, config validation (§5.6), Lua (§5.5), I/O, session/trace
+codec (§6.6, §6.11), and model resolution (§5.7).
 
-Internal impossible states use assertions during development but shipped library
-code must not panic for external failures.
+Recoverability is the load-bearing property of every error path:
+
+- **Recoverable** (the default): the failure surfaces to the user and/or the
+  LLM as content — error tool results (§6.4), UI notifications, plugin
+  diagnostics (§9.17) — and the loop continues. Provider failures (§7.5),
+  tool errors, plugin faults and OOM (§9.14, §9.17), and rejected config
+  reloads (§9.19) are all recoverable.
+- **Fatal**: the process cannot continue safely — unrecoverable terminal
+  state, invalid startup config, providers exhausted in non-interactive eval.
+  Fatal paths restore the terminal (§10) and exit nonzero with a diagnostic.
+
+Shipped library code never panics for external failures; internal impossible
+states use debug assertions.
 
 ## 6. Core Crate: `smith-core`
 
@@ -613,9 +638,12 @@ history/time-travel features are Lua plugins over this core state.
 - secret registration,
 - model/provider change,
 - VCS operation,
+- user bash execution (`!`/`!!` commands and their output),
 - metadata entries needed for migration and replay.
 
-Every entry has a stable `EntryId`, optional parent, and timestamp.
+Every entry has a stable `EntryId`, optional parent, and timestamp. New entry
+kinds are forward-compatible by construction: readers preserve unknown
+variants (§6.6), so adding a kind never breaks older sessions or readers.
 
 ### 6.6 Session Format
 
@@ -903,7 +931,7 @@ for credentials, and persists them to `auth.json`.
 
 `MuxProvider` wraps multiple providers/accounts for resolved groups and buckets.
 
-Behavior:
+Behavior, keyed by the `ProviderError` kinds (§5.2):
 
 - `RateLimit`: immediate failover,
 - `AuthFailed`, `Network`, `ServerError`: retry configured count then failover,
