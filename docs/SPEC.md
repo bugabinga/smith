@@ -624,8 +624,36 @@ block reason to the provider as an error tool result so the model can react.
 - current leaf,
 - created/updated timestamps.
 
-Sessions are branching trees. Branches are immutable once created. `/tree` and
-history/time-travel features are Lua plugins over this core state.
+Sessions are branching trees. A branch is emergent, not stored: the path from
+root to a leaf. `ctx.session.branch()` (§9.9) returns the current path.
+"Immutable once created" means entries are append-only and never rewritten —
+working from an older point creates a new child, never edits history. `/tree`
+and history/time-travel features are Lua plugins over this core state.
+
+Tree operations:
+
+- **append**: adds an entry as a child of the current leaf; the leaf advances
+  to it. Appending while the leaf sits on a non-leaf entry creates a fork
+  point implicitly — there is no explicit branch operation.
+- **switch leaf**: moves the current leaf to any entry, recorded by appending
+  a leaf-switch metadata entry. On load, the effective leaf is the last
+  leaf-switch entry's target, or the last appended entry if none exists —
+  leaf state rides the §6.6 append-only recovery guarantees, and leaf history
+  is replayable for free.
+- **read path**: returns the root→leaf path. The LLM context is built from
+  the current path only (through compaction, §6.9); sibling branches are
+  invisible to the model.
+- **fork**: clones entries up to a given entry into a new `SessionId` and
+  session file (the `session_before_fork` event, §9.8). Distinct from in-tree
+  branching, which stays in one file.
+
+No branch deletion or pruning exists in v1. A session has a single writer:
+one agent loop appends to it at a time.
+
+Leaf switches never touch the working tree. Filesystem time travel is plugin
+policy, not core behavior: the time-travel plugin (§9.11) pairs leaf switches
+with `smith.vcs.op_restore` using the `VcsOpId` stored in entries.
+Conversation navigation alone is never destructive.
 
 `SessionEntry` variants include:
 
@@ -639,6 +667,7 @@ history/time-travel features are Lua plugins over this core state.
 - model/provider change,
 - VCS operation,
 - user bash execution (`!`/`!!` commands and their output),
+- leaf switch (tree navigation),
 - metadata entries needed for migration and replay.
 
 Every entry has a stable `EntryId`, optional parent, and timestamp. New entry
