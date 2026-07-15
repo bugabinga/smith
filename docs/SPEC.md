@@ -551,6 +551,29 @@ The agent loop:
 - handles steering/follow-up messages,
 - repeats until stop criteria.
 
+Steering and follow-up semantics:
+
+- **Follow-up**: FIFO queue consulted when the run would otherwise end —
+  instead of `agent_end`, the loop dequeues the next follow-up as a fresh
+  user message and starts a new turn cycle.
+- **Steering**: delivers at the next safe boundary — after the current
+  provider stream completes, or after the currently executing tool finishes.
+  Pending not-yet-executed tool calls from the current assistant message
+  resolve immediately as error-flagged synthetic results
+  (`skipped: user steered`) so every call has a result on the wire; the model
+  re-plans with the steer visible. All queued steers drain FIFO as user
+  messages before the next provider call.
+- Interactive input during an active run is a steer by default; a modifier
+  submits it as a follow-up (§8.11). Plugins override default user-message
+  behavior through the `input` hook (§9.8) and send programmatically via
+  `smith.send_message` (§9.10).
+- Queues are ephemeral process state: queued messages become session entries
+  when delivered, never when queued — the session records only what the model
+  saw. Compaction (§6.9) neither consumes nor drops the queues.
+- Cancel keys pop the queue before they abort: see §8.11. A delivered abort
+  (§12) ends the run; whatever remains queued stays queued and is surfaced by
+  the TUI for the user to send, edit, or discard.
+
 The loop uses two nested loops:
 
 - outer loop: turns and follow-up messages,
@@ -1085,7 +1108,7 @@ Probe contract:
   conservative),
 - image protocol is `ImageProtocol::{Kitty, Sixel}`; the capability is
   detected but has no v1 consumer — inline image rendering is deferred
-  (§8.11),
+  (§8.12),
 - Kitty keyboard protocol flags are pushed on TUI startup and popped on
   shutdown (including error/signal paths, §10),
 - synchronized output (`CSI ?2026 h/l`) wraps render passes when the terminal
@@ -1207,7 +1230,25 @@ to bottom or submits input.
 Tools may register `renderCall` and `renderResult` Lua renderers. TUI receives
 structured render instructions from harness, not arbitrary terminal writes.
 
-### 8.11 Deferred Scope (v1)
+### 8.11 Input Queue
+
+Queued steering and follow-up messages (§6.1) appear in one visually combined
+queue between message history and input:
+
+- follow-ups render above steers; within each kind, oldest to newest — steers
+  sit nearest the input because they deliver soonest,
+- the two kinds are visually distinct within the shared queue,
+- a promote/demote action toggles a queued message between steer and
+  follow-up,
+- Up-arrow cycles through the queued messages; selecting one edits it. While
+  edited, the message temporarily leaves the queue; re-sending returns it to
+  its previous position (best effort). Re-sending it empty removes it,
+- while the queue is non-empty, the cancel keys (Ctrl+C/Esc by default,
+  rebindable §9.11) remove queued messages newest-to-oldest *instead of*
+  their default action; only with an empty queue do they abort the run
+  (§12).
+
+### 8.12 Deferred Scope (v1)
 
 Explicitly out of v1 TUI scope:
 
