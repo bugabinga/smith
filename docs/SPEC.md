@@ -697,15 +697,47 @@ Properties (recovery boundaries prototype-proven, p06):
 
 ### 6.7 Secret Proxy
 
-The secret proxy prevents LLM exposure of secrets:
+The secret proxy prevents LLM exposure of registered secrets. Smith provides
+the masking mechanics only; secret *detection* mechanisms are out of scope
+for core and belong to plugins.
 
-- scans user messages and tool outputs for secrets,
-- replaces secrets with `smith:sec:N`,
-- stores plaintext translation entries locally,
-- rehydrates tool arguments before local execution,
-- rebuilds table on resume by scanning session entries backward.
+**Registry.** The proxy holds a table of `SecretId → plaintext + label`.
+Registration paths:
 
-Secrets are stored as local plaintext; the trust model is §11's.
+- automatic: every credential the auth resolver loads (§7.4) — provider keys
+  can never enter context, even via a tool reading a config file,
+- automatic: values of a plugin's `declared secrets` (§9.2) when read through
+  the SDK,
+- explicit: the built-in `/secret` command (§9.11),
+- plugins: `smith.secret.register(value, label)` (§9.10). Detection plugins
+  (pattern-based or otherwise) inspect content through the §9.8 `input` /
+  `tool_result` hooks and register what they find; the mechanism is theirs,
+  the mechanics are Smith's.
+
+**Masking at ingestion.** Scanning is exact substring matching against
+registered values — no heuristics in core. Content is masked to `smith:sec:N`
+placeholders *before* it becomes a session entry. Plaintext exists in exactly
+one entry kind: the secret-registration entry (preserved verbatim by
+compaction, §6.9). The ingestion scan runs after plugin `input`/`tool_result`
+hooks, so a value registered during those hooks is masked in the very content
+that surfaced it. On resume, the table rebuilds by scanning session entries
+backward for registration entries.
+
+**Rehydration.** Placeholders turn back into plaintext at exactly one layer:
+immediately before tool execution (subprocess and tool `execute`, Rust and
+Lua alike). Session content, provider requests, traces, and events carry
+placeholders only. Replay with compare (§6.11) re-executes tools and
+therefore rehydrates from the session's registration entries; trace files
+themselves stay masked. A placeholder whose ID is not registered passes
+through untouched — never rehydrated, never an error.
+
+**Display.** The TUI renders placeholders masked with their label
+(`‹secret: github-token›`); display matches context content. The local user
+can recover plaintext from registration entries via `smith session dump`.
+
+**Limits.** An unregistered secret is not protected — by design. The
+protection target is the remote LLM; the trust model is §11's, and core does
+no best-effort guessing.
 
 ### 6.8 System Prompt
 
@@ -1506,6 +1538,8 @@ SDK namespaces include:
 - `smith.vcs.*`,
 - `smith.bus.*`,
 - `smith.config.*` (read access; `smith.config.reload()` triggers §9.19),
+- `smith.secret.*` (`register(value, label)`, `list()` — labels/ids only,
+  never plaintext; §6.7),
 - `smith.shortcut.*` (keyboard shortcut registration),
 - `smith.credentials.*` (`get(provider)`/`set(provider, value)` over the §7.4
   auth store),
@@ -1566,7 +1600,7 @@ Built-ins are Lua plugins, not Rust special cases:
 
 - tools: `read`, `write`, `edit`, `bash`, `find`, `grep`, `ls`,
 - slash commands: `/undo`, `/redo`, `/history`, `/tree`, `/reload-config`,
-  replay/time-travel,
+  `/secret` (§6.7), replay/time-travel,
 - VCS tools,
 - default layout,
 - default keybindings,
