@@ -1096,6 +1096,488 @@ findings folded into SPEC (§6.1, §6.5, §6.7, §6.9).
 }
 ```
 
+## Campaign 3 — highest-risk unvalidated claims
+
+Planned 2026-07-16. Ranking rationale (spec-impact × uncertainty):
+
+1. **P15 async×Lua threading** — architecture-fatal if wrong. Every loop
+   prototype so far was synchronous; mlua without the `send` feature makes
+   Lua `!Send`, yet hooks are called from the tokio agent loop, tools run on
+   a pool, and §9.18 says "on the plugin thread" — a thread §12 never
+   defines. This prototype forces the missing §12 decisions.
+2. **P16 config cascade + host reload** — §9.19 is a full contract with zero
+   prototype evidence; §5.6 cascade layering with plugin contributions is
+   likewise unvalidated.
+3. **P17 bytecode cache** — genuine disproof risk: §5.5 promises bytecode
+   caching, but dump/load availability and version fragility under vendored
+   LuaJIT via mlua are unverified.
+4. **P18 model resolver** — pure logic, cheap, and cross-cutting: resolution
+   is referenced by config, compaction, the /model picker, and failover.
+5. **P19 models.dev schema pin** — bootstrap-critical: the "translated from
+   the models.dev schema at a recorded upstream version" claim (§7.3) has
+   never been executed; p05 used synthetic pre-models.dev fixtures.
+6. **P20 trace/replay over the new contracts** — replay was validated only
+   against the pre-consolidation design; steering synthetics, abort tails,
+   leaf switches, folds, and secret placeholders all postdate it.
+7. **P21 compaction round** — p12 proved the fold; the round that CREATES
+   summaries (trigger math, span selection, summarization request assembly,
+   re-entrancy guard) is unvalidated.
+8. **P22 input queue machine** — freshly designed UX (§8.11) with fiddly
+   edit/reposition semantics; deterministic TestBackend validation.
+9. **P23 bus delivery semantics** — §9.18's precise delivery rules
+   (registration order, no re-entry, error isolation) beyond the token
+   teardown p11 covered.
+
+Deliberately not prototyped: the RPC method catalog (deferred by decision,
+§10.2), release cross-builds (infrastructure, not spec), CI wiring (§17.10 is
+process), and §1.1 UX prose (validated by use, not prototype).
+
+## P15 — `p15-async-lua-threading`
+
+### SPEC claims
+
+- §12: engine loop, UI thread, tool pool, provider tasks compose without the
+  engine blocking on UI; every long operation observes abort; UI keypress
+  acknowledged within 16ms.
+- §5.5/§9: one `mlua::Lua` per plugin, `!Send` (no `send` feature), yet
+  hooks (§6.4) are invoked from the async agent loop and bus delivery (§9.18)
+  happens "on the plugin thread".
+- §9.16: cancellation tokens stop plugin tasks across the async boundary.
+
+### Risk
+
+The Lua-thread integration may be unimplementable as implied: `!Send` states
+cannot hop tokio workers, so hook dispatch needs a confinement strategy
+(dedicated plugin thread + channel actor, or `LocalSet`), and a busy Lua hook
+may stall the engine. §12 does not name the plugin thread §9.18 assumes.
+
+### Minimal artifact
+
+```text
+p15-async-lua-threading/
+  Cargo.toml        (tokio, mlua luajit vendored)
+  src/main.rs
+```
+
+Tokio agent loop (p07/p14 pattern, now async) + one dedicated plugin thread
+owning two Lua states; hook dispatch via channels; parallel mock tools on a
+pool; a deliberately slow Lua hook; abort mid-hook.
+
+### Verify
+
+```bash
+cd prototypes/p15-async-lua-threading
+cargo run -- hook-roundtrip
+cargo run -- parallel-tools-hooks
+cargo run -- slow-hook-stall
+cargo run -- abort-mid-hook
+cargo run -- all
+```
+
+### Pass evidence
+
+- `!Send` containment compiles by construction; hook round-trip latency
+  measured (target: sub-ms median),
+- parallel tools' before/after hooks serialize on the plugin thread without
+  deadlock,
+- a slow hook's effect on engine/UI responsiveness measured and reported
+  (does 16ms hold? what budget does §12 need?),
+- abort interrupts a hook-waiting engine cleanly,
+- report the exact threading rule §12 must state.
+
+### SPEC impact
+
+§12 gains the plugin-thread definition, the hook dispatch mechanism, and a
+hook execution budget — or the one-Lua-thread design is refuted with
+evidence.
+
+## P16 — `p16-config-cascade-reload`
+
+### SPEC claims
+
+- §5.6: five-layer cascade, later overrides earlier; Rust schemas validate;
+  unknown keys warn or fail by context.
+- §9.19: reload re-evaluates layers 1–4, validates fully (including model
+  re-resolution), swaps atomically, rolls back on failure with exact key
+  path; `config_changed` carries changed key paths; CLI flags persist;
+  plugin reload triggers cascade re-evaluation.
+
+### Risk
+
+Layer merge semantics (tables vs scalars across Lua layers), changed-keypath
+diffing, and rollback atomicity may be underspecified in exactly the ways
+p05 found for provider merging.
+
+### Minimal artifact
+
+```text
+p16-config-cascade-reload/
+  Cargo.toml        (mlua, serde)
+  layers/builtin.lua
+  layers/plugin-a.lua
+  layers/user.lua
+  src/main.rs
+```
+
+### Verify
+
+```bash
+cd prototypes/p16-config-cascade-reload
+cargo run -- cascade
+cargo run -- reload-ok
+cargo run -- reload-invalid-keeps-active
+cargo run -- plugin-reload-reevaluates
+cargo run -- all
+```
+
+### Pass evidence
+
+- cascade produces documented precedence incl. nested-table merge behavior
+  (report the merge rule §5.6 must state: leaf-merge like §7.3, or
+  layer-replace),
+- reload swap is all-or-nothing; invalid candidate reports exact key path,
+- changed-keypath diff is minimal and correct; CLI layer persists,
+- plugin-contribution change propagates via reload.
+
+### SPEC impact
+
+Pin the §5.6 cross-layer merge granularity and any §9.19 diff/rollback edge
+rules.
+
+## P17 — `p17-bytecode-cache`
+
+### SPEC claims
+
+§5.5: Smith compiles `.lua` to bytecode on first load; cache key includes
+source hash; Smith never loads bytecode it did not compile.
+
+### Risk
+
+Disproof risk: mlua under vendored LuaJIT may not expose reliable
+dump/load; LuaJIT bytecode is version-fragile; "never loads foreign
+bytecode" needs an enforcement mechanism (provenance, not trust).
+
+### Minimal artifact
+
+```text
+p17-bytecode-cache/
+  Cargo.toml        (mlua luajit vendored, sha2)
+  src/main.rs
+```
+
+### Verify
+
+```bash
+cd prototypes/p17-bytecode-cache
+cargo run -- roundtrip
+cargo run -- stale-invalidation
+cargo run -- foreign-rejected
+cargo run -- all
+```
+
+### Pass evidence
+
+- dump/load works (or precisely which API is missing → disproof),
+- cache hit skips compilation; source edit invalidates via hash,
+- tampered/foreign bytecode file is rejected before reaching Lua,
+- report LuaJIT-version fragility and the cache-invalidation rule §5.5
+  needs (e.g. cache key = source hash + smith version + LuaJIT version).
+
+### SPEC impact
+
+Either §5.5 gains the full cache-key and provenance rule, or bytecode
+caching is dropped/deferred with evidence.
+
+## P18 — `p18-model-resolver`
+
+### SPEC claims
+
+§5.7: pure resolution requested name → alias → group → bucket/account →
+metadata; cycles detected at config load with full path; DAGs allowed;
+failover strategies ordered/round-robin; §6.9 `compaction_model` and §1.1
+`/model` resolve through the same graph.
+
+### Risk
+
+Cycle/DAG edge semantics and alias-in-group-in-bucket compositions may be
+ambiguous; error reporting shape unpinned.
+
+### Minimal artifact
+
+```text
+p18-model-resolver/
+  Cargo.toml        (serde only)
+  src/main.rs
+```
+
+### Verify
+
+```bash
+cd prototypes/p18-model-resolver
+cargo run -- resolve
+cargo run -- cycles
+cargo run -- failover-order
+cargo run -- all
+```
+
+### Pass evidence
+
+- documented resolution for alias→alias, alias→group, group containing
+  buckets and raw models; DAG sharing works,
+- cycle diagnostic carries the full path; detected at load, not resolve,
+- resolution is pure (no I/O by construction),
+- failover ordering handed to a mock Mux matches strategy config.
+
+### SPEC impact
+
+Pin any resolution edge rules §5.7 lacks (duplicate names across kinds,
+shadowing, empty groups).
+
+## P19 — `p19-models-dev-schema-pin`
+
+### SPEC claims
+
+§7.3: providers.schema.json is translated from the models.dev schema at a
+recorded upstream version; validation at three boundaries; leaf-field merge,
+models.dev primary, catwalk fills gaps; unknown fields preserved
+semantically; ModelMetadata mapping table.
+
+### Risk
+
+The translation has never been executed against the real api.json shape;
+real-world data may not fit the documented mapping (nulls, missing limits,
+provider-level quirks).
+
+### Minimal artifact
+
+```text
+p19-models-dev-schema-pin/
+  Cargo.toml        (serde_json, jsonschema)
+  fixtures/models-dev-api.snapshot.json   (committed, versioned snapshot)
+  fixtures/catwalk.json
+  src/main.rs
+```
+
+No network; the snapshot fixture records its upstream retrieval date.
+
+### Verify
+
+```bash
+cd prototypes/p19-models-dev-schema-pin
+cargo run -- validate-snapshot
+cargo run -- merge
+cargo run -- map-metadata
+cargo run -- all
+```
+
+### Pass evidence
+
+- generated providers.schema.json accepts the full real snapshot,
+- leaf-merge with catwalk gap-fill works on real shapes; unknown fields
+  survive; conflicts reported per §7.3 taxonomy,
+- every snapshot model maps into ModelMetadata via the §7.3 table; unmapped
+  fields enumerated,
+- report any real-data shape the §7.3 mapping cannot express.
+
+### SPEC impact
+
+Correct the §7.3 mapping/schema rules against reality; record the pinned
+upstream version procedure.
+
+## P20 — `p20-trace-replay-contracts`
+
+### SPEC claims
+
+§6.11 trace/replay against the campaign-2 contracts: traces capture steering
+synthetics, abort dangling tails, leaf switches, fold spans, and masked
+secrets; block-level zstd with min-size threshold; max-speed reconstruction
+reproduces session state; compare mode re-executes tools with §6.7
+rehydration.
+
+### Risk
+
+Replay determinism was validated only pre-consolidation; the new entry kinds
+and ordering rules may break reconstruction or compare-mode equivalence.
+
+### Minimal artifact
+
+```text
+p20-trace-replay-contracts/
+  Cargo.toml        (serde, ciborium, zstd)
+  src/main.rs
+```
+
+Record a scripted session (p14-style loop incl. steer, abort, leaf switch,
+compaction, secrets) into a trace; reconstruct; compare.
+
+### Verify
+
+```bash
+cd prototypes/p20-trace-replay-contracts
+cargo run -- record
+cargo run -- reconstruct
+cargo run -- compare
+cargo run -- compression
+cargo run -- all
+```
+
+### Pass evidence
+
+- reconstruction equals live final state (leaf, folded path, queue snapshot),
+- compare mode rehydrates from registration entries; traces stay masked,
+- block-level compression beats per-entry on small traces; threshold
+  reported,
+- any new-contract event that cannot round-trip through the trace is a
+  finding.
+
+### SPEC impact
+
+Tighten §6.11 trace entry coverage and the compression threshold rule.
+
+## P21 — `p21-compaction-round`
+
+### SPEC claims
+
+§6.9: trigger when estimated folded-path tokens exceed threshold (fraction of
+context window minus output reserve); trim ladder order; oldest-span
+summarization via mock LLM; iteration limit; recency window (token-budget
+fraction) never touched; summarization usage tracked as cost.
+
+### Risk
+
+Threshold/reserve/recency arithmetic may interact badly (e.g. recency window
+larger than threshold → livelock); summarization request assembly from a
+folded path is unvalidated; a compaction round must not re-enter itself.
+
+### Minimal artifact
+
+```text
+p21-compaction-round/
+  Cargo.toml        (serde only; reuses p12's fold model)
+  src/main.rs
+```
+
+### Verify
+
+```bash
+cd prototypes/p21-compaction-round
+cargo run -- trigger-math
+cargo run -- round
+cargo run -- iteration-limit
+cargo run -- livelock-guard
+cargo run -- all
+```
+
+### Pass evidence
+
+- trigger fires exactly at the documented boundary; reserve respected,
+- round: trim masks first, then one summary span appended; folded tokens
+  drop below threshold or iteration limit reported,
+- recency-window-vs-threshold conflict detected and reported (the rule §6.9
+  needs),
+- no re-entry: compaction during compaction is impossible by construction.
+
+### SPEC impact
+
+Pin the threshold/recency arithmetic rule and the no-re-entry guarantee in
+§6.9.
+
+## P22 — `p22-input-queue-machine`
+
+### SPEC claims
+
+§8.11: combined visual queue (follow-ups above steers, oldest→newest per
+kind), promote/demote, up-arrow cycle, edit temporarily removes + best-effort
+reposition, empty re-send deletes, cancel keys pop newest-first before
+aborting.
+
+### Risk
+
+The edit/reposition and cancel-pop semantics are fiddly state-machine
+territory; "best effort" needs a precise fallback rule.
+
+### Minimal artifact
+
+```text
+p22-input-queue-machine/
+  Cargo.toml        (ratatui TestBackend)
+  src/main.rs
+```
+
+Deterministic key-event scripts drive the queue widget; styled-cell
+snapshots per step (§17.7 contract).
+
+### Verify
+
+```bash
+cd prototypes/p22-input-queue-machine
+cargo run -- ordering
+cargo run -- promote-demote
+cargo run -- edit-reposition
+cargo run -- cancel-pop
+cargo run -- all
+```
+
+### Pass evidence
+
+- visual order matches §8.11 in every state,
+- edit removal + re-send restores position; fallback rule when the previous
+  position no longer exists is reported (the "best effort" definition),
+- empty re-send deletes; cancel pops newest-first then aborts,
+- snapshots stable across runs.
+
+### SPEC impact
+
+Replace "best effort" with the proven fallback rule in §8.11.
+
+## P23 — `p23-bus-delivery`
+
+### SPEC claims
+
+§9.18: synchronous delivery in registration order on the plugin thread;
+emit-during-delivery enqueues (no re-entry); subscriber errors isolated;
+payloads are plain data; no replay across load order.
+
+### Risk
+
+Re-entrancy queueing and teardown-during-dispatch may interact with §9.16
+domain teardown in unspecified ways.
+
+### Minimal artifact
+
+```text
+p23-bus-delivery/
+  Cargo.toml        (mlua luajit vendored)
+  plugins/emitter.lua
+  plugins/listener.lua
+  src/main.rs
+```
+
+### Verify
+
+```bash
+cd prototypes/p23-bus-delivery
+cargo run -- order
+cargo run -- reentrancy
+cargo run -- error-isolation
+cargo run -- teardown-mid-dispatch
+cargo run -- all
+```
+
+### Pass evidence
+
+- registration-order delivery; emit-during-delivery runs after current
+  dispatch,
+- one failing subscriber never blocks the rest,
+- a domain torn down mid-dispatch delivers to no stale subscriber and leaks
+  nothing (the §9.16×§9.18 interaction rule),
+- non-data payloads rejected at the boundary.
+
+### SPEC impact
+
+Pin the teardown-mid-dispatch rule; confirm or refine the §9.18 delivery
+text.
+
 ## Reporting Template
 
 Each completed prototype updates this plan with a result block in the
