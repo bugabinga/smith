@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "smith://providers.schema.json",
+  "title": "smith provider registry — translated from the models.dev shape (SPEC §7.3)",
+  "x-upstream": {
+    "source": "https://models.dev/api.json",
+    "retrieved": "2026-07-16",
+    "sha256": "e6849995edce112efb56af64dd65777f0e73512546133572e62661aae56413a9",
+    "note": "api.json exposes no in-band version; pin = date + content hash"
+  },
+  "type": "object",
+  "additionalProperties": { "$ref": "#/$defs/provider" },
+  "$defs": {
+    "provider": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "env": { "type": "array", "items": { "type": "string" } },
+        "npm": { "type": "string" },
+        "api": { "type": "string" },
+        "doc": { "type": "string" },
+        "models": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/model" }
+        }
+      },
+      "required": ["id", "name", "models"],
+      "additionalProperties": true
+    },
+    "model": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "cost": { "$ref": "#/$defs/cost" },
+        "limit": { "$ref": "#/$defs/limit" },
+        "modalities": {
+          "type": "object",
+          "properties": {
+            "input": { "type": "array", "items": { "type": "string" } },
+            "output": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": true
+        },
+        "attachment": { "type": "boolean" },
+        "reasoning": { "type": "boolean" },
+        "tool_call": { "type": "boolean" },
+        "structured_output": { "type": "boolean" },
+        "temperature": { "type": "boolean" }
+      },
+      "required": ["id", "limit"],
+      "additionalProperties": true
+    },
+    "cost": {
+      "$comment": "USD per million tokens. Always an object when present, never a scalar (§7.3 / p05 type-mismatch class). LOOSENED vs a naive §7.3 reading: cost itself is OPTIONAL at model level (398/5666 real models omit it); cache_read/cache_write are optional; tiers and context_over_200k ride through as additionalProperties.",
+      "type": "object",
+      "properties": {
+        "input": { "type": "number", "minimum": 0 },
+        "output": { "type": "number", "minimum": 0 },
+        "cache_read": { "type": "number", "minimum": 0 },
+        "cache_write": { "type": "number", "minimum": 0 },
+        "reasoning": { "type": "number", "minimum": 0 },
+        "input_audio": { "type": "number", "minimum": 0 },
+        "output_audio": { "type": "number", "minimum": 0 }
+      },
+      "required": ["input", "output"],
+      "additionalProperties": true
+    },
+    "limit": {
+      "$comment": "LOOSENED: limit.input is optional (present on only 1084/5666 real models); context and output are universal and stay required. LOOSENED: minimum is 0, not 1 — real image/video models publish limit.context=0 (103 models) and limit.output=0 (165 models) as 'not applicable'.",
+      "type": "object",
+      "properties": {
+        "context": { "type": "integer", "minimum": 0 },
+        "input": { "type": "integer", "minimum": 0 },
+        "output": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["context", "output"],
+      "additionalProperties": true
+    }
+  }
+}
