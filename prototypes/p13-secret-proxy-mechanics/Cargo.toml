@@ -1,0 +1,10 @@
+[package]
+name = "p13-secret-proxy-mechanics"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+mlua = { version = "0.10", features = ["luajit", "vendored", "serialize"] }
+serde = { version = "1", features = ["derive"] }
+ciborium = "0.2"
