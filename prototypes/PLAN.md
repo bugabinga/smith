@@ -1023,6 +1023,79 @@ cargo run -- all
 Pin the parallel-execution boundary rule in §6.1 and the ordering of
 synthetic skipped results relative to completed results.
 
+## Campaign 2 Results
+
+Run 2026-07-16, rustc 1.94.1, x86_64-unknown-linux-gnu. All three complete;
+findings folded into SPEC (§6.1, §6.5, §6.7, §6.9).
+
+### P12 result
+
+```json
+{
+  "status": "complete",
+  "proved": [
+    "tree ops per §6.5 incl. implicit fork points; leaf-switch persistence under §6.6 recovery",
+    "fold: span collapse at path position, trim stubs, byte-identical storage through every fold/switch/compaction",
+    "branch-past-compaction: pre-compaction switch sees full history, re-compacts as SIBLING summary; post-compaction branches inherit the mask",
+    "edges: cross-fork spans detectable + safely ignored; nested summaries inevitable, outermost-wins; leaf-switch inside covered span folds away (leaf replay reads raw storage)"
+  ],
+  "disproved": [
+    "§6.5 literal leaf-load rule ('last switch target, else last append') — stale leaf whenever appends follow a switch; correct rule is replay-in-file-order (last surviving entry decides)"
+  ],
+  "specIssues": [
+    { "file": "../docs/SPEC.md", "issue": "leaf-load rule false as written", "evidence": "leaf-persist: literal=Some(2) vs replay=Some(6)", "severity": "P1" },
+    { "file": "../docs/SPEC.md", "issue": "§6.9 'registrations survive verbatim' x §6.7 'provider carries placeholders only' contradiction — structural survival + masked provider rendering required", "evidence": "fold: hoist-secret#2 with plaintext intact", "severity": "P1" },
+    { "file": "../docs/SPEC.md", "issue": "span well-formedness, nested-summary outermost-wins, trim-ladder scoping of 'survives verbatim', orphan/dangling recovery rules, metadata foldability all needed", "evidence": "fold + branch-past-compaction + leaf-persist diagnostics", "severity": "P2" }
+  ],
+  "commands": ["cargo run -- tree|leaf-persist|fold|branch-past-compaction|all"],
+  "nextSteps": ["all folded into §6.5/§6.9 (2026-07-16)"]
+}
+```
+
+### P13 result
+
+```json
+{
+  "status": "complete",
+  "proved": [
+    "plaintext bytes exist exactly once in the file (registration entry) — byte-scan verified",
+    "hook-then-scan ordering: Lua detector registering during a hook masks the surfacing content",
+    "rehydration is a view at tool execution only (Rust + Lua); provider view masked; unknown ids pass through",
+    "resume rebuilds table with original ids; allocator resumes past max id",
+    "longest-match-first single-pass masking correct; naive order provably leaks overlap residue"
+  ],
+  "disproved": [],
+  "specIssues": [
+    { "file": "../docs/SPEC.md", "issue": "masking order must be longest-match-first single-pass never rescanning placeholders", "evidence": "ingest overlap scenario residue leak", "severity": "P1" },
+    { "file": "../docs/SPEC.md", "issue": "placeholder-grammar registered values alias placeholders; single-pass rehydration load-bearing; reject such registrations", "evidence": "ingest placeholder-shaped scenario", "severity": "P2" },
+    { "file": "../docs/SPEC.md", "issue": "scan is post-transform only (re-encoding hook launders secrets) — stated limit; allocator resume, idempotent re-registration, maximal-digit-run parsing", "evidence": "hook-order + resume + rehydrate scenarios", "severity": "P2" }
+  ],
+  "commands": ["cargo run -- ingest|hook-order|rehydrate|resume|all"],
+  "nextSteps": ["all folded into §6.7 (2026-07-16)"]
+}
+```
+
+### P14 result
+
+```json
+{
+  "status": "complete",
+  "proved": [
+    "boundary delivery (stream end / in-flight completion), synthetic skipped results for every unexecuted call, FIFO steer drain, follow-up-instead-of-agent_end, delivery-time-only entry recording, abort keeps queues intact",
+    "parallel mode: wait-for-all-in-flight workable — no new call starts after a steer queues, started calls complete, never-started skip",
+    "transcript rule: reals first (completion order), synthetics in original call order, steers follow"
+  ],
+  "disproved": [],
+  "specIssues": [
+    { "file": "../docs/SPEC.md", "issue": "'currently executing tool finishes' ill-defined with N in flight — pin wait-for-all-in-flight", "evidence": "steer-parallel-tools", "severity": "P1" },
+    { "file": "../docs/SPEC.md", "issue": "synthetics-after-reals ordering must be stated (reals may be completion-ordered)", "evidence": "steer-mid-tools + steer-parallel-tools transcripts", "severity": "P1" },
+    { "file": "../docs/SPEC.md", "issue": "mid-stream steer skips ALL calls; skipped calls emit §6.4-style events; abort leaves dangling tool-call tail — resume must repair", "evidence": "steer-mid-stream + abort-keeps-queue", "severity": "P2" }
+  ],
+  "commands": ["cargo run -- steer-mid-stream|steer-mid-tools|steer-parallel-tools|followup|abort-keeps-queue|all"],
+  "nextSteps": ["all folded into §6.1 (2026-07-16); re-verify wait-for-all under real tokio timing when the loop lands"]
+}
+```
+
 ## Reporting Template
 
 Each completed prototype updates this plan with a result block:

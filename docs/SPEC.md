@@ -557,12 +557,21 @@ Steering and follow-up semantics:
   instead of `agent_end`, the loop dequeues the next follow-up as a fresh
   user message and starts a new turn cycle.
 - **Steering**: delivers at the next safe boundary — after the current
-  provider stream completes, or after the currently executing tool finishes.
-  Pending not-yet-executed tool calls from the current assistant message
-  resolve immediately as error-flagged synthetic results
-  (`skipped: user steered`) so every call has a result on the wire; the model
-  re-plans with the steer visible. All queued steers drain FIFO as user
-  messages before the next provider call.
+  provider stream completes, or after in-flight tool execution finishes.
+  Never-started tool calls from the current assistant message resolve as
+  error-flagged synthetic results (`skipped: user steered`) so every call
+  has a result on the wire; the model re-plans with the steer visible. All
+  queued steers drain FIFO as user messages before the next provider call.
+  Prototype-proven boundary rules (p14):
+  - parallel execution (§5.3): **wait-for-all-in-flight** — once a steer is
+    queued, no new call starts; every already-started call runs to
+    completion; only never-started calls skip,
+  - steer arriving mid-stream: no call of that assistant message has
+    started, so ALL of them skip — none executes,
+  - transcript ordering: real results first (completion order in parallel
+    mode), then synthetics in original call order, then the drained steers,
+  - skipped calls emit `ToolExecutionStart`/`ToolExecutionEnd` with error
+    flag and reason, per the §6.4 blocked-call contract.
 - Interactive input during an active run is a steer by default; a modifier
   submits it as a follow-up (§8.11). Plugins override default user-message
   behavior through the `input` hook (§9.8) and send programmatically via
@@ -572,7 +581,11 @@ Steering and follow-up semantics:
   saw. Compaction (§6.9) neither consumes nor drops the queues.
 - Cancel keys pop the queue before they abort: see §8.11. A delivered abort
   (§12) ends the run; whatever remains queued stays queued and is surfaced by
-  the TUI for the user to send, edit, or discard.
+  the TUI for the user to send, edit, or discard. An abort can leave the
+  session tail with an assistant message whose tool calls have no results
+  (no next request exists to carry synthetics); request assembly after
+  resume must repair such a dangling tail by synthesizing aborted-results
+  for the unanswered calls (p14).
 
 The loop uses two nested loops:
 
@@ -659,10 +672,13 @@ Tree operations:
   to it. Appending while the leaf sits on a non-leaf entry creates a fork
   point implicitly — there is no explicit branch operation.
 - **switch leaf**: moves the current leaf to any entry, recorded by appending
-  a leaf-switch metadata entry. On load, the effective leaf is the last
-  leaf-switch entry's target, or the last appended entry if none exists —
-  leaf state rides the §6.6 append-only recovery guarantees, and leaf history
-  is replayable for free.
+  a leaf-switch metadata entry. On load, the leaf is resolved by replaying
+  surviving entries in file order: an append moves the leaf to itself, a
+  leaf-switch moves it to its target — the last surviving entry decides
+  (prototype-proven, p12; the naive "last switch target" rule yields a stale
+  leaf once appends follow a switch). A leaf-switch whose target was lost to
+  §6.6 recovery is ignored on replay. Leaf state rides the append-only
+  recovery guarantees, and leaf history is replayable for free.
 - **read path**: returns the root→leaf path. The LLM context is built from
   the current path only (through compaction, §6.9); sibling branches are
   invisible to the model.
@@ -672,6 +688,11 @@ Tree operations:
 
 No branch deletion or pruning exists in v1. A session has a single writer:
 one agent loop appends to it at a time.
+
+Recovery meets the tree (p12): a §6.6-skipped entry can be a parent or a
+switch target. Orphaned subtrees (parent missing) are detached and reported —
+unreachable from the root, never silently grafted; dangling leaf-switches are
+ignored during leaf replay.
 
 Leaf switches never touch the working tree. Filesystem time travel is plugin
 policy, not core behavior: the time-travel plugin (§9.11) pairs leaf switches
@@ -740,11 +761,27 @@ Registration paths:
 **Masking at ingestion.** Scanning is exact substring matching against
 registered values — no heuristics in core. Content is masked to `smith:sec:N`
 placeholders *before* it becomes a session entry. Plaintext exists in exactly
-one entry kind: the secret-registration entry (preserved verbatim by
-compaction, §6.9). The ingestion scan runs after plugin `input`/`tool_result`
-hooks, so a value registered during those hooks is masked in the very content
-that surfaced it. On resume, the table rebuilds by scanning session entries
-backward for registration entries.
+one entry kind: the secret-registration entry (preserved structurally by
+compaction but masked in provider rendering, §6.9). The ingestion scan runs
+after plugin `input`/`tool_result` hooks, so a value registered during those
+hooks is masked in the very content that surfaced it. On resume, the table
+rebuilds by scanning session entries backward for registration entries, and
+the `SecretId` allocator resumes past the highest id seen — a reused id would
+silently alias older placeholders (p13).
+
+Masking and rehydration rules (prototype-proven, p13):
+
+- masking is **longest-match-first** in a single left-to-right pass that
+  never rescans emitted placeholder text — any other order provably leaks
+  residue of an overlapping secret,
+- rehydration is likewise single-pass; produced plaintext is never rescanned,
+- registration rejects values matching the placeholder grammar
+  (`smith:sec:<digits>`) with a diagnostic — accepting them aliases
+  legitimate placeholders,
+- re-registering identical plaintext is idempotent and returns the existing
+  id (detector hooks re-see the same token on every occurrence),
+- placeholder ids parse as the maximal digit run (`smith:sec:12` is id 12,
+  never id 1 followed by `2`).
 
 **Rehydration.** Placeholders turn back into plaintext at exactly one layer:
 immediately before tool execution (subprocess and tool `execute`, Rust and
@@ -758,9 +795,13 @@ through untouched — never rehydrated, never an error.
 (`‹secret: github-token›`); display matches context content. The local user
 can recover plaintext from registration entries via `smith session dump`.
 
-**Limits.** An unregistered secret is not protected — by design. The
-protection target is the remote LLM; the trust model is §11's, and core does
-no best-effort guessing.
+**Limits.** An unregistered secret is not protected — by design. The scan
+applies to post-transform content only, with exact case- and
+encoding-sensitive matching: a hook that re-encodes a secret while
+transforming (§9.8) launders the derived form past the scan (p13) —
+pre-transform text is never persisted, so this is a stated boundary, not a
+bug. The protection target is the remote LLM; the trust model is §11's, and
+core does no best-effort guessing.
 
 ### 6.8 System Prompt
 
@@ -796,8 +837,24 @@ mutation:
 
 Because the summary rides the path like any entry, branching needs no
 special case: switching the leaf to a pre-compaction entry yields a path
-without the summary — full history visible again, eligible to re-compact —
-and branches created after the compaction point inherit the mask.
+without the summary — full history visible again, eligible to re-compact
+(producing a sibling summary on that branch) — and branches created after
+the compaction point inherit the mask.
+
+Fold rules (prototype-proven, p12):
+
+- **Span well-formedness**: a covered span is a contiguous ancestor segment
+  of the path the summary was appended to (`from` an ancestor of `to`; `to`
+  an ancestor of the summary entry). Well-formed compaction cannot produce a
+  span crossing a fork point; a violating span is file damage — the fold
+  ignores that summary, shows the span raw, and diagnoses. Never a partial
+  collapse.
+- **Summaries nest**: re-compaction on an already-compacted path always
+  covers the prior summary entry. The fold applies the outermost (latest)
+  covering span; inner summaries are subsumed.
+- **Metadata entries inside a covered span fold away** with the span — leaf
+  resolution and replay read raw storage (§6.5), never the folded path, so
+  nothing is lost.
 
 Trigger: before each provider request, when the estimated folded-path tokens
 exceed the configured threshold — by default a fraction of
@@ -814,11 +871,16 @@ configured iteration limit is reached:
    the `compaction_model` config key selects another (resolved via §5.7, so
    aliases/groups work); its usage is tracked as normal cost.
 
-Survives verbatim, always:
+Survives the trim ladder (never stubbed or discarded by a compaction round —
+distinct from escaping a later covering span at fold time, which nothing
+does):
 
-- secret registrations (§6.7),
+- secret registrations (§6.7) — these survive *structurally*: hoisted out of
+  collapsed spans so resume and rehydration keep working, but they hold
+  plaintext, so the provider rendering masks/excludes them (§6.7 — a
+  verbatim-to-provider reading would ship plaintext to the LLM),
 - the system prompt snapshot,
-- existing compaction summary entries,
+- existing compaction summary entries (they are summarizer input),
 - the recency window: the most recent entries up to a configured fraction of
   the context window (token-budget based, so it adapts to model size).
 
