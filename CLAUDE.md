@@ -1,6 +1,8 @@
 # smith
 
-Rust coding agent TUI. Phase: spec/planning. No code until specs are final.
+Rust coding agent TUI. Phase: spec/planning. No production code until specs
+are final; disposable spec-validation prototypes live under `prototypes/`
+(SPEC §18).
 
 ## Architecture
 
@@ -32,17 +34,20 @@ CLAUDE.md is a navigation index. Do not mirror individual source-of-truth file
 lists here; use the canonical directories and docs tree instead.
 
 - Spec: `docs/SPEC.md` — canonical project specification.
-- Research: `docs/research/` — ecosystem research and tool analysis.
+- Research: `docs/research/` — ecosystem research and tool analysis
+  (evidence, non-normative).
 - Plans: `docs/plans/` — task breakdowns and documentation plans.
+- Invariants: `docs/PROJECT-INVARIANTS.md` — build system, directory
+  structure, coding standards, and canonical docs inventory.
+- Prototypes: `prototypes/` — spec-validation prototypes and their plan.
 
 Former `docs/design/` subsystem docs and the P1–P20 prototype report are fully
 absorbed into `docs/SPEC.md` and deleted (see git history).
-- Docs tree and invariants: `docs/PROJECT-INVARIANTS.md` — build system,
-  directory structure, coding standards, and canonical docs inventory.
 
 ## Rules
 
-1. Spec before code. No `.rs` files until `docs/SPEC.md` covers the work.
+1. Spec before code. No production `.rs` until `docs/SPEC.md` covers the
+   work; prototype `.rs` under `prototypes/` is sanctioned by SPEC §18.
 2. CLAUDE.md is the navigation index. `docs/SPEC.md` is the canonical project spec.
 3. Every spec section answers: interfaces, data, errors, tests — as named
    shapes and behavior, not code. Exact only at boundaries others program

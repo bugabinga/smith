@@ -10,10 +10,12 @@ Rules:
 - Every prototype must have a command that verifies the claim.
 - Evidence beats opinion. Report SPEC defects with exact command output.
 - Do not edit `../docs/SPEC.md` unless explicitly asked.
-- Delete throwaway work unless user asks to keep it.
+- Completed prototypes are kept as evidence: locked deps, verify commands
+  that exit 0, and a result block in `PLAN.md`. Delete only scratch work
+  that never became a plan entry.
 
 Required result format — Markdown, not JSON (canonical contract lives in
-`.claude/skills/pioneer/SKILL.md`):
+`../.claude/skills/pioneer/SKILL.md`):
 
 ```markdown
 ## Status

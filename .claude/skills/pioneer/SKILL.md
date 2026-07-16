@@ -36,7 +36,9 @@ The established campaign practice (see `prototypes/PLAN.md`):
 - Keep prototypes tiny: one claim, one risk, one repro.
 - Prefer compile checks, focused tests, and minimal runnable examples over
   broad implementation.
-- Delete or mark throwaway work when done unless asked to keep it.
+- Completed prototypes are kept as evidence (locked deps, verify commands,
+  result block in `prototypes/PLAN.md`); delete only scratch that never
+  became a plan entry.
 
 ## Rust Quality Bar
 
