@@ -36,6 +36,69 @@ Core design principles:
   shape-level (named types, behavior, properties) for internal Rust. Code
   blocks are illustrative unless a section says otherwise.
 
+### 1.1 Walkthrough
+
+The product, as a user meets it. Each scene pins observable behavior; the
+cited sections own the contracts. Three features that must never blur:
+**tree navigation** moves through the conversation tree (§6.5, files
+untouched), **time travel** moves workspace file state through the VCS
+operation timeline (§9.13), and **replay** re-executes a recorded trace
+(§6.11, never the live session).
+
+**First run.** `smith` in a project directory. No config exists; defaults
+apply (§5.6). Capabilities probe once, fail-conservative (§8.3). The default
+layout plugin renders status bar (model, context %, cost), message history,
+input, hint bar — all border panels closed; panels are strictly opt-in
+(§8.7). The empty history shows a few dim hint lines (active model, how to
+begin, `smith help`) that vanish at the first entry. No wizard, no
+onboarding. Startup under 100ms (§13).
+
+**First message, no auth.** The user types; auth resolution fails fast
+before the first stream (§7.4). The error is the guidance: a recoverable
+error (§5.8) renders in history naming the missing credential, the env var
+to set, and `/auth login <provider>` for OAuth (§9.11); the message stays in
+the input for immediate resend. The failure teaches; no setup flow exists.
+
+**First task.** Text streams as it arrives. Tool calls render as collapsed
+one-liners that expand on selection (§8.10); cost and context tick live in
+the status bar. `!cargo test` runs directly and lands as a bash-execution
+entry (§6.5). Every mutating tool records a VCS operation invisibly (§9.13)
+— no commit prompts, no jj exposed.
+
+**Steering.** Mid-run, the user types a correction and enters — it queues as
+a steer; a modifier queues a follow-up instead (§6.1). The queue renders
+between history and input (§8.11). In-flight tools finish, never-started
+calls skip, the steer lands, the model re-plans. Cancel keys pop the queue
+newest-first; only an empty queue aborts.
+
+**Tree navigation.** A refactor went sideways. `/tree` shows the session
+tree; the user switches the leaf to the pre-refactor entry. The conversation
+rewinds; files do not (§6.5). A new message from here is a new branch,
+silently.
+
+**Time travel.** The files are still wrong. The time-travel timeline shows
+the VCS operations recorded around each entry; the user inspects op diffs
+and restores the workspace to the pre-refactor op (`/undo`, or restore from
+the timeline). Tree navigation answers "where were we in the conversation";
+time travel answers "what did the files look like." The timeline bridges
+them by offering the restore for the op recorded at the current entry — but
+they are separate axes.
+
+**Model switching.** `ctrl+l` cycles a configured shortlist; `/model` opens
+a fuzzy picker. Both operate on resolver names (§5.7) — aliases, groups,
+buckets — as first-class vocabulary, with the picker showing what each name
+resolves to. Raw provider/model IDs are the fallback, not the interface.
+
+**Leaving and returning.** Quit restores the terminal (§10). `smith
+continue` resumes the last session in cwd — same leaf (§6.5 replay rule),
+queues empty (§6.1, process-ephemeral), accumulated cost in the status bar.
+`smith attach` fuzzy-picks among sessions.
+
+**Replay.** To understand yesterday's session: `smith replay <session>
+--speed 2` re-plays it visually; `--compare` re-executes tools and diffs
+current outputs against recorded ones (§6.11). Replay reads the trace and
+never touches the live session.
+
 ## 2. Workspace
 
 ### 2.1 Crates
@@ -1703,7 +1766,8 @@ Built-ins are Lua plugins, not Rust special cases:
 
 - tools: `read`, `write`, `edit`, `bash`, `find`, `grep`, `ls`,
 - slash commands: `/undo`, `/redo`, `/history`, `/tree`, `/reload-config`,
-  `/secret` (§6.7), replay/time-travel,
+  `/secret` (§6.7), `/auth login <provider>` (§7.4 OAuth flow), `/model`
+  (fuzzy picker over §5.7 resolver names), replay/time-travel,
 - VCS tools,
 - default layout,
 - default keybindings,
