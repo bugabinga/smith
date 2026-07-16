@@ -389,7 +389,6 @@ data_dir/smith/
       jj-state/
 
 cache_dir/smith/
-  bytecode/
 
 config_dir/smith/
   config.lua
@@ -505,11 +504,17 @@ Removed globals:
 
 Smith host APIs are exposed through `require("smith")`.
 
-Bytecode cache:
+No bytecode cache. The cache's premise is disproved (p17): loading cached
+bytecode saves ~285µs per 2000-line module over compiling source (LuaJIT
+compiles fast; stripped bytecode is even larger than source), while cached
+bytecode is the most dangerous input path possible — LuaJIT has no bytecode
+verifier, and corrupted images segfault the VM (~20% of trials) or silently
+execute wrong code (~12%).
 
-- Smith compiles `.lua` to bytecode on first load.
-- Cache key includes source hash.
-- Smith never loads bytecode it did not compile.
+Binary chunks are therefore forbidden entirely: **every Lua source load
+specifies text-only chunk mode explicitly**. mlua's default mode accepts
+binary chunks auto-detected inside `.lua` files (p17) — relying on the
+default would let a plugin ship raw bytecode past the loader.
 
 ### 5.6 Config
 
@@ -523,8 +528,15 @@ Cascade order, later overrides earlier:
 4. user config at `config_dir/smith/config.lua`,
 5. CLI flags.
 
-Invalid values are rejected with clear errors. Unknown keys warn or fail
-according to the schema context.
+Invalid values are rejected with clear errors. Unknown keys warn in the
+top-level schema context and fail in strict contexts (`models.*`,
+`compaction.*` — anywhere a typo silently changes behavior).
+
+Cross-layer merge is leaf-field recursive for table-valued keys; scalars
+AND lists are leaves that replace wholesale (prototype-proven, p16: under
+layer-replace, a user overriding one keybinding wipes the builtin
+`ctrl+c = abort` binding, and a plugin contributing one alias clobbers the
+builtin alias map). Same rule family as §7.3's registry merge.
 
 The cascade is re-evaluated at runtime by host configuration reload (§9.19).
 
@@ -558,19 +570,34 @@ return {
 requested name → alias → group → bucket/account → provider/model metadata
 ```
 
-Rules:
+Rules (prototype-proven, p18):
 
-- no I/O during resolution,
-- cycles detected at config load and reported with full path,
-- DAGs allowed,
+- no I/O during resolution. Purity and round-robin reconcile by exporting
+  rotation state: `resolve` is a pure function of (validated config,
+  requested name, rotation cursors); the cursors are owned and advanced by
+  `MuxProvider` (§7.5), one step per rotation node per provider request.
+  Same cursors → same plan, always,
+- cycles detected at config load and reported with the full path
+  (`cycle detected at config load: a → b → a`); DAG diamonds do not
+  false-positive,
+- load-time rejections: a name defined as more than one kind (alias AND
+  group, all kinds named in the error), empty groups, empty bucket account
+  lists, dangling references (referrer named), duplicate members within one
+  group list, and buckets whose target is not a concrete model. Unknown
+  requested name is the only resolve-time error,
+- DAG-induced duplicate candidates (two paths reaching the same
+  provider/model/account) survive flattening; Mux deduplicates identical
+  candidates before attempting them,
 - `ResolvedModel` carries metadata needed by `smith-core`.
 
 Failover:
 
 - `FailoverStrategy`: ordered or round-robin.
-- `BucketStrategy`: account rotation policy.
+- `BucketStrategy`: account rotation policy; bucket accounts are individual
+  failover candidates under §7.5.
 - Rate limits fail over immediately.
-- Non-rate-limit transient errors retry before failover.
+- Non-rate-limit transient errors retry before failover; the retry count is
+  the `providers.retry_count` config key, default `2`.
 
 ### 5.8 Errors
 
@@ -919,10 +946,23 @@ Fold rules (prototype-proven, p12):
   resolution and replay read raw storage (§6.5), never the folded path, so
   nothing is lost.
 
-Trigger: before each provider request, when the estimated folded-path tokens
-exceed the configured threshold — by default a fraction of
-`AgentLoopConfig.model_metadata.context_window` minus the output-token
-reserve. The threshold is a named config key (§5.6; reloadable per §9.19).
+Trigger (prototype-proven at ±1 token, p21): before each agent provider
+request — summarization requests are exempt from the trigger check, or the
+rule would be self-referential — when the estimated folded-path tokens
+STRICTLY exceed the threshold:
+
+```text
+threshold = floor(threshold_fraction × context_window) − output_reserve_tokens
+```
+
+All three values are named config keys (§5.6; reloadable per §9.19), with
+the strict validity rule `recency_fraction + reserve_fraction <
+threshold_fraction`, rejected at config load — otherwise the recency window
+can dominate the budget and a triggered round can NEVER fit (the ladder
+cannot touch the window), re-running the full ladder on every request
+forever. Runtime guards back the static rule: a round whose protected
+window alone exceeds the threshold reports and stops rather than spinning,
+and a ladder pass that makes no progress aborts the round.
 
 Trim ladder, cheapest first, repeated until the context fits or the
 configured iteration limit is reached:
@@ -946,6 +986,12 @@ does):
 - existing compaction summary entries (they are summarizer input),
 - the recency window: the most recent entries up to a configured fraction of
   the context window (token-budget based, so it adapts to model size).
+
+A round cannot re-enter itself: it runs synchronously at the only trigger
+site, before the agent's provider request. Reaching the iteration limit
+terminates the round and reports — the request proceeds over budget, and
+`session_compact` carries the outcome (fit, iteration-limit, no-progress,
+recency-dominates).
 
 `session_before_compact` (§9.8, blockable) may veto the round, adjust the
 span, or replace the summarization prompt; `session_compact` reports the
@@ -978,16 +1024,24 @@ Rules:
 Trace files capture deterministic replay data:
 
 - file header with magic/version/session ID,
-- compressed entries via zstd — per-entry compression inflates small traces
-  (p11 evidence, `prototypes/PLAN.md`), so the codec uses block-level
-  compression or a minimum entry-size threshold; small traces never exceed
-  their uncompressed size,
+- compressed via block-level zstd (p20 measurements): ~4KiB blocks, entries
+  under 64B never compressed individually, per-block raw-fallback flag —
+  a trace never exceeds its uncompressed framed size by more than the fixed
+  per-block header (9B/block; per-entry compression inflates small entries),
 - provider requests/events,
 - tool calls/results,
+- **session-entry appends** — every entry appended to the session (leaf
+  switches, compaction summaries, steer/follow-up deliveries, secret
+  registrations with plaintext redacted idempotently; compare-mode
+  rehydration reads the session file's registration entries, never the
+  trace). Without this kind the reconstruction guarantee is unmeetable
+  (p20: the remaining kinds rebuild zero session entries),
 - TUI events as opaque JSON,
 - plugin events as opaque JSON,
 - VCS operation IDs,
-- agent state snapshots.
+- agent state snapshots — taken at every run end and abort, carrying the
+  current leaf, both message queues, and the abort flag (p20: abort-time
+  queue state is otherwise lost).
 
 Trace guarantees:
 
@@ -1079,12 +1133,18 @@ Merge rule (prototype-proven, p05):
   diffs.
 
 Conflict policy: some conflicts cannot be auto-merged and are excluded from the
-suggestion and reported explicitly, at minimum:
+suggestion and reported explicitly:
 
-- ambiguous-primary-source: the primary source lists the same model ID twice
-  with differing metadata,
 - type-mismatch-vs-curated: a source proposes a value whose structure differs
-  from the hand-curated registry value (curated value kept).
+  from the hand-curated registry value (curated value kept). With schema
+  validation at boundary 1, this class remains reachable only on
+  schema-unconstrained (unknown) fields — real data contains live precedent
+  (p19: `interleaved` is a bool on 32 models and an object on 613).
+
+(The former ambiguous-primary-source class is dropped: duplicate model IDs
+collapse at JSON parse time and are undetectable post-parse — p19. Detecting
+them would require raw duplicate-key lexing, deferred until evidence demands
+it.)
 
 `fetch-providers` exits non-zero while unresolved conflicts remain, so PR
 automation can never auto-merge a corrupting suggestion. Its outputs are the
@@ -1096,27 +1156,36 @@ conflict report.
 
 **Canonical schema.** Smith does not invent a provider/model schema — it adopts
 the models.dev shape and keeps a pinned local snapshot: a JSON Schema at
-`smith-ai/src/providers.schema.json`, translated from the models.dev schema at
-a recorded upstream version. Local pinning keeps validation deterministic and
-offline; upstream schema evolution is reviewed like any dependency bump.
+`smith-ai/src/providers.schema.json`. The pin procedure (p19: `api.json`
+carries no in-band version and models.dev publishes no standalone schema
+artifact) is: retrieval date + content sha256 of the reviewed snapshot,
+recorded beside the schema; upstream evolution is reviewed like a dependency
+bump.
 
-The snapshot is validated with the `jsonschema` workspace crate at three
-boundaries:
+The schema is validated with the `jsonschema` workspace crate at three
+boundaries (p19, executed against the full real registry — 166 providers,
+5666 models):
 
-1. `fetch-providers` source data after normalization — a source value that
-   fails the schema is a validation error at the source boundary, not a merge
-   conflict,
-2. the checked-in `providers.json` (CI gate),
+1. `fetch-providers` source data — source fragments are partial by design,
+   so boundary 1 validates types only (`required` clauses apply post-merge);
+   an invalid field is excised at the source boundary with a report, not a
+   merge conflict,
+2. the merged result and the checked-in `providers.json` (full schema,
+   CI gate),
 3. provider tables passed to `smith.provider.register` at runtime (§9.10).
 
-Registry shapes follow models.dev naming: `cost` (USD per million tokens:
-`input`, `output`, `cache_read`, `cache_write`, optionally `reasoning` and
-audio variants), `limit` (`context`, `input`, `output`), modalities
-(`input`/`output` type lists), and capability flags (`attachment`,
-`reasoning`, `tool_call`, `structured_output`, `temperature`). `cost` is
-always an object — never a scalar (the p05 type-mismatch class). Unknown
-fields remain schema-legal (`additionalProperties` allowed) per the
-preservation rule above.
+Registry shapes follow models.dev naming, with real-data optionality (p19):
+`cost` (USD per million tokens: `input`, `output`, `cache_read`,
+`cache_write`, optionally `reasoning`, `input_audio`, `output_audio`; tiered
+fields `tiers`/`context_over_200k` are preserved, not consumed) — `cost` is
+always an object when present, never a scalar, and is OPTIONAL (absent on
+398/5666 real models: such models are priced-unknown and excluded from cost
+tracking, never defaulted to zero); `limit` (`context`, `output` required
+for chat models, `input` optional); modalities; capability flags
+(`attachment`, `reasoning`, `tool_call`, `structured_output`, `temperature`)
+are tri-state — absent means unknown, treated as false for gating and
+preserved as absent. Unknown fields remain schema-legal
+(`additionalProperties` allowed) per the preservation rule above.
 
 Mapping into `ModelMetadata` (§5.7):
 
@@ -1131,7 +1200,14 @@ Mapping into `ModelMetadata` (§5.7):
 | streaming | assumed true; provider config may disable |
 
 `structured_output`, `temperature`, and `attachment` are not represented in v1
-`ModelMetadata` and are preserved, not consumed.
+`ModelMetadata` and are preserved, not consumed. (`reasoning_options` —
+thinking-effort levels on 3578 real models — is a candidate for §5.2
+ThinkingLevel configuration; preserved, consumption deferred.)
+
+Mapping eligibility (p19): only chat-capable models map into
+`ModelMetadata` — `"text"` in `modalities.output` and `limit.context > 0`.
+Image/video generator models (limit 0) stay in the registry but are not
+resolvable as chat models.
 
 Provider config correctness cannot be fully automated because Smith does not
 have all provider accounts, subscriptions, API keys, or regional access.
@@ -1364,14 +1440,24 @@ queue between message history and input:
   sit nearest the input because they deliver soonest,
 - the two kinds are visually distinct within the shared queue,
 - a promote/demote action toggles a queued message between steer and
-  follow-up,
-- Up-arrow cycles through the queued messages; selecting one edits it. While
-  edited, the message temporarily leaves the queue; re-sending returns it to
-  its previous position (best effort). Re-sending it empty removes it,
+  follow-up; the item lands at the NEWEST position of its new kind (its
+  ordering within the other kind is meaningless — consequence, p22: a
+  promote→demote round trip of a non-newest item does not restore the
+  original order). The item keeps its original enqueue time,
+- Up-arrow cycles newest-to-oldest through the queued messages; selecting
+  one edits it. While edited, the message is OUT of the queue. Re-sending
+  returns it to its remembered `(kind, index-within-kind)` position, clamped
+  to the kind block's current length; if the kind changed while it was out,
+  it lands newest of the new kind (p22 — this replaces "best effort").
+  Re-sending it empty removes it,
 - while the queue is non-empty, the cancel keys (Ctrl+C/Esc by default,
-  rebindable §9.11) remove queued messages newest-to-oldest *instead of*
-  their default action; only with an empty queue do they abort the run
-  (§12).
+  rebindable §9.11) remove queued messages in ENQUEUE-TIME order, newest
+  first, across both kinds — undo semantics: the most recently submitted
+  message un-queues first, which provably diverges from visual-bottom-first
+  (p22) — *instead of* their default action; only with an empty queue do
+  they abort the run (§12). While a message is being edited it is not in
+  the queue: cancel pops the remaining items first, and with the rest
+  empty, cancel discards the edit (restoring the item) before it can abort.
 
 ### 8.12 Deferred Scope (v1)
 
@@ -2020,6 +2106,10 @@ Built-in `smith/*` plugins reload by the same mechanism.
 remains and no partial state from `D'` survives. A failed reload never leaves the
 plugin unregistered.
 
+**In-flight hooks.** Teardown cannot preempt Lua (§12): dropping `D` waits
+for `D`'s currently executing hook to finish; a hook in flight during a bus
+dispatch follows the §9.18 condemned/deferred rule (p15, p23).
+
 **Session continuity.** Reload does not reset the session. Session entries, agent
 state, and other plugins' state are untouched. In-flight tool executions from the
 old domain run to completion under `D`; their results are still delivered. New
@@ -2091,9 +2181,16 @@ Rules:
   its own `org`. `smith/*` topics are reserved for built-in plugins.
 - **Payloads are plain Lua data tables** — the same value shape passed across the
   SDK boundary. No functions, userdata, or host handles cross the bus.
-- **Delivery is synchronous, in registration order,** on the plugin thread within
-  the current tick. Emitting during delivery enqueues to run after the current
-  dispatch completes; the bus does not re-enter.
+- **Delivery is synchronous, in registration order,** on the plugin thread
+  (§12) within the current tick. Emitting during delivery enqueues to ONE
+  global FIFO — regardless of topic — delivered strictly after the current
+  dispatch completes in emit order; the bus never re-enters
+  (prototype-proven, p23: max dispatch depth 1).
+- **Teardown during dispatch** (§9.16 interaction, p23): a domain torn down
+  mid-dispatch is condemned immediately — its remaining deliveries in the
+  current dispatch are skipped with a diagnostic — and the actual drop is
+  deferred until the dispatch queue drains. A handler may therefore safely
+  request its own domain's teardown and complete normally.
 - **Subscriptions are domain-owned** (§9.16). A subscription is dropped when its
   plugin's domain is torn down on reload or unload, so no stale subscriber
   survives.
@@ -2132,17 +2229,24 @@ Eval mode reads config at startup and has no runtime reload trigger.
 **Sequence.** For a host reload:
 
 1. Re-evaluate the cascade into a candidate config. Validate every value against
-   the Rust schemas, and re-run model resolution (§5.7) including alias/group/
-   bucket cycle detection.
-2. If evaluation, validation, or resolution fails, discard the candidate and keep
-   the active config. The failure is reported with the exact key path and error;
-   nothing partially applies.
+   the Rust schemas, and re-run model resolution (§5.7) as whole-graph
+   validation — every alias/group/bucket, not just the active model's chain
+   (p16: a concrete CLI model otherwise masks a latent alias cycle into the
+   accepted config).
+2. If evaluation, validation, or resolution fails, discard the candidate and
+   keep the active config. ALL failures are reported together, each with its
+   exact key path; nothing partially applies, and a later valid reload is
+   unaffected.
 3. On success, atomically swap the candidate in as the active config.
 4. Apply effects in order: theme, keybindings, active tool set, resolved
    model/provider. TUI re-renders with the new theme on the next frame.
-5. Emit the `config_changed` plugin event (§9.8) carrying the changed key paths.
-   Plugins read the new values through their contexts (§9.9); the event does not
-   carry secrets.
+5. Emit the `config_changed` plugin event (§9.8) carrying the changed key
+   paths. Plugins read the new values through their contexts (§9.9); the
+   event does not carry secrets. Diff rules (prototype-proven, p16): the
+   diff is computed over the post-CLI *effective* config (a CLI-masked
+   change is not reported); list-valued keys diff as one path; added and
+   removed keys count as changed paths; an idempotent reload emits the
+   event with an empty path list.
 
 **Continuity.** Reload is invisible to in-flight work:
 
@@ -2247,7 +2351,17 @@ Threads/tasks:
 - engine/main: owns harness event loop and agent state,
 - UI thread: render/event polling, never blocks engine,
 - tool thread pool: subprocess/file/plugin tool execution,
-- provider async tasks: streaming HTTP.
+- provider async tasks: streaming HTTP,
+- **plugin thread**: one dedicated OS thread owns every plugin's `mlua`
+  state (states are `!Send`; the mlua `send` feature is never enabled).
+  Lua values never cross a thread boundary; states are created on this
+  thread and dropped on it (prototype-proven, p15).
+
+Plugin dispatch (prototype-proven, p15 — hook round-trip median 81µs):
+hook, bus, and plugin-callback dispatch is a channel actor. The engine
+sends a plain-data request and awaits a reply; requests execute serially
+in arrival order across ALL plugins; only plain data crosses the boundary.
+This is the thread §9.18's delivery rules run on.
 
 Async boundary:
 
@@ -2257,9 +2371,22 @@ Async boundary:
 
 Responsiveness:
 
-- UI keypress acknowledged within 16ms,
+- UI keypress acknowledged within 16ms — unaffected by plugin CPU (p15:
+  a hostile 200ms hook left the UI heartbeat under 6ms),
 - engine never blocks on UI,
-- every long operation observes abort.
+- every long operation observes abort, with one proven carve-out:
+  **in-flight Lua execution cannot be preempted** (LuaJIT has no usable
+  interrupt; debug hooks do not fire inside compiled traces). Abort
+  abandons the pending hook *dispatch* — the engine drops the reply and
+  continues; the hook runs to completion and its late reply is discarded.
+  Hard cancellation of runaway Lua is domain teardown (§9.16), never
+  in-place interruption.
+
+Hook budget (soft, since preemption is impossible): a hook blocks only its
+dispatching turn plus queued plugin dispatches (head-of-line — all plugins
+share the one plugin thread); it never blocks the engine runtime, UI, or
+tool pool. A hook exceeding the configured soft deadline is reported as a
+plugin diagnostic (§9.17), not killed.
 
 ## 13. Performance Requirements
 
@@ -2572,6 +2699,7 @@ Prototype output must include:
 
 Production code must not depend on prototype artifacts.
 
-The p02–p11 validation campaign (2026-07-14, x86_64-linux, rustc 1.94.1) ran
-all ten prototypes to completion; result blocks live in `prototypes/PLAN.md`.
-Sections marked "prototype-proven" in this spec cite that evidence.
+Three validation campaigns (p02–p11 on 2026-07-14; p12–p14 and p15–p23 on
+2026-07-15/16; x86_64-linux, rustc 1.94.1) ran twenty-two prototypes to
+completion; result blocks live in `prototypes/PLAN.md`. Sections marked
+"prototype-proven" in this spec cite that evidence.

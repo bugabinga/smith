@@ -1,0 +1,17 @@
+[package]
+name = "p17-bytecode-cache"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+mlua = { version = "0.10", features = ["luajit", "vendored", "serialize"] }
+sha2 = "0.10"
+
+# The verify commands run `cargo run` (dev profile). The measured cache path
+# runs through sha2 and mlua's Rust glue, and -O0 dependency code is ~10-30x
+# slower than any real build — optimize dependencies so the numbers are honest.
+# Only this prototype's own code stays at -O0. (Vendored LuaJIT itself is built
+# by its own makefile at -O2 regardless of the cargo profile.)
+[profile.dev.package."*"]
+opt-level = 3

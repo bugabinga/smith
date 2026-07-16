@@ -1,0 +1,50 @@
+{
+  "source": "catwalk",
+  "retrieved": "2026-07-16",
+  "comment": "Catwalk-shaped gap-fill fixture (list-based, catwalk field names: api_base, context_window, max_output_tokens). Cases: (a) leaf field missing from models.dev — anthropic provider `api` and claude-fable-5 `knowledge`; (b) whole model missing — claude-omega; (c) whole provider missing — acme-ai; (d) genuine §7.3 conflict — claude-fable-5 `reasoning_options` proposed as a string where models.dev has an array (type-mismatch-vs-curated); (e) source-boundary schema violation — claude-haiku-4-5 scalar `cost` (validation error at source boundary, NOT a merge conflict, per §7.3); (f) unknown catwalk fields (catwalk_notes, default_max_tokens) that must be preserved; (g) overlapping same-type leaf (`name`) where models.dev-primary must win silently.",
+  "providers": [
+    {
+      "id": "anthropic",
+      "name": "Anthropic (community listing)",
+      "api_base": "https://api.anthropic.com/v1",
+      "models": [
+        {
+          "id": "claude-fable-5",
+          "name": "Claude Fable 5 (community)",
+          "knowledge": "2026-01",
+          "reasoning_options": "effort",
+          "default_max_tokens": 64000,
+          "catwalk_notes": "community-curated entry"
+        },
+        {
+          "id": "claude-haiku-4-5",
+          "cost": 3.0
+        },
+        {
+          "id": "claude-omega",
+          "name": "Claude Omega",
+          "context_window": 400000,
+          "max_output_tokens": 64000,
+          "cost": { "input": 2.0, "output": 8.0 },
+          "reasoning": true,
+          "tool_call": true
+        }
+      ]
+    },
+    {
+      "id": "acme-ai",
+      "name": "Acme AI",
+      "api_base": "https://api.acme.example/v1",
+      "models": [
+        {
+          "id": "acme-basic",
+          "name": "Acme Basic",
+          "context_window": 32000,
+          "max_output_tokens": 4096,
+          "cost": { "input": 0.5, "output": 1.5 },
+          "tool_call": false
+        }
+      ]
+    }
+  ]
+}

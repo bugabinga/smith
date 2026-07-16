@@ -1,0 +1,15 @@
+[package]
+name = "p15-async-lua-threading"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+# Enabling this feature adds code that tries to move a Lua state onto the
+# tokio runtime. It MUST fail to compile — that failure is the !Send
+# containment evidence. See the `compile_fail_demo` module in src/main.rs.
+compile_fail_demo = []
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+mlua = { version = "0.10", features = ["luajit", "vendored", "serialize"] }
