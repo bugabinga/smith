@@ -1578,6 +1578,108 @@ cargo run -- all
 Pin the teardown-mid-dispatch rule; confirm or refine the §9.18 delivery
 text.
 
+## Campaign 3 Results
+
+Run 2026-07-16, rustc 1.94.1, x86_64-unknown-linux-gnu. All nine complete;
+findings folded into SPEC (§4, §5.5, §5.6, §5.7, §6.9, §6.11, §7.3, §7.5,
+§8.11, §9.16, §9.18, §9.19, §12). Full diagnostics in each prototype's
+output and commit message. Digest per prototype (Markdown contract):
+
+### P15 result — async×Lua threading
+
+Status: complete. Proved: one dedicated plugin thread (channel actor, mpsc +
+oneshot) integrates !Send Lua with tokio — hook round-trip median 81µs/p99
+142µs; parallel tools overlap while hooks serialize; hostile 200ms hook
+leaves UI heartbeat <16ms; abort unblocks engine mid-hook; compile-fail
+containment evidence. **Disproved**: "every long operation observes abort" —
+in-flight LuaJIT hooks cannot be preempted; abort abandons the dispatch,
+hard-kill is domain teardown. Spec issues: P0 plugin-thread definition,
+P0 channel-actor dispatch rule, P1 soft hook budget (head-of-line),
+P1 abort carve-out.
+
+### P16 result — config cascade + reload
+
+Status: complete (28 PASS). Proved: five-layer cascade with leaf-merge;
+§9.19 atomic swap/rollback (eval, validation, resolution failures), minimal
+effective-config diff, CLI persistence, plugin-reload re-evaluation.
+Spec issues: P1 leaf-merge rule (layer-replace wipes builtin bindings),
+P2 diff over post-CLI effective config, P2 whole-graph cycle validation,
+P2 strict/warn contexts, P3 diff edge rules + all-errors reporting.
+
+### P17 result — bytecode cache
+
+Status: complete. **Double disproof**: net saving ~285µs/module (compile
+1102µs vs cache path 818µs; bytecode larger than source), while 7/34
+corrupted images segfault and 4/34 silently misexecute (no verifier);
+mlua's default "bt" load mode accepts binary chunks, violating §5.5 by
+default. Mechanics (dump/load, sha256+version header provenance) proven
+in case of revival. Spec issues: P1 drop the cache, P1 mandatory text-only
+loads, P1 full key rule if revived.
+
+### P18 result — model resolver
+
+Status: complete (33 PASS). Proved: pure multi-hop resolution, load-time
+cycle detection with full paths, DAG diamonds, compaction_model through the
+graph, exact §7.5 failover per error kind with nested bucket rotation.
+Key finding: purity + round-robin only reconcile by exporting rotation
+state — resolve(config, name, &cursors) pure; Mux owns cursors (P1). Six
+load-time rejection rules proven (P2/P3); DAG-duplicate dedupe decision
+open for §7.5.
+
+### P19 result — models.dev schema pin
+
+Status: complete. Real snapshot (2026-07-16, sha256-recorded, 166
+providers/5666 models) validates the translated schema; leaf-merge +
+preservation hold on real shapes; 92.2% map cleanly. **Disproved**:
+boundary-1 required-validation on fragments; ambiguous-primary-source
+(undetectable post-parse); naive field list (cost absent on 398 models,
+limit 0 on image models, tri-state flags, tiered pricing, no in-band
+version). Spec issues: P1 missing-cost rule, P1 zero-limit skip rule,
+P1 pin procedure (date+sha256), P2 fragment validation + taxonomy rework.
+
+### P20 result — trace/replay contracts
+
+Status: complete. Proved: max-speed reconstruction deep-equals live state
+(leaf, fold, transcript, abort queues); dangling tail round-trips; compare
+rehydrates from session registrations while traces stay byte-verified
+masked; drifted tool caught. **Disproved**: §6.11's entry list rebuilds
+ZERO session entries (needs SessionAppend kind, P1); "never exceeds
+uncompressed size" verbatim (achievable: raw+9B/block); per-entry-inflation
+wording. Pinned: block zstd 4KiB/64B-floor/raw-fallback; snapshots must
+carry leaf+queues+abort flag; citation p11→p20.
+
+### P21 result — compaction round
+
+Status: complete (38 PASS). Proved: exact trigger boundary (±1 token),
+ladder with per-step savings, one summary per pass, storage strict-prefix,
+recency window untouched, iteration limit with monotone progress, nested
+summary creation, masked summarizer input, cost tracked, re-entry
+impossible by construction. Findings: P1 LIVELOCK REAL — pin strict
+recency+reserve < threshold at config load + RecencyDominates/no-progress
+guards; P2 iteration-limit reporting; P2 summarizer exempt from trigger
+(else self-referential); P2 threshold expression parses two ways.
+
+### P22 result — input queue machine
+
+Status: complete (deterministic styled-cell snapshots, byte-identical
+across runs). Proved: §8.11 visual order, distinct kinds, cycling, edit
+removal, empty-resend delete, cancel-pop-then-abort. Three ambiguities
+forced into rules: P1 RULE A (promote lands newest of new kind), P1 RULE B
+(precise reposition: remember (kind, index), clamp; kind-changed → RULE A)
+replacing "best effort", P1 RULE C (cancel-pop by enqueue time across
+kinds — provably diverges from visual-bottom), P2 cancel-while-editing.
+
+### P23 result — bus delivery
+
+Status: complete (implemented inline; builder agent hit a session limit —
+its Lua fixtures reused). Proved: registration-order synchronous delivery
+across domains, inner emits join one GLOBAL FIFO after the current dispatch
+(max depth 1), error isolation with emitter returning normally, plain-data
+enforcement (fn/thread/fn-key/cycle/topic-charset rejected), off().
+Rules pinned: teardown-mid-dispatch condemns immediately (same-dispatch
+deliveries skip with diagnostic), drop deferred to the drain epilogue;
+self-teardown from a handler is safe; string-keys-only payload rule.
+
 ## Reporting Template
 
 Each completed prototype updates this plan with a result block in the
