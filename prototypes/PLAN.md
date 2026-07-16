@@ -1098,23 +1098,7 @@ findings folded into SPEC (§6.1, §6.5, §6.7, §6.9).
 
 ## Reporting Template
 
-Each completed prototype updates this plan with a result block:
-
-```json
-{
-  "status": "complete|blocked|failed",
-  "proved": [],
-  "disproved": [],
-  "specIssues": [
-    {
-      "file": "../docs/SPEC.md",
-      "issue": "...",
-      "evidence": "prototype path + command + result",
-      "severity": "P0|P1|P2|P3"
-    }
-  ],
-  "prototypeArtifacts": [],
-  "commands": [],
-  "nextSteps": []
-}
-```
+Each completed prototype updates this plan with a result block in the
+Markdown shape required by `prototypes/AGENTS.md` (canonical:
+`.claude/skills/pioneer/SKILL.md`). Result blocks recorded before
+2026-07-16 use the earlier JSON shape and stand as historical records.

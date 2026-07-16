@@ -12,22 +12,31 @@ Rules:
 - Do not edit `../docs/SPEC.md` unless explicitly asked.
 - Delete throwaway work unless user asks to keep it.
 
-Required result JSON:
-```json
-{
-  "status": "complete|blocked|failed",
-  "proved": [],
-  "disproved": [],
-  "specIssues": [
-    {
-      "file": "../docs/SPEC.md",
-      "issue": "missing/false/unclear requirement",
-      "evidence": "prototype path + command + result",
-      "severity": "P0|P1|P2|P3"
-    }
-  ],
-  "prototypeArtifacts": [],
-  "commands": [],
-  "nextSteps": []
-}
+Required result format — Markdown, not JSON (canonical contract lives in
+`.claude/skills/pioneer/SKILL.md`):
+
+```markdown
+## Status
+complete | blocked | failed
+
+## Proved
+- spec claims supported by prototype evidence
+
+## Disproved
+- spec claims contradicted by prototype evidence
+
+## Spec Issues
+- `path`
+  - Issue: what spec must clarify or change
+  - Evidence: prototype path, command, compiler/test result
+  - Severity: P0 | P1 | P2 | P3
+
+## Prototype Artifacts
+- paths created
+
+## Commands
+- commands run
+
+## Next Steps
+- concrete spec or design actions
 ```
