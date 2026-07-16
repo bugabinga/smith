@@ -1,7 +1,6 @@
 ---
 name: sabotnik
 description: Improve LLM-generated Rust by replacing slop with expert, type-driven, tested code. Invoke with a code area or patch, e.g. /sabotnik smith-ai/src/oauth.rs.
-disable-model-invocation: true
 ---
 
 # Sabotnik — deslop

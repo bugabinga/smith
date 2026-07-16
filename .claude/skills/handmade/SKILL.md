@@ -1,7 +1,6 @@
 ---
 name: handmade
 description: Improve code by compressing duplication, bad abstractions, and needless concepts into clearer DRY designs. Invoke with a code area or files, e.g. /handmade smith-core/src/session.
-disable-model-invocation: true
 ---
 
 # Handmade — design compression

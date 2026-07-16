@@ -3,7 +3,7 @@
 Purpose: prove or invalidate `../docs/SPEC.md` with tiny disposable prototypes.
 
 Rules:
-- Read `../AGENTS.md`, this file, then `../docs/SPEC.md` before work.
+- Read `../CLAUDE.md`, this file, then `../docs/SPEC.md` before work.
 - One prototype = one SPEC claim/risk.
 - Keep code minimal. No production crates. No broad implementations.
 - Prefer compile checks, focused tests, and runnable repros.

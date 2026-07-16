@@ -1,7 +1,6 @@
 ---
 name: pioneer
 description: Verify spec claims by proving or disproving them with isolated, disposable prototypes under prototypes/. Invoke with a spec section or claim, e.g. /pioneer §6.9 fold edge cases.
-disable-model-invocation: true
 ---
 
 # Pioneer — spec validation prototypes
@@ -30,7 +29,7 @@ The established campaign practice (see `prototypes/PLAN.md`):
 
 ## Operating Rules
 
-- Read `AGENTS.md` and `prototypes/AGENTS.md` first, then the relevant
+- Read `CLAUDE.md` and `prototypes/CLAUDE.md` first, then the relevant
   `docs/SPEC.md` sections.
 - Build only isolated proofs under `prototypes/` or a temporary directory.
 - Do not edit production crates or canonical specs unless explicitly asked.

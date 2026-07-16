@@ -1,7 +1,6 @@
 ---
 name: smith
 description: Create or refine the smith spec (docs/SPEC.md). Markdown only, no code. Invoke with a topic, e.g. /smith compaction thresholds.
-disable-model-invocation: true
 ---
 
 # smith — spec work
@@ -16,10 +15,10 @@ topic was given, ask for one.
 Spec content must state desired project behavior — interfaces, data, errors,
 tests — **as named shapes and behavior, not code**. Exact only at boundaries
 others program against (files, wire formats, CLI, config, Lua SDK); code
-blocks are illustrative unless the section says otherwise. See `AGENTS.md`
+blocks are illustrative unless the section says otherwise. See `CLAUDE.md`
 rule 3 and SPEC §1 "Exact at boundaries, shapes inside".
 
-Read `AGENTS.md` and `docs/SPEC.md` first. `docs/research/` is evidence,
+Read `CLAUDE.md` and `docs/SPEC.md` first. `docs/research/` is evidence,
 non-normative. Stay consistent with `docs/PROJECT-INVARIANTS.md`.
 
 Stop and ask on architectural decisions.

@@ -52,7 +52,7 @@ docs/                           # ← project management (spec, research)
 └── PROJECT-INVARIANTS.md       # this file
 
 prototypes/                     # ← disposable spec-validation prototypes
-├── AGENTS.md                   # prototype rules
+├── CLAUDE.md                   # prototype rules
 └── PLAN.md                     # prototype plan + result blocks
 ```
 
@@ -266,7 +266,7 @@ Files that coding agents MAY modify freely:
 
 Files that coding agents SHOULD read before modifying:
 - `docs/SPEC.md` (the canonical spec)
-- `AGENTS.md` (project overview)
+- `CLAUDE.md` (project overview)
 
 ## 6. Spec-Code Relationship
 
@@ -429,6 +429,7 @@ Rules:
 
 | Date | Change | Author |
 |------|--------|--------|
+| 2026-07-16 | AGENTS.md files renamed to CLAUDE.md repo-wide; references updated (user-directed) | smith-spec |
 | 2026-07-15 | §8a CI wording scoped to release automation; §4 fetch-providers source models.dev; §1 zig/cargo-zigbuild exception (user-approved) | smith-spec |
 | 2026-07-15 | §2 tree: design/ absorbed into SPEC.md and deleted; prototypes/ added (user-approved) | smith-spec |
 | 2026-05-23 | Add architecture gates and pinned-nightly pup exception | smith-spec |

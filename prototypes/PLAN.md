@@ -3,7 +3,7 @@
 Purpose: prove or invalidate high-risk `../docs/SPEC.md` claims before production
 Rust exists.
 
-Rules from `AGENTS.md` apply:
+Rules from `CLAUDE.md` apply:
 
 - one prototype = one claim/risk,
 - minimal runnable proof,
@@ -1099,6 +1099,6 @@ findings folded into SPEC (§6.1, §6.5, §6.7, §6.9).
 ## Reporting Template
 
 Each completed prototype updates this plan with a result block in the
-Markdown shape required by `prototypes/AGENTS.md` (canonical:
+Markdown shape required by `prototypes/CLAUDE.md` (canonical:
 `.claude/skills/pioneer/SKILL.md`). Result blocks recorded before
 2026-07-16 use the earlier JSON shape and stand as historical records.

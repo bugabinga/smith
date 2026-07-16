@@ -28,7 +28,7 @@ smith/ (types, StreamFn, AgentTool, Lua, config)
 
 ## Source of Truth
 
-AGENTS.md is a navigation index. Do not mirror individual source-of-truth file
+CLAUDE.md is a navigation index. Do not mirror individual source-of-truth file
 lists here; use the canonical directories and docs tree instead.
 
 - Spec: `docs/SPEC.md` — canonical project specification.
@@ -43,7 +43,7 @@ absorbed into `docs/SPEC.md` and deleted (see git history).
 ## Rules
 
 1. Spec before code. No `.rs` files until `docs/SPEC.md` covers the work.
-2. AGENTS.md is the navigation index. `docs/SPEC.md` is the canonical project spec.
+2. CLAUDE.md is the navigation index. `docs/SPEC.md` is the canonical project spec.
 3. Every spec section answers: interfaces, data, errors, tests — as named
    shapes and behavior, not code. Exact only at boundaries others program
    against (files, wire formats, CLI, config, Lua SDK); code blocks are
