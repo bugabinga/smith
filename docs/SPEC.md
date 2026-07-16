@@ -364,14 +364,22 @@ Required shared types:
 - `SessionId(String)`.
 - `SecretId(String)`.
 - `VcsOpId(String)`.
-- `Role`: `System`, `User`, `Assistant`, `Tool`, `ToolResult`, `Custom`, `BashExecution`.
-- `ContentBlock`:
+- `Role`: `System`, `User`, `Assistant`, `Tool`.
+- `ContentBlock` — the authoritative content representation:
   - `Text(String)`,
   - `Image { data, media_type }`,
-  - `ToolCall { id, name, arguments }`,
+  - `ToolCall { id, name, arguments (JSON) }`,
   - `ToolResult { id, result, is_error }`,
-  - `Thinking { content }`.
-- `Message { role, content }`.
+  - `Thinking { content, provider_metadata? }` — `provider_metadata` is opaque
+    and preserved, never consumed by Smith; provider adapters attach it (e.g.
+    thinking signatures) and replay it on later requests (§7.2), so signed
+    thinking round-trips across turns.
+- `Message { role, content: list of ContentBlock }`.
+
+Roles say who speaks; entry kinds say what happened. Tool results are
+`Tool`-role messages carrying `ToolResult` blocks — there is no tool-result
+role. Events like user bash executions are `SessionEntry` kinds (§6.5), not
+roles.
 
 ### 5.2 Provider Types
 
@@ -379,11 +387,15 @@ Required shared types:
 - `StopReason`: `EndTurn`, `ToolUse`, `OverMaxTokens`, `Aborted`, `StopSequence`, `Error`.
 - `ThinkingLevel`: `Off`, `Minimal`, `Low`, `Medium`, `High`, `XHigh`.
 - `ProviderEvent`:
-  - `TextDelta`,
-  - `ToolCall`,
-  - `ThinkingDelta`,
-  - `Done`,
-  - `Error`.
+  - `TextDelta { text }`,
+  - `ThinkingDelta { text }`,
+  - `ToolCall { id, name, arguments }` — assembled and complete; partial
+    argument chunks are joined at the provider boundary (§7.2),
+  - `Done { usage, stop_reason }`,
+  - `Error(ProviderError)`.
+- `ProviderError` kinds — the failover-relevant classification consumed by
+  `MuxProvider` (§7.5), each carrying a message: `RateLimit`, `AuthFailed`,
+  `Network`, `ServerError`, `InvalidRequest`, `ModelNotFound`, `Timeout`.
 - `ProviderRequest` contains messages, system prompt, model/provider IDs, tool
   definitions, thinking level, token limit, and stop sequences.
 
@@ -499,11 +511,24 @@ Failover:
 
 ### 5.8 Errors
 
-`SmithError` is the shared recoverable error enum. It wraps provider, auth, tool,
-config, Lua, I/O, CBOR, and resolver errors.
+`SmithError` is the shared error enum. It wraps the domain errors defined at
+their subsystems: `ProviderError` (§5.2), auth (§7.4), tool errors including
+the §9.12 codes, config validation (§5.6), Lua (§5.5), I/O, session/trace
+codec (§6.6, §6.11), and model resolution (§5.7).
 
-Internal impossible states use assertions during development but shipped library
-code must not panic for external failures.
+Recoverability is the load-bearing property of every error path:
+
+- **Recoverable** (the default): the failure surfaces to the user and/or the
+  LLM as content — error tool results (§6.4), UI notifications, plugin
+  diagnostics (§9.17) — and the loop continues. Provider failures (§7.5),
+  tool errors, plugin faults and OOM (§9.14, §9.17), and rejected config
+  reloads (§9.19) are all recoverable.
+- **Fatal**: the process cannot continue safely — unrecoverable terminal
+  state, invalid startup config, providers exhausted in non-interactive eval.
+  Fatal paths restore the terminal (§10) and exit nonzero with a diagnostic.
+
+Shipped library code never panics for external failures; internal impossible
+states use debug assertions.
 
 ## 6. Core Crate: `smith-core`
 
@@ -525,6 +550,42 @@ The agent loop:
 - executes tool calls,
 - handles steering/follow-up messages,
 - repeats until stop criteria.
+
+Steering and follow-up semantics:
+
+- **Follow-up**: FIFO queue consulted when the run would otherwise end —
+  instead of `agent_end`, the loop dequeues the next follow-up as a fresh
+  user message and starts a new turn cycle.
+- **Steering**: delivers at the next safe boundary — after the current
+  provider stream completes, or after in-flight tool execution finishes.
+  Never-started tool calls from the current assistant message resolve as
+  error-flagged synthetic results (`skipped: user steered`) so every call
+  has a result on the wire; the model re-plans with the steer visible. All
+  queued steers drain FIFO as user messages before the next provider call.
+  Prototype-proven boundary rules (p14):
+  - parallel execution (§5.3): **wait-for-all-in-flight** — once a steer is
+    queued, no new call starts; every already-started call runs to
+    completion; only never-started calls skip,
+  - steer arriving mid-stream: no call of that assistant message has
+    started, so ALL of them skip — none executes,
+  - transcript ordering: real results first (completion order in parallel
+    mode), then synthetics in original call order, then the drained steers,
+  - skipped calls emit `ToolExecutionStart`/`ToolExecutionEnd` with error
+    flag and reason, per the §6.4 blocked-call contract.
+- Interactive input during an active run is a steer by default; a modifier
+  submits it as a follow-up (§8.11). Plugins override default user-message
+  behavior through the `input` hook (§9.8) and send programmatically via
+  `smith.send_message` (§9.10).
+- Queues are ephemeral process state: queued messages become session entries
+  when delivered, never when queued — the session records only what the model
+  saw. Compaction (§6.9) neither consumes nor drops the queues.
+- Cancel keys pop the queue before they abort: see §8.11. A delivered abort
+  (§12) ends the run; whatever remains queued stays queued and is surfaced by
+  the TUI for the user to send, edit, or discard. An abort can leave the
+  session tail with an assistant message whose tool calls have no results
+  (no next request exists to carry synthetics); request assembly after
+  resume must repair such a dangling tail by synthesizing aborted-results
+  for the unanswered calls (p14).
 
 The loop uses two nested loops:
 
@@ -599,8 +660,44 @@ block reason to the provider as an error tool result so the model can react.
 - current leaf,
 - created/updated timestamps.
 
-Sessions are branching trees. Branches are immutable once created. `/tree` and
-history/time-travel features are Lua plugins over this core state.
+Sessions are branching trees. A branch is emergent, not stored: the path from
+root to a leaf. `ctx.session.branch()` (§9.9) returns the current path.
+"Immutable once created" means entries are append-only and never rewritten —
+working from an older point creates a new child, never edits history. `/tree`
+and history/time-travel features are Lua plugins over this core state.
+
+Tree operations:
+
+- **append**: adds an entry as a child of the current leaf; the leaf advances
+  to it. Appending while the leaf sits on a non-leaf entry creates a fork
+  point implicitly — there is no explicit branch operation.
+- **switch leaf**: moves the current leaf to any entry, recorded by appending
+  a leaf-switch metadata entry. On load, the leaf is resolved by replaying
+  surviving entries in file order: an append moves the leaf to itself, a
+  leaf-switch moves it to its target — the last surviving entry decides
+  (prototype-proven, p12; the naive "last switch target" rule yields a stale
+  leaf once appends follow a switch). A leaf-switch whose target was lost to
+  §6.6 recovery is ignored on replay. Leaf state rides the append-only
+  recovery guarantees, and leaf history is replayable for free.
+- **read path**: returns the root→leaf path. The LLM context is built from
+  the current path only (through compaction, §6.9); sibling branches are
+  invisible to the model.
+- **fork**: clones entries up to a given entry into a new `SessionId` and
+  session file (the `session_before_fork` event, §9.8). Distinct from in-tree
+  branching, which stays in one file.
+
+No branch deletion or pruning exists in v1. A session has a single writer:
+one agent loop appends to it at a time.
+
+Recovery meets the tree (p12): a §6.6-skipped entry can be a parent or a
+switch target. Orphaned subtrees (parent missing) are detached and reported —
+unreachable from the root, never silently grafted; dangling leaf-switches are
+ignored during leaf replay.
+
+Leaf switches never touch the working tree. Filesystem time travel is plugin
+policy, not core behavior: the time-travel plugin (§9.11) pairs leaf switches
+with `smith.vcs.op_restore` using the `VcsOpId` stored in entries.
+Conversation navigation alone is never destructive.
 
 `SessionEntry` variants include:
 
@@ -613,9 +710,13 @@ history/time-travel features are Lua plugins over this core state.
 - secret registration,
 - model/provider change,
 - VCS operation,
+- user bash execution (`!`/`!!` commands and their output),
+- leaf switch (tree navigation),
 - metadata entries needed for migration and replay.
 
-Every entry has a stable `EntryId`, optional parent, and timestamp.
+Every entry has a stable `EntryId`, optional parent, and timestamp. New entry
+kinds are forward-compatible by construction: readers preserve unknown
+variants (§6.6), so adding a kind never breaks older sessions or readers.
 
 ### 6.6 Session Format
 
@@ -640,15 +741,67 @@ Properties (recovery boundaries prototype-proven, p06):
 
 ### 6.7 Secret Proxy
 
-The secret proxy prevents LLM exposure of secrets:
+The secret proxy prevents LLM exposure of registered secrets. Smith provides
+the masking mechanics only; secret *detection* mechanisms are out of scope
+for core and belong to plugins.
 
-- scans user messages and tool outputs for secrets,
-- replaces secrets with `smith:sec:N`,
-- stores plaintext translation entries locally,
-- rehydrates tool arguments before local execution,
-- rebuilds table on resume by scanning session entries backward.
+**Registry.** The proxy holds a table of `SecretId → plaintext + label`.
+Registration paths:
 
-Secrets are stored as local plaintext; the trust model is §11's.
+- automatic: every credential the auth resolver loads (§7.4) — provider keys
+  can never enter context, even via a tool reading a config file,
+- automatic: values of a plugin's `declared secrets` (§9.2) when read through
+  the SDK,
+- explicit: the built-in `/secret` command (§9.11),
+- plugins: `smith.secret.register(value, label)` (§9.10). Detection plugins
+  (pattern-based or otherwise) inspect content through the §9.8 `input` /
+  `tool_result` hooks and register what they find; the mechanism is theirs,
+  the mechanics are Smith's.
+
+**Masking at ingestion.** Scanning is exact substring matching against
+registered values — no heuristics in core. Content is masked to `smith:sec:N`
+placeholders *before* it becomes a session entry. Plaintext exists in exactly
+one entry kind: the secret-registration entry (preserved structurally by
+compaction but masked in provider rendering, §6.9). The ingestion scan runs
+after plugin `input`/`tool_result` hooks, so a value registered during those
+hooks is masked in the very content that surfaced it. On resume, the table
+rebuilds by scanning session entries backward for registration entries, and
+the `SecretId` allocator resumes past the highest id seen — a reused id would
+silently alias older placeholders (p13).
+
+Masking and rehydration rules (prototype-proven, p13):
+
+- masking is **longest-match-first** in a single left-to-right pass that
+  never rescans emitted placeholder text — any other order provably leaks
+  residue of an overlapping secret,
+- rehydration is likewise single-pass; produced plaintext is never rescanned,
+- registration rejects values matching the placeholder grammar
+  (`smith:sec:<digits>`) with a diagnostic — accepting them aliases
+  legitimate placeholders,
+- re-registering identical plaintext is idempotent and returns the existing
+  id (detector hooks re-see the same token on every occurrence),
+- placeholder ids parse as the maximal digit run (`smith:sec:12` is id 12,
+  never id 1 followed by `2`).
+
+**Rehydration.** Placeholders turn back into plaintext at exactly one layer:
+immediately before tool execution (subprocess and tool `execute`, Rust and
+Lua alike). Session content, provider requests, traces, and events carry
+placeholders only. Replay with compare (§6.11) re-executes tools and
+therefore rehydrates from the session's registration entries; trace files
+themselves stay masked. A placeholder whose ID is not registered passes
+through untouched — never rehydrated, never an error.
+
+**Display.** The TUI renders placeholders masked with their label
+(`‹secret: github-token›`); display matches context content. The local user
+can recover plaintext from registration entries via `smith session dump`.
+
+**Limits.** An unregistered secret is not protected — by design. The scan
+applies to post-transform content only, with exact case- and
+encoding-sensitive matching: a hook that re-encodes a secret while
+transforming (§9.8) launders the derived form past the scan (p13) —
+pre-transform text is never persisted, so this is a stated boundary, not a
+bug. The protection target is the remote LLM; the trust model is §11's, and
+core does no best-effort guessing.
 
 ### 6.8 System Prompt
 
@@ -669,13 +822,71 @@ discover plugin/SDK capabilities through `smith help --search`, `--guide`, and
 
 ### 6.9 Compaction and Cost
 
-Compaction:
+Compaction never rewrites history. Entries are append-only (§6.5), so
+compaction is a mask applied at context-assembly time, not a storage
+mutation:
 
-- uses `AgentLoopConfig.model_metadata.context_window`,
-- starts with old non-essential/redundant entries,
-- runs summarization when trimming is insufficient,
-- repeats until context fits or configured iteration limit reached,
-- preserves secret registrations and necessary lineage.
+- **Storage never shrinks.** The session file keeps every entry verbatim;
+  memory stays bounded by lazy loading (§13.1).
+- **A compaction pass appends a summary entry** to the current path,
+  recording the covered span (from/to `EntryId`), the summary text, and
+  before/after token estimates.
+- **Context assembly folds the path** (§6.5 read path): spans covered by a
+  summary entry collapse into the summary; trim-masked content collapses
+  into stubs. What the model sees is the folded path; the file is untouched.
+
+Because the summary rides the path like any entry, branching needs no
+special case: switching the leaf to a pre-compaction entry yields a path
+without the summary — full history visible again, eligible to re-compact
+(producing a sibling summary on that branch) — and branches created after
+the compaction point inherit the mask.
+
+Fold rules (prototype-proven, p12):
+
+- **Span well-formedness**: a covered span is a contiguous ancestor segment
+  of the path the summary was appended to (`from` an ancestor of `to`; `to`
+  an ancestor of the summary entry). Well-formed compaction cannot produce a
+  span crossing a fork point; a violating span is file damage — the fold
+  ignores that summary, shows the span raw, and diagnoses. Never a partial
+  collapse.
+- **Summaries nest**: re-compaction on an already-compacted path always
+  covers the prior summary entry. The fold applies the outermost (latest)
+  covering span; inner summaries are subsumed.
+- **Metadata entries inside a covered span fold away** with the span — leaf
+  resolution and replay read raw storage (§6.5), never the folded path, so
+  nothing is lost.
+
+Trigger: before each provider request, when the estimated folded-path tokens
+exceed the configured threshold — by default a fraction of
+`AgentLoopConfig.model_metadata.context_window` minus the output-token
+reserve. The threshold is a named config key (§5.6; reloadable per §9.19).
+
+Trim ladder, cheapest first, repeated until the context fits or the
+configured iteration limit is reached:
+
+1. mask old tool-result bodies to stubs (dominant bytes per the memory
+   profile),
+2. mask old thinking blocks,
+3. LLM-summarize the oldest span. Summarization uses the active model unless
+   the `compaction_model` config key selects another (resolved via §5.7, so
+   aliases/groups work); its usage is tracked as normal cost.
+
+Survives the trim ladder (never stubbed or discarded by a compaction round —
+distinct from escaping a later covering span at fold time, which nothing
+does):
+
+- secret registrations (§6.7) — these survive *structurally*: hoisted out of
+  collapsed spans so resume and rehydration keep working, but they hold
+  plaintext, so the provider rendering masks/excludes them (§6.7 — a
+  verbatim-to-provider reading would ship plaintext to the LLM),
+- the system prompt snapshot,
+- existing compaction summary entries (they are summarizer input),
+- the recency window: the most recent entries up to a configured fraction of
+  the context window (token-budget based, so it adapts to model size).
+
+`session_before_compact` (§9.8, blockable) may veto the round, adjust the
+span, or replace the summarization prompt; `session_compact` reports the
+result.
 
 Token estimator:
 
@@ -903,7 +1114,7 @@ for credentials, and persists them to `auth.json`.
 
 `MuxProvider` wraps multiple providers/accounts for resolved groups and buckets.
 
-Behavior:
+Behavior, keyed by the `ProviderError` kinds (§5.2):
 
 - `RateLimit`: immediate failover,
 - `AuthFailed`, `Network`, `ServerError`: retry configured count then failover,
@@ -959,7 +1170,7 @@ Probe contract:
   conservative),
 - image protocol is `ImageProtocol::{Kitty, Sixel}`; the capability is
   detected but has no v1 consumer — inline image rendering is deferred
-  (§8.11),
+  (§8.12),
 - Kitty keyboard protocol flags are pushed on TUI startup and popped on
   shutdown (including error/signal paths, §10),
 - synchronized output (`CSI ?2026 h/l`) wraps render passes when the terminal
@@ -1081,7 +1292,25 @@ to bottom or submits input.
 Tools may register `renderCall` and `renderResult` Lua renderers. TUI receives
 structured render instructions from harness, not arbitrary terminal writes.
 
-### 8.11 Deferred Scope (v1)
+### 8.11 Input Queue
+
+Queued steering and follow-up messages (§6.1) appear in one visually combined
+queue between message history and input:
+
+- follow-ups render above steers; within each kind, oldest to newest — steers
+  sit nearest the input because they deliver soonest,
+- the two kinds are visually distinct within the shared queue,
+- a promote/demote action toggles a queued message between steer and
+  follow-up,
+- Up-arrow cycles through the queued messages; selecting one edits it. While
+  edited, the message temporarily leaves the queue; re-sending returns it to
+  its previous position (best effort). Re-sending it empty removes it,
+- while the queue is non-empty, the cancel keys (Ctrl+C/Esc by default,
+  rebindable §9.11) remove queued messages newest-to-oldest *instead of*
+  their default action; only with an empty queue do they abort the run
+  (§12).
+
+### 8.12 Deferred Scope (v1)
 
 Explicitly out of v1 TUI scope:
 
@@ -1412,6 +1641,8 @@ SDK namespaces include:
 - `smith.vcs.*`,
 - `smith.bus.*`,
 - `smith.config.*` (read access; `smith.config.reload()` triggers §9.19),
+- `smith.secret.*` (`register(value, label)`, `list()` — labels/ids only,
+  never plaintext; §6.7),
 - `smith.shortcut.*` (keyboard shortcut registration),
 - `smith.credentials.*` (`get(provider)`/`set(provider, value)` over the §7.4
   auth store),
@@ -1472,7 +1703,7 @@ Built-ins are Lua plugins, not Rust special cases:
 
 - tools: `read`, `write`, `edit`, `bash`, `find`, `grep`, `ls`,
 - slash commands: `/undo`, `/redo`, `/history`, `/tree`, `/reload-config`,
-  replay/time-travel,
+  `/secret` (§6.7), replay/time-travel,
 - VCS tools,
 - default layout,
 - default keybindings,
