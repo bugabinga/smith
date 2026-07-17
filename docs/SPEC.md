@@ -199,7 +199,8 @@ ignore = "0.4"
 grep = "0.4"
 grep-regex = "0.1"
 grep-searcher = "0.1"
-gix = { version = "0.83", default-features = false, features = ["blame", "blob-diff", "revision", "sha1", "blocking-network-client", "worktree-mutation"] }
+gix = { version = "0.85", default-features = false, features = ["blame", "blob-diff", "revision", "sha1", "blocking-network-client", "worktree-mutation"] }
+jj-lib = "=0.43.0"
 url = "2"
 oauth2 = "4"
 insta = "1"
@@ -217,6 +218,15 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = "1"
 ```
+
+Two version constraints are load-bearing (prototype-decided, p25/p26): `gix`
+is pinned to the version `jj-lib` pulls (0.85) so the two never compile a
+duplicate gix tree, and `jj-lib` is pinned exact because it is pre-1.0 with a
+roughly monthly, unstable API — the `smith.vcs.*` façade (§9.13) absorbs the
+upgrade churn. `jj-lib`'s transitive `kstring` resolves to a version needing
+rustc 1.96; until stable Rust reaches it, `Cargo.lock` pins `kstring = 2.0.2`.
+This is a lockfile pin of a dependency, not a declaration of Smith's own MSRV,
+so PROJECT-INVARIANTS §3.1 stands; it self-heals once stable ≥ 1.96.
 
 Release profile:
 
@@ -1950,11 +1960,16 @@ output, and explicit errors.
 ### 9.13 VCS SDK
 
 Smith uses jj internally for operation-level undo/redo/time travel, hidden
-behind `smith.vcs.*`. The concrete integration (`jj-lib` crate or jj binary
-shell-out) is still open: unlike §9.5's now-decided git boundary, gix's
-verdict does not transfer, because `jj-lib` is not already a §2.3 dependency —
-its baseline crate cost is zero, so the delta could be large and needs its own
-measurement (planned p26) before this is decided.
+behind `smith.vcs.*`, integrated with the `jj-lib` crate — no runtime
+dependency on a `jj` binary (prototype-decided, p26). Shell-out was rejected on
+the hot path: jj runs on every mutating tool, and a real `jj` invocation costs
+~12.5 ms against ~0.003 ms for the same read in-process, so per-turn spawn
+overhead would accumulate for nothing. Embedding costs +186 crates over an
+empty baseline, but much of that tree — gix, regex, futures, serde — is already
+required by §2.3, and jj-lib builds on stable Rust (§2.3 records the pins that
+keep it there). The pre-1.0, monthly-moving jj-lib API is the price; the
+`smith.vcs.*` façade is what contains its churn, so an upgrade never reaches
+plugins.
 
 State:
 

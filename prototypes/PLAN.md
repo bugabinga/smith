@@ -1838,27 +1838,26 @@ no runtime `git` dependency; shell-out rejected (forces `git` on PATH). Folded
 into §2.3 and §9.5. Spec issues: P1 sha1 build fix; P2 §9.5 gix default; P3
 §9.13 jj boundary needs its own measurement (p26).
 
-## P26 — `p26-jj-boundary` (planned, not yet run)
+## P26 — `p26-jj-boundary`
 
 ### SPEC claim
 
 §9.13: the jj integration (`jj-lib` crate vs jj-binary shell-out) is open. gix's
-p25 verdict does not transfer — `jj-lib` is not already a §2.3 dependency, so
-its baseline crate cost is zero and the delta could be large.
+p25 verdict does not transfer — `jj-lib` is not already a §2.3 dependency.
 
-### Risk
+### Result
 
-`jj-lib` may drag a heavy, fast-moving dependency tree for a subsystem exercised
-on every mutating tool (§9.13), where shell-out latency to a `jj` binary is paid
-per operation rather than once at install.
-
-### Verify (planned)
-
-Mirror p25: measure `jj-lib` incremental crate count / build time / binary size
-over the current workspace baseline, and prove a representative operation set
-(init, snapshot, op-log, diff, undo/redo, op-restore) works via `jj-lib` and via
-`jj`-binary shell-out. Weigh the per-operation-latency cost of shell-out against
-`jj-lib`'s footprint and API stability.
+Status: complete. Proved: jj-lib 0.43 builds on stable 1.94.1 (with a kstring
+pin); a representative op set (init, snapshot, op-log, diff, op-restore) works
+both in-process and via `jj` shell-out. Latency is decisive — in-process
+op-log 0.003 ms vs a real `jj` invocation ~12.5 ms — on a subsystem run per
+mutating tool. Footprint +186 crates / +8.2 MB / +~95s over an empty baseline,
+much overlapping §2.3 (gix, regex, futures, serde). **Disproved**: that gix's
++5-crate verdict transfers (it is +186 here); and that jj-lib's tree respects
+stable-latest as-is (transitive `kstring 2.0.3` wants rustc 1.96 → lockfile
+must pin 2.0.2). Decision: embed jj-lib. Folded into §2.3 and §9.13. Spec
+issues: P1 kstring pin; P2 §9.13 embed default, jj-lib API-stability caveat,
+gix 0.83→0.85 alignment.
 
 ## Reporting Template
 
