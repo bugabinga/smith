@@ -2249,3 +2249,81 @@ Each completed prototype updates this plan with a result block in the
 Markdown shape required by `prototypes/CLAUDE.md` (canonical:
 `.claude/skills/pioneer/SKILL.md`). Result blocks recorded before
 2026-07-16 use the earlier JSON shape and stand as historical records.
+
+## Result — P34 `p34-ci-pipeline` (2026-07-17)
+
+CI stood up on GitHub Actions to un-gate the two tooling-gated Campaign 7
+claims. Run: bugabinga/smith actions run 29595424305, all six jobs green.
+
+### Status
+complete
+
+### Proved
+- **§14 cross-build**: a bin pulling the two heaviest native trees — vendored
+  LuaJIT (`mlua`) and `gix` — cross-compiles cleanly via `cargo-zigbuild` to
+  `x86_64-unknown-linux-musl` (~73s), `aarch64-unknown-linux-musl` (~76s), and
+  `x86_64-pc-windows-gnu` (~121s), and builds+runs natively on `ubuntu-latest`
+  (~71s), `macos-latest` (~62s), and `windows-latest`/msvc (~218s). The §14
+  required matrix is buildable for the LuaJIT+gix trees; zig covers the
+  linux/windows-gnu cross, native runners cover msvc/darwin.
+- **§11 arch-gate (stable path)**: the `cargo metadata` gate PASSES the legal
+  3-crate graph and FAILS the moment a forbidden `wcore -> wai` edge is injected
+  (`ARCH VIOLATION: wcore -> wai is forbidden by §11`). §11 has a working
+  enforcement path on plain stable, no nightly required.
+- **§17.10 hermeticity / §13.1 cold build**: a clean runner cold-builds and
+  tests all 28 prototype crates in ~9m46s (ubuntu-latest, 2 vCPU) with no TTY
+  and no network — the first real seed for the cold-build sub-budget.
+
+### Disproved
+- **§3.5 / §15 `cargo install cargo-pup`**: cargo-pup is NOT published on
+  crates.io. `cargo +nightly-2026-01-22 install cargo-pup --locked` and the
+  stable fallback both fail with `error: could not find cargo-pup in registry
+  crates-io with version *`. The documented install path for the nightly source
+  gate does not exist; §11 cannot lean on it as written.
+
+### Spec Issues
+- `docs/SPEC.md §3.5, §11, §15 (pup)` + `docs/PROJECT-INVARIANTS.md §11`
+  - Issue: the architecture gate is specified as `cargo-pup` on pinned nightly,
+    but cargo-pup is unpublished on crates.io, so `cargo install cargo-pup`
+    fails. The load-bearing §11 gate should be the stable `cargo metadata`
+    check (proven here); cargo-pup should be demoted to optional and, if kept,
+    installed from a pinned git rev, not crates.io.
+  - Evidence: run 29595424305 arch-gate job — metadata gate discriminates
+    legal/illegal graphs; `cargo install cargo-pup` errors "not in registry".
+  - Severity: P1
+- `docs/SPEC.md §14`
+  - Issue: cross-build is proven only for the LuaJIT+gix trees. `jj-lib`
+    (+ prost) and the `aws-lc`/reqwest-TLS tree named in §13.1/P30's risk were
+    NOT in the cross bin and remain unproven under cross-compilation.
+  - Evidence: p34-ci-pipeline/cross/Cargo.toml pulls mlua+gix only.
+  - Severity: P2
+- `prototypes/.cargo/config.toml (§18)`
+  - Issue: the prototype cap-lints=warn exemption is resolved by working
+    directory, not by `--manifest-path`. A prototype built from the repo root
+    (or by any tool passing `--manifest-path` from outside `prototypes/`)
+    inherits the production `-D warnings`/`-D missing_docs` policy and fails.
+  - Evidence: identical `-D missing_docs` failure on all three OS runners in the
+    first run; reproduced locally (errors via `--manifest-path` from root, warns
+    when CWD is under prototypes/). Fixed by building from inside the tree.
+  - Severity: P3
+
+### Prototype Artifacts
+- `prototypes/p34-ci-pipeline/NOTES.md`
+- `prototypes/p34-ci-pipeline/cross/` (mlua+gix cross bin)
+- `prototypes/p34-ci-pipeline/archgate/` (3-crate workspace, `gate.py`, `pup.ron`)
+- `.github/workflows/ci-prototype.yml` (temporary)
+
+### Commands
+- `git push` → GitHub Actions run 29595424305 (push trigger)
+- cross: `cargo zigbuild --target {x86_64,aarch64}-unknown-linux-musl`,
+  `--target x86_64-pc-windows-gnu`
+- native: `cargo run` on ubuntu/macos/windows runners
+- arch: `python3 gate.py` (pass), inject edge → `python3 gate.py` (fail)
+
+### Next Steps
+- Owner decision: make the stable `cargo metadata` check the load-bearing §11
+  gate; demote cargo-pup to optional (git-pinned) or drop it (§3.5/§11/§15).
+- Extend the cross bin with `jj-lib` and the TLS/aws-lc tree to close the P30
+  gap, or accept it as a release-time risk.
+- Decide whether ci-prototype.yml stays as the seed of the real pipeline or is
+  deleted now that its evidence is recorded.
