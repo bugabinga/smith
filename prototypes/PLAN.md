@@ -1936,6 +1936,70 @@ overlay-over-base composition operator, nor rules for tabs/scrollable/Size::Pct
 §8.7 and §17.6. Spec issues: P1 resolution contract, P2 property target, P2
 composition rules.
 
+## Campaign 6 — Multi-frontend readiness
+
+## P28 — `p28-rpc-frontend-sufficiency`
+
+### SPEC claims
+
+- §8 frontend boundary / §10.4: `smith rpc` is the multi-frontend boundary; an
+  RPC client is a frontend peer of the TUI, consuming an adapter over the
+  `EngineEvent` stream (§6.3) — non-blocking → notifications, blocking →
+  requests, frontend-private omitted.
+- Implicit sufficiency claim: a full alternative UI (web/native/mobile) can be
+  built on the RPC surface alone.
+
+### Risk
+
+p24 proved the projection *mechanics*, not *sufficiency*. An `EngineEvent`
+variant may carry state a real frontend must render that is unreachable over
+the §10.4 surface — a completeness gap that would only surface when someone
+actually builds a web UI.
+
+### Minimal artifact
+
+```text
+p28-rpc-frontend-sufficiency/
+  Cargo.toml        (serde, serde_json)
+  src/main.rs
+```
+
+A mock engine emits the full `EngineEvent` stream over the RPC adapter during a
+scripted complete session; a headless mock frontend client (no smith-tui code,
+no Lua) consumes only the RPC surface and reconstructs everything a UI renders.
+
+### Verify
+
+```bash
+cd prototypes/p28-rpc-frontend-sufficiency
+cargo run -- classify
+cargo run -- reconstruct
+cargo run -- blocking-roundtrip
+cargo run -- all
+```
+
+### Pass evidence
+
+- `classify`: every `EngineEvent` variant (§6.2 AgentEvent + §6.3 harness
+  events: session lifecycle, steering/follow-up, UI-state, provider/model
+  change, error, shutdown) tagged `notification` / `request` /
+  `frontend-private-omitted` / `MISSING`; the MISSING set is the finding,
+- `reconstruct`: a scripted session (turns, streaming text/thinking deltas,
+  tool calls incl. a blocking `tool_call`, steering queue, compaction/fold,
+  leaf switch/tree, secret placeholders, model change, error) drives the mock
+  client, whose reconstructed UI state (transcript, tool views, steering queue,
+  leaf/tree, cost/context, active model) deep-equals the engine's ground truth,
+  built from the RPC stream ALONE,
+- `blocking-roundtrip`: a blocking `tool_call` reaches the client as a request
+  and the client's reply flows back into the engine,
+- verdict: the RPC surface is sufficient for a full frontend, or the exact
+  MISSING variants/state are listed.
+
+### SPEC impact
+
+Upgrade the §10.4 completeness claim from p28-gated to proven, or add the
+missing driver methods / event projections the spike finds.
+
 ## Reporting Template
 
 Each completed prototype updates this plan with a result block in the

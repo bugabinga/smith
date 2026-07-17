@@ -742,7 +742,11 @@ conversation-relevant completed events.
 - provider/model changes,
 - errors and shutdown.
 
-`EngineEvent` is consumed by `smith-harness` and `smith-tui`.
+`EngineEvent` is consumed by `smith-harness` and `smith-tui`. It is the
+frontend stream: every frontend (the built-in TUI in-process, §8; any RPC
+client out-of-process, §10.4) consumes `EngineEvent` and submits intents back.
+Some variants — TUI-internal UI state changes — are in-process-frontend-private
+and are not exposed out-of-process.
 
 ### 6.4 Hooks
 
@@ -1287,6 +1291,16 @@ Behavior, keyed by the `ProviderError` kinds (§5.2):
 
 `smith-tui` owns terminal primitives, normalized events, widgets, themes, and
 render loop. It depends only on `smith`.
+
+**Frontend boundary.** `smith-tui` is the built-in *in-process frontend* — one
+consumer of the `EngineEvent` stream (§6.3) that renders it and feeds intents
+(prompt submit, steer, command, abort) back. It is not privileged as *the* UI:
+the same event-out/intent-in surface is exposed out-of-process by `smith rpc`
+(§10.4), which is the canonical boundary for additional frontends (web, native,
+mobile). Those are RPC clients and link no smith Rust code. The render model
+below — cells, borders, ratatui `Rect`s — is deliberately terminal-specific and
+is **not** a cross-UI abstraction: a browser or GPU frontend brings its own
+rendering and consumes only the event/intent surface, never smith's widgets.
 
 ### 8.1 Backend
 
@@ -2406,6 +2420,17 @@ notification).
 
 Framing (line-delimited JSON vs `Content-Length`) is an implementation choice
 settled when `smith rpc` is built.
+
+**RPC is the multi-frontend boundary.** An RPC client is a frontend peer of the
+built-in TUI (§8), so its event surface is an adapter over the `EngineEvent`
+stream (§6.3) — the same source the TUI consumes — not the plugin bridge
+(§9.8). It is an adapter, not a mirror, by three rules: non-blocking events
+project to notifications; blocking events (`tool_call`, `session_before_*`)
+project to server→client requests the client answers; and frontend-private
+`EngineEvent` variants (TUI-internal UI state) are omitted. Whether this
+adapter is *complete* — every externally-meaningful `EngineEvent` reaching a
+frontend that needs it — is prototype-gated (p28); p24 proved the projection
+mechanics, not sufficiency for a full alternative UI.
 
 ## 11. Security Model
 
