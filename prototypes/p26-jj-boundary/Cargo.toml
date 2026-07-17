@@ -1,0 +1,29 @@
+[package]
+name = "p26-jj-boundary"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "p26-jj-boundary"
+path = "src/main.rs"
+
+# jj-lib is an OPTIONAL dependency so deps-report can measure an empty baseline
+# (--no-default-features) against the embed config (--features embed) with one
+# Cargo.toml, mirroring p25's baseline/clone/https feature-config methodology.
+# jj-lib 0.43 is edition 2024, MSRV 1.89 — both satisfied by stable 1.94.1.
+[dependencies]
+jj-lib = { version = "0.43", optional = true }
+# pollster gives a tiny block_on for jj-lib's async API. It is already in
+# jj-lib's own tree, so tying it to `embed` adds zero crates over the jj-lib
+# delta while keeping the --no-default-features baseline genuinely empty.
+pollster = { version = "0.4", optional = true }
+
+[features]
+default = ["embed"]
+embed = ["dep:jj-lib", "dep:pollster"]
+
+# NOTE: Cargo.lock pins kstring = 2.0.2. jj-lib's tree resolves kstring 2.0.3,
+# whose MSRV is rustc 1.96.0 (> our stable 1.94.1). 2.0.2 is API-compatible and
+# builds on 1.94.1. This mirrors p25, which pinned the same crate for the same
+# reason. Recorded as a Spec Issue (jj-lib transitive MSRV drift).

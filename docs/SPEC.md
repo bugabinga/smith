@@ -199,7 +199,8 @@ ignore = "0.4"
 grep = "0.4"
 grep-regex = "0.1"
 grep-searcher = "0.1"
-gix = { version = "0.83", default-features = false, features = ["blame", "blob-diff", "revision"] }
+gix = { version = "0.85", default-features = false, features = ["blame", "blob-diff", "revision", "sha1", "blocking-network-client", "worktree-mutation"] }
+jj-lib = "=0.43.0"
 url = "2"
 oauth2 = "4"
 insta = "1"
@@ -217,6 +218,15 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 tar = "0.4"
 flate2 = "1"
 ```
+
+Two version constraints are load-bearing (prototype-decided, p25/p26): `gix`
+is pinned to the version `jj-lib` pulls (0.85) so the two never compile a
+duplicate gix tree, and `jj-lib` is pinned exact because it is pre-1.0 with a
+roughly monthly, unstable API — the `smith.vcs.*` façade (§9.13) absorbs the
+upgrade churn. `jj-lib`'s transitive `kstring` resolves to a version needing
+rustc 1.96; until stable Rust reaches it, `Cargo.lock` pins `kstring = 2.0.2`.
+This is a lockfile pin of a dependency, not a declaration of Smith's own MSRV,
+so PROJECT-INVARIANTS §3.1 stands; it self-heals once stable ≥ 1.96.
 
 Release profile:
 
@@ -1608,9 +1618,15 @@ Install semantics:
 - Git installs strip the `.git` directory: an installed plugin is a pure file
   snapshot, not a working clone. Updates go through reinstall.
 
-Git URL installs go through Smith's internal git boundary; the concrete
-implementation (`gix` or system-git shell-out) is release engineering's choice,
-hidden behind the boundary (p04 evidence, `prototypes/PLAN.md`).
+Git URL installs go through Smith's internal git boundary, implemented with
+`gix` — no runtime dependency on a `git` binary (prototype-decided, p25: gix
+clones a repo at a ref byte-for-byte identical to shell-out). Local clone adds
+five first-party gix crates over the §2.3 VCS-query baseline; the https
+transport's TLS/async stack is mostly already paid for by the §2.3 `reqwest`
+and `tokio` requirements, and gix's http transport is configured to share
+reqwest's TLS backend rather than ship a second one. Shell-out was rejected:
+zero build cost, but it forces a compatible `git` on every user's PATH for a
+core feature.
 
 `smith uninstall <org>/<name>`:
 
@@ -1943,10 +1959,17 @@ output, and explicit errors.
 
 ### 9.13 VCS SDK
 
-Smith uses jj internally for operation-level undo/redo/time travel. jj is
-driven through the same kind of internal boundary as §9.5's git installs: the
-concrete integration (`jj-lib` crate or jj binary shell-out) is release
-engineering's choice, hidden behind `smith.vcs.*`.
+Smith uses jj internally for operation-level undo/redo/time travel, hidden
+behind `smith.vcs.*`, integrated with the `jj-lib` crate — no runtime
+dependency on a `jj` binary (prototype-decided, p26). Shell-out was rejected on
+the hot path: jj runs on every mutating tool, and a real `jj` invocation costs
+~12.5 ms against ~0.003 ms for the same read in-process, so per-turn spawn
+overhead would accumulate for nothing. Embedding costs +186 crates over an
+empty baseline, but much of that tree — gix, regex, futures, serde — is already
+required by §2.3, and jj-lib builds on stable Rust (§2.3 records the pins that
+keep it there). The pre-1.0, monthly-moving jj-lib API is the price; the
+`smith.vcs.*` façade is what contains its churn, so an upgrade never reaches
+plugins.
 
 State:
 
@@ -2300,11 +2323,9 @@ Subcommands:
 - `smith install <plugin>` — install plugin.
 - `smith uninstall <plugin>` — uninstall plugin.
 - `smith eval <prompt> [--json] [--session id]` — non-interactive eval.
-- `smith rpc` — JSON-RPC via stdio; methods include `config/reload` (§9.19).
+- `smith rpc` — JSON-RPC 2.0 over stdio; `config/reload` (§9.19) is one method,
+  the projection rule is §10.4.
 - `smith completions <shell>` — generate shell completions (`clap_complete`).
-  The full method catalog is deferred: it is expected to mirror the Lua SDK
-  surface (§9.10), with mode-specific additions and omissions, rather than
-  define an independent API.
 - `smith help [topic] [--search q] [--list] [--examples] [--example name] [--guide name]`.
   Topics support dotted function addressing: `smith help tool.register`
   resolves the `register` entry within the `tool` topic.
@@ -2319,6 +2340,39 @@ Interactive slash commands are registered by Lua plugins, not clap subcommands.
 interactive/eval/rpc/replay/session/plugin/help command handlers.
 
 `smith-cli` restores terminal state on errors and signals.
+
+### 10.4 RPC Method Projection
+
+The `smith rpc` catalog is not a mirror of the Lua SDK (§9.10) — projecting
+the SDK onto JSON-RPC is a structural transform, prototype-proven (p24), and
+the method list is derived from it rather than enumerated here. Two
+independent axes classify each surface: *origin* (mirrored from §9.10 vs an
+RPC-only addition) and *shape* (data request/response, callback, or
+notification).
+
+- **Data and config-mutation namespaces mirror** as request→response methods:
+  `fs`, `search`, `env`, `time`, `log`, `provider`, `alias`, `group`,
+  `bucket`, `vcs`, `config`, `secret`, `active_tools`, `credentials`,
+  `send_message`, `abort`, `shutdown`, `getContextUsage`.
+- **Callback-taking functions invert direction.** `tool.register` (its
+  `execute`), `command` handlers/autocomplete, and `bus.on` cannot travel as
+  data; registering one means the engine issues a server→client REQUEST to
+  run the client's handler and awaits the reply. RPC that registers behavior
+  is therefore bidirectional, not a one-way call.
+- **Events (§9.8) are server→client notifications** — except blocking events
+  (`tool_call`, `session_before_*`), which are server→client REQUESTS so the
+  client can answer block/allow/replace. A pure observer client that
+  registers nothing still needs the reverse channel for these.
+- **A driver namespace has no §9.10 origin** and is RPC-only: `session/open`,
+  `session/attach`, `session/list`, `session/dump`, `session/fork`,
+  `session/subscribe`, `prompt/submit`, `command/run`. Lua never needs these
+  because a plugin already runs inside a live session; an RPC client must
+  drive one from outside.
+- **Lua-runtime-only surfaces are omitted** in headless RPC: `tui`,
+  `shortcut` (no terminal, no keyboard).
+
+Framing (line-delimited JSON vs `Content-Length`) is an implementation choice
+settled when `smith rpc` is built.
 
 ## 11. Security Model
 
