@@ -122,4 +122,5 @@ jobs:
           cargo +nightly-2026-01-22 install cargo-pup --locked || cargo install cargo-pup --locked
           cargo +nightly-2026-01-22 pup || cargo pup
       - name: pup outcome
-        run: echo "cargo-pup probe outcome:: ${{ steps.pup.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "cargo-pup probe outcome = ${{ steps.pup.outcome }}" >> "$GITHUB_STEP_SUMMARY"
