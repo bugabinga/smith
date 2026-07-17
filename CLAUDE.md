@@ -60,3 +60,31 @@ absorbed into `docs/SPEC.md` and deleted (see git history).
    adapters that defer to them.
 6. Cargo is the sole build system. See `docs/PROJECT-INVARIANTS.md` §1.
 7. Agents must not modify `docs/SPEC.md` or `docs/PROJECT-INVARIANTS.md` without approval.
+
+## Writing commits and PRs
+
+Commits and PRs argue the **why**, not the **what**. The diff already lists
+what changed — never retype it. A message earns its place by recording the
+motivation, the reasoning, and what was deliberately *not* done and why.
+
+- **No AI attribution, ever.** No `Co-Authored-By`, no "Generated with", no
+  session links, no tool bylines. These commits are the author's.
+- **Subject:** one imperative line naming the decision or its effect, not the
+  mechanic — "Drop the Lua bytecode cache", not "remove BytecodeCache struct".
+  No ALL-CAPS verdicts, no emoji. (Prefix policy: PROJECT-INVARIANTS §7.)
+- **Body:** one to three short paragraphs. The motivation, the alternative
+  dropped and the single cost that killed it, and the one number or fact that
+  settled it. If it wants more than that, the overflow belongs elsewhere.
+- **One grep-able anchor.** Exactly one sentence naming the concrete surface
+  touched — `SPEC §N`, a file, a config key, a `prototypes/pNN` dir — as a
+  range or count, never a per-item roster. This is what keeps `git bisect` and
+  `blame` meaningful. "Don't enumerate" is not "don't be specific."
+- **Where detail lives instead:** per-file change lists → the diff; benchmark
+  tables and raw measurements → the prototype dir and its `PLAN.md` result
+  block; the decision plus its driving number → the commit body, in prose.
+- **One commit, one decision.** If the anchor won't fit one sentence, split.
+- **Banned:** superlatives, "successfully / robustly / cleanly", caps-lock
+  findings, emoji, and every attribution trailer.
+
+PRs follow `.github/pull_request_template.md`: motivation-first, one line per
+section, the surface as an anchor range — the diff is the roster.
