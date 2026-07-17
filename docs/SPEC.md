@@ -2300,11 +2300,9 @@ Subcommands:
 - `smith install <plugin>` — install plugin.
 - `smith uninstall <plugin>` — uninstall plugin.
 - `smith eval <prompt> [--json] [--session id]` — non-interactive eval.
-- `smith rpc` — JSON-RPC via stdio; methods include `config/reload` (§9.19).
+- `smith rpc` — JSON-RPC 2.0 over stdio; `config/reload` (§9.19) is one method,
+  the projection rule is §10.4.
 - `smith completions <shell>` — generate shell completions (`clap_complete`).
-  The full method catalog is deferred: it is expected to mirror the Lua SDK
-  surface (§9.10), with mode-specific additions and omissions, rather than
-  define an independent API.
 - `smith help [topic] [--search q] [--list] [--examples] [--example name] [--guide name]`.
   Topics support dotted function addressing: `smith help tool.register`
   resolves the `register` entry within the `tool` topic.
@@ -2319,6 +2317,39 @@ Interactive slash commands are registered by Lua plugins, not clap subcommands.
 interactive/eval/rpc/replay/session/plugin/help command handlers.
 
 `smith-cli` restores terminal state on errors and signals.
+
+### 10.4 RPC Method Projection
+
+The `smith rpc` catalog is not a mirror of the Lua SDK (§9.10) — projecting
+the SDK onto JSON-RPC is a structural transform, prototype-proven (p24), and
+the method list is derived from it rather than enumerated here. Two
+independent axes classify each surface: *origin* (mirrored from §9.10 vs an
+RPC-only addition) and *shape* (data request/response, callback, or
+notification).
+
+- **Data and config-mutation namespaces mirror** as request→response methods:
+  `fs`, `search`, `env`, `time`, `log`, `provider`, `alias`, `group`,
+  `bucket`, `vcs`, `config`, `secret`, `active_tools`, `credentials`,
+  `send_message`, `abort`, `shutdown`, `getContextUsage`.
+- **Callback-taking functions invert direction.** `tool.register` (its
+  `execute`), `command` handlers/autocomplete, and `bus.on` cannot travel as
+  data; registering one means the engine issues a server→client REQUEST to
+  run the client's handler and awaits the reply. RPC that registers behavior
+  is therefore bidirectional, not a one-way call.
+- **Events (§9.8) are server→client notifications** — except blocking events
+  (`tool_call`, `session_before_*`), which are server→client REQUESTS so the
+  client can answer block/allow/replace. A pure observer client that
+  registers nothing still needs the reverse channel for these.
+- **A driver namespace has no §9.10 origin** and is RPC-only: `session/open`,
+  `session/attach`, `session/list`, `session/dump`, `session/fork`,
+  `session/subscribe`, `prompt/submit`, `command/run`. Lua never needs these
+  because a plugin already runs inside a live session; an RPC client must
+  drive one from outside.
+- **Lua-runtime-only surfaces are omitted** in headless RPC: `tui`,
+  `shortcut` (no terminal, no keyboard).
+
+Framing (line-delimited JSON vs `Content-Length`) is an implementation choice
+settled when `smith rpc` is built.
 
 ## 11. Security Model
 

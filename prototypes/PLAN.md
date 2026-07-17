@@ -1808,6 +1808,23 @@ Turn §9.5's "release engineering's choice" into a decided default with the
 measured tradeoff recorded; note whether the §9.13 jj boundary (jj-lib vs jj
 binary) deserves the same treatment as a follow-up.
 
+## Campaign 4 Results
+
+### P24 result — RPC surface projection
+
+Status: complete (11 PASS). Proved via a bidirectional JSON-RPC 2.0 stdio
+harness: data methods (`session/list`, `vcs/status`) round-trip; `command/run`
+executes; a core event arrives as an id-less server→client notification; a
+client-registered tool executes via a server→client `tool/execute` request
+whose reply feeds the loop. **Disproved**: §10.2's "mirror the Lua SDK" — the
+projection is mirror-minus-callbacks-plus-driver-methods, and origin
+(mirrored/added) is orthogonal to shape (data/callback/notification).
+Classification of all §9.10 primitives: 19 mirrored, 3 callback (`tool`,
+`command`, `bus`), 2 omitted (`tui`, `shortcut`); driver namespace
+(`session/*`, `prompt/submit`, `command/run`) is RPC-only. Folded into §10.4.
+Spec issues: P1 replace the mirror deferral with the projection rule; P2 name
+the two axes; P2 blocking events are requests not notifications.
+
 ## Reporting Template
 
 Each completed prototype updates this plan with a result block in the
