@@ -199,7 +199,7 @@ ignore = "0.4"
 grep = "0.4"
 grep-regex = "0.1"
 grep-searcher = "0.1"
-gix = { version = "0.83", default-features = false, features = ["blame", "blob-diff", "revision"] }
+gix = { version = "0.83", default-features = false, features = ["blame", "blob-diff", "revision", "sha1", "blocking-network-client", "worktree-mutation"] }
 url = "2"
 oauth2 = "4"
 insta = "1"
@@ -1608,9 +1608,15 @@ Install semantics:
 - Git installs strip the `.git` directory: an installed plugin is a pure file
   snapshot, not a working clone. Updates go through reinstall.
 
-Git URL installs go through Smith's internal git boundary; the concrete
-implementation (`gix` or system-git shell-out) is release engineering's choice,
-hidden behind the boundary (p04 evidence, `prototypes/PLAN.md`).
+Git URL installs go through Smith's internal git boundary, implemented with
+`gix` — no runtime dependency on a `git` binary (prototype-decided, p25: gix
+clones a repo at a ref byte-for-byte identical to shell-out). Local clone adds
+five first-party gix crates over the §2.3 VCS-query baseline; the https
+transport's TLS/async stack is mostly already paid for by the §2.3 `reqwest`
+and `tokio` requirements, and gix's http transport is configured to share
+reqwest's TLS backend rather than ship a second one. Shell-out was rejected:
+zero build cost, but it forces a compatible `git` on every user's PATH for a
+core feature.
 
 `smith uninstall <org>/<name>`:
 
@@ -1943,10 +1949,12 @@ output, and explicit errors.
 
 ### 9.13 VCS SDK
 
-Smith uses jj internally for operation-level undo/redo/time travel. jj is
-driven through the same kind of internal boundary as §9.5's git installs: the
-concrete integration (`jj-lib` crate or jj binary shell-out) is release
-engineering's choice, hidden behind `smith.vcs.*`.
+Smith uses jj internally for operation-level undo/redo/time travel, hidden
+behind `smith.vcs.*`. The concrete integration (`jj-lib` crate or jj binary
+shell-out) is still open: unlike §9.5's now-decided git boundary, gix's
+verdict does not transfer, because `jj-lib` is not already a §2.3 dependency —
+its baseline crate cost is zero, so the delta could be large and needs its own
+measurement (planned p26) before this is decided.
 
 State:
 

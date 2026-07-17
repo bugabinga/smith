@@ -1825,6 +1825,41 @@ Classification of all §9.10 primitives: 19 mirrored, 3 callback (`tool`,
 Spec issues: P1 replace the mirror deferral with the projection rule; P2 name
 the two axes; P2 blocking events are requests not notifications.
 
+### P25 result — git boundary
+
+Status: complete. Proved: gix clones a local bare repo at a named ref
+byte-for-byte identical to `git clone`, and https clone works through the
+proxy. Measured incremental cost over the §2.3 gix baseline: local clone +5
+first-party gix crates; https worst-case +79 crates / +13.5 MB / +59s, but the
+TLS/async stack is largely already required by §2.3 `reqwest`+`tokio`.
+**Disproved**: the §2.3 gix line as written (`default-features = false`, no
+hash backend) fails to compile — needs `sha1` (P1). Decision: gix for installs,
+no runtime `git` dependency; shell-out rejected (forces `git` on PATH). Folded
+into §2.3 and §9.5. Spec issues: P1 sha1 build fix; P2 §9.5 gix default; P3
+§9.13 jj boundary needs its own measurement (p26).
+
+## P26 — `p26-jj-boundary` (planned, not yet run)
+
+### SPEC claim
+
+§9.13: the jj integration (`jj-lib` crate vs jj-binary shell-out) is open. gix's
+p25 verdict does not transfer — `jj-lib` is not already a §2.3 dependency, so
+its baseline crate cost is zero and the delta could be large.
+
+### Risk
+
+`jj-lib` may drag a heavy, fast-moving dependency tree for a subsystem exercised
+on every mutating tool (§9.13), where shell-out latency to a `jj` binary is paid
+per operation rather than once at install.
+
+### Verify (planned)
+
+Mirror p25: measure `jj-lib` incremental crate count / build time / binary size
+over the current workspace baseline, and prove a representative operation set
+(init, snapshot, op-log, diff, undo/redo, op-restore) works via `jj-lib` and via
+`jj`-binary shell-out. Weigh the per-operation-latency cost of shell-out against
+`jj-lib`'s footprint and API stability.
+
 ## Reporting Template
 
 Each completed prototype updates this plan with a result block in the
