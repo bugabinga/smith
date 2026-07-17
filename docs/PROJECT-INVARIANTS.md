@@ -255,18 +255,24 @@ Files that coding agents MUST NOT modify without explicit user approval:
 - `docs/PROJECT-INVARIANTS.md`
 - `docs/SPEC.md` (source of truth — agents read, don't edit without approval)
 - `Cargo.toml` workspace root
-- any crate's `Cargo.toml` `[dependencies]` (see the dependency rule below)
+- adding or removing a crate in any `Cargo.toml` `[dependencies]` (version
+  bumps are maintenance — see the dependency rule below)
 - `.cargo/config.toml`
 - `rust-toolchain.toml`
 
-**Dependencies are a spec decision.** Adding, removing, or version-bumping any
-third-party crate in any production `Cargo.toml` requires spec-owner approval —
-a worker agent must escalate, never introduce a dependency on its own
-initiative. The canonical dependency set is SPEC §2.3; a dependency change is a
-change to §2.3 and follows the spec-approval path. Prototypes under
-`prototypes/` are exempt: adding a crate there to validate it before production
-is exactly their job (SPEC §18), and the validated result is what gets
-escalated for the §2.3 decision.
+**Adding a dependency is a spec decision; bumping one is maintenance.** A new
+third-party crate — or removing one — changes the architecture, crate set,
+compile budget, and siloing, so a worker agent escalates to the spec owner and
+never introduces a crate on its own initiative. The canonical set is SPEC §2.3
+and the change follows the spec-approval path. A **version bump** of an
+already-approved crate is routine upkeep, not a spec decision: it may be done
+by a dedicated dependency-maintenance agent or automation, provided it passes
+every gate — build, tests, clippy, `cargo deny`, and the §13.1 compile-budget
+regression gate. A bump that is semver-incompatible, raises the toolchain MSRV,
+or trips the compile-budget gate escalates like a new dependency, because it
+can change behavior or cost. Prototypes under `prototypes/` are exempt from all
+of this (SPEC §18): adding a crate to validate it before production is their
+job, and that evidence is what gets escalated.
 
 Files that coding agents MAY modify freely:
 - `*/src/*.rs` (implementation)

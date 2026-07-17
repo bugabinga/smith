@@ -219,14 +219,17 @@ tar = "0.4"
 flate2 = "1"
 ```
 
-This list is the canonical dependency registry. Adding, removing, or
-version-bumping any crate here is a spec decision (PROJECT-INVARIANTS §5):
-worker agents escalate to the spec owner and never introduce a dependency on
-their own; a prototype under `prototypes/` validates a candidate first, and its
-evidence is what the decision rests on. Heavy dependencies attach at the crate
-that owns the concern and never propagate up into `smith` (PROJECT-INVARIANTS
-§11 dependency-siloing invariant), so a leaf-crate edit never rebuilds an
-unrelated crate's dependency tree.
+This list is the canonical dependency registry. Adding or removing a crate here
+is a spec decision (PROJECT-INVARIANTS §5): worker agents escalate to the spec
+owner and never introduce a dependency on their own; a prototype under
+`prototypes/` validates a candidate first, and its evidence is what the
+decision rests on. Version bumps of an already-listed crate are maintenance,
+not a spec decision — routine bumps ride the CI gates (build, tests,
+`cargo deny`, the §13.1 compile budget), while a semver-breaking, MSRV-raising,
+or budget-tripping bump escalates like a new dependency. Heavy dependencies
+attach at the crate that owns the concern and never propagate up into `smith`
+(PROJECT-INVARIANTS §11 dependency-siloing invariant), so a leaf-crate edit
+never rebuilds an unrelated crate's dependency tree.
 
 Two version constraints are load-bearing (prototype-decided, p25/p26): `gix`
 is pinned to the version `jj-lib` pulls (0.85) so the two never compile a
