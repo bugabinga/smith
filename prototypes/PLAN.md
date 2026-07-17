@@ -2015,6 +2015,234 @@ rebuild the ephemeral steering queue + run status (never a session entry;
 span, `session_tree` node), poll-only cost/context for v1. Spec issues: P2
 session/snapshot, P2 payload guarantees, P3 cost/context push.
 
+## Campaign 7 — external integration surface
+
+The internal architecture is heavily validated; the least-tested claims are the
+external boundaries — real provider wire formats, tool mutation semantics,
+OAuth, cross-platform builds, and the arch-gate tooling. Ranked by
+spec-impact × uncertainty. p29/p31/p33 are environment-feasible; p30/p32 are
+tooling-gated (need a release/CI toolchain) and are attempted where possible.
+
+## P29 — `p29-provider-streaming`
+
+### SPEC claims
+
+- §7.1/§7.2: required providers (Anthropic, OpenAI, Google, OpenAI-compatible)
+  normalize vendor wire formats into `ProviderEvent` (§5.2); quirks handled at
+  the boundary — partial tool-call argument chunks assembled, thinking/
+  reasoning fields (reasoning may arrive in `content`), provider stop reasons,
+  cache usage; non-SSE JSON error on a streaming request → `ProviderEvent::Error`.
+- §5.1: `Thinking { content, provider_metadata? }` — signed thinking round-trips.
+
+### Risk
+
+Each provider's streaming shape differs (Anthropic content-block events, OpenAI
+delta chunks, Google candidates); normalizing all into one `ProviderEvent`
+sequence, assembling split tool-call JSON, and preserving thinking signatures
+is unvalidated for the current provider set (only pre-consolidation MiniMax was).
+
+### Minimal artifact
+
+```text
+p29-provider-streaming/
+  Cargo.toml        (serde, serde_json)
+  fixtures/anthropic.sse  fixtures/openai.sse  fixtures/google.sse
+  fixtures/anthropic-error-200.json  (non-SSE error body)
+  src/main.rs
+```
+
+Realistic hand-authored fixtures of each provider's streaming bytes (no
+network). A per-provider normalizer parses them into a `Vec<ProviderEvent>`.
+
+### Verify
+
+```bash
+cd prototypes/p29-provider-streaming
+cargo run -- anthropic
+cargo run -- openai
+cargo run -- google
+cargo run -- tool-call-assembly
+cargo run -- error-detection
+cargo run -- thinking-roundtrip
+cargo run -- all
+```
+
+### Pass evidence
+
+- each provider's fixture → the expected deterministic `ProviderEvent`
+  sequence (TextDelta/ThinkingDelta/ToolCall assembled/Done{usage,stop}),
+- a tool call whose JSON arguments are split across chunks assembles to one
+  complete `ToolCall`,
+- a non-SSE JSON error body returned with HTTP 200 becomes
+  `ProviderEvent::Error`, not a hang,
+- a thinking block with a provider signature survives as
+  `provider_metadata` and replays on a follow-up request,
+- report any provider shape §7.2's quirk list does not cover.
+
+### SPEC impact
+
+Tighten §7.2 with the concrete per-provider normalization rules and any quirk
+the fixtures expose.
+
+## P31 — `p31-edit-write-tool`
+
+### SPEC claims
+
+- §9.12 `write`: atomic temp-file + rename, creates parent dirs, records a VCS op.
+- §9.12 `edit`: read → validate (non-empty `old_text`, non-binary) → count exact
+  matches (zero fails, multiple fails unless `allow_multiple`) → re-read+hash
+  before write → fail `ESTALE` if changed → write atomically → return change
+  count + before/after hashes. Errors: `ENOENT`, `EEMPTY`, `EBINARY`,
+  `ENOMATCH`, `EMULTI`, `ESTALE`, `ELOCK`.
+- §5.3/§6.1: parallel vs sequential tool execution; every tool observes abort.
+
+### Risk
+
+The stale-hash race (re-read between match and write) and the exact error-code
+taxonomy are subtle and unvalidated; p07 only mocked tools. Atomic rename must
+hold on same-filesystem temp.
+
+### Minimal artifact
+
+```text
+p31-edit-write-tool/
+  Cargo.toml        (sha2; std only otherwise)
+  src/main.rs
+```
+
+Real files in temp dirs; drive `write`/`edit` against them.
+
+### Verify
+
+```bash
+cd prototypes/p31-edit-write-tool
+cargo run -- write-atomic
+cargo run -- edit-happy
+cargo run -- edit-errors
+cargo run -- edit-stale-race
+cargo run -- parallel-abort
+cargo run -- all
+```
+
+### Pass evidence
+
+- write: temp+rename is atomic (a crash between leaves either old or new, never
+  partial — simulate by asserting no partial file); parent dirs created,
+- edit: happy path returns change count + before/after hashes; each error code
+  reproduced with its exact condition,
+- stale race: mutate the file between match-count and write → `ESTALE`, no write,
+- parallel mode runs independent edits concurrently; an abort mid-batch stops
+  cleanly and leaves no half-written file.
+
+### SPEC impact
+
+Confirm or refine the §9.12 edit algorithm ordering and the stale/atomic
+guarantees under real filesystem semantics.
+
+## P33 — `p33-oauth-flow`
+
+### SPEC claims
+
+- §7.4: OAuth configured with `id/name/auth_url/token_url/scope/client_id`;
+  login surfaces the auth URL, receives the code via a local callback HTTP
+  server on a random port (or manual paste), exchanges it for
+  `{access_token, refresh_token, expires_at}`, persists to `auth.json`,
+  auto-refreshes on expiry.
+
+### Risk
+
+The callback-server + exchange + refresh flow (state/PKCE, random-port bind,
+redirect capture, refresh timing) is fiddly and unvalidated.
+
+### Minimal artifact
+
+```text
+p33-oauth-flow/
+  Cargo.toml        (serde, serde_json; std TcpListener for both servers)
+  src/main.rs
+```
+
+A mock OAuth provider (std `TcpListener`) plays authorize + token endpoints; the
+client runs the §7.4 flow end to end, no external network.
+
+### Verify
+
+```bash
+cd prototypes/p33-oauth-flow
+cargo run -- login
+cargo run -- callback-capture
+cargo run -- refresh
+cargo run -- persist
+cargo run -- all
+```
+
+### Pass evidence
+
+- login binds a random-port callback server, emits the auth URL with `state`,
+  the mock provider redirects with a code, the server captures it, exchange
+  yields tokens,
+- `state` mismatch is rejected,
+- an expired `access_token` triggers a refresh using `refresh_token`; a revoked
+  refresh surfaces a clear auth error,
+- tokens persist to and reload from the `auth.json` shape (§7.4).
+
+### SPEC impact
+
+Pin any §7.4 OAuth detail the flow exposes (state/PKCE requirement, callback
+timeout, refresh-ahead-of-expiry window).
+
+## P30 — `p30-cross-build` (tooling-gated)
+
+### SPEC claim
+
+§14: `cargo run -p xtask -- release` cross-builds all targets via
+cargo-zigbuild — windows-msvc, apple-silicon, linux gnu/musl (x86_64 + arm64).
+
+### Risk
+
+The heavy C tree (vendored LuaJIT, aws-lc-sys via cmake, jj-lib's gix/prost)
+cross-compiled to Windows/musl is a real "does it even build" unknown, like p17
+and p26 — and could force dependency or feature changes.
+
+### Verify (attempt where tooling allows)
+
+Install `cargo-zigbuild` + `zig`; attempt `cargo zigbuild --target
+x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` on a minimal bin
+pulling mlua(vendored) + aws-lc + gix. Report per-target build success/failure
+and the first blocking C/link error. If zig/targets are unavailable, report
+BLOCKED with what a release environment must provide.
+
+### SPEC impact
+
+Confirm §14's target list is buildable, or record the per-target blockers /
+feature changes needed.
+
+## P32 — `p32-arch-gate` (tooling-gated)
+
+### SPEC claim
+
+§11 / PROJECT-INVARIANTS §11: `cargo run -p xtask -- pup` on pinned nightly
+enforces the forbidden inter-crate dependency rules (e.g. `smith-core` must not
+depend on `smith-ai`).
+
+### Risk
+
+The whole architecture gate bets on cargo-pup expressing these rules; if it
+cannot, §11 enforcement is vapor and needs a different mechanism.
+
+### Verify (attempt where tooling allows)
+
+On the pinned nightly, install `cargo_pup`; author a rule expressing a §11
+forbidden edge over a tiny 3-crate workspace; prove it PASSES a legal graph and
+FAILS an illegal one. If the nightly/tool is unavailable, report BLOCKED and
+whether `cargo run -p xtask -- arch` (stable metadata check) can enforce the
+same rules as a fallback.
+
+### SPEC impact
+
+Confirm cargo-pup enforces §11, or fall back the arch gate to the stable
+metadata check and record it.
+
 ## Reporting Template
 
 Each completed prototype updates this plan with a result block in the
