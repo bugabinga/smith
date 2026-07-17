@@ -1680,6 +1680,134 @@ Rules pinned: teardown-mid-dispatch condemns immediately (same-dispatch
 deliveries skip with diagnostic), drop deferred to the drain epilogue;
 self-teardown from a handler is safe; string-keys-only payload rule.
 
+## Campaign 4 — settle the two deferred boundaries
+
+Planned 2026-07-16. Two decisions the spec deliberately left open now get
+evidence instead of a coin flip.
+
+## P24 — `p24-rpc-surface-projection`
+
+### SPEC claims
+
+- §10.2: `smith rpc` is JSON-RPC over stdio; the full method catalog is
+  deferred but "expected to mirror the Lua SDK surface (§9.10) with
+  mode-specific additions and omissions, rather than define an independent
+  API"; `config/reload` (§9.19) is the one named method.
+
+### Risk
+
+The mirror claim may not hold: SDK functions that take Lua callbacks
+(`tool.register`'s `execute`, `on`-event handlers, command handlers) cannot
+serialize across a stdio boundary as data. If the catalog is not a clean
+mirror, §10.2's deferral note is misleading and must state the real shape.
+
+### Minimal artifact
+
+```text
+p24-rpc-surface-projection/
+  Cargo.toml        (serde, serde_json)
+  src/main.rs
+```
+
+A minimal BIDIRECTIONAL JSON-RPC stdio harness (line-delimited or
+Content-Length framing — pick and document): a mock engine serving methods
+and emitting notifications, driven by a scripted client.
+
+### Verify
+
+```bash
+cd prototypes/p24-rpc-surface-projection
+cargo run -- data-method
+cargo run -- command-method
+cargo run -- event-notification
+cargo run -- register-tool-callback
+cargo run -- classify
+cargo run -- all
+```
+
+### Pass evidence
+
+- a data method (e.g. `session/list`, `vcs/status`) round-trips
+  request→response with §9.10-shaped payloads,
+- a command method (`command/run`) executes and returns,
+- a core event (§9.8) is delivered to the client as a server→client
+  notification (the event bridge → RPC mapping),
+- a client-registered tool works: `tool/register` names the tool, and its
+  execution is a server→client REQUEST to the client's handler whose reply
+  feeds the agent loop — proving callback-shaped SDK functions need
+  bidirectional RPC, not a data mirror,
+- `classify` prints the full §9.10 namespace list tagged
+  MIRRORED / ADDED (driver-only, e.g. session lifecycle, prompt submit) /
+  CALLBACK (needs server→client) / OMITTED (Lua-runtime-only), which becomes
+  the §10.2 catalog rule.
+
+### SPEC impact
+
+Replace §10.2's "mirror the Lua SDK" deferral with the proven projection
+rule: data/command namespaces mirror as methods; callback-taking functions
+require bidirectional RPC; events are notifications; driver methods
+(lifecycle, prompt submission) are RPC-only additions; Lua-runtime
+internals are omitted.
+
+## P25 — `p25-git-boundary`
+
+### SPEC claims
+
+- §9.5: git-URL plugin installs go through Smith's internal git boundary;
+  `gix` or system-git shell-out is release engineering's choice, hidden
+  behind the boundary. `gix` is already a §2.3 dependency for VCS queries
+  (`blame`, `blob-diff`, `revision`).
+
+### Risk
+
+The decision was deferred without measuring the one number that decides it:
+the INCREMENTAL cost of enabling gix's clone/fetch features on top of the
+already-present feature set, versus a runtime dependency on the `git` binary.
+gix clone may also drag in a network/TLS stack that dwarfs the query path.
+
+### Minimal artifact
+
+```text
+p25-git-boundary/
+  Cargo.toml        (gix with blame/blob-diff/revision — the §2.3 baseline —
+                     plus a feature flag adding clone/fetch)
+  src/main.rs
+```
+
+Clone a LOCAL bare repo (created in a temp dir, like p04) at a named ref
+via gix, and via `git` shell-out, stripping `.git` to match §9.5 install
+semantics. Real https-through-proxy clone is attempted and its result
+reported, but viability rests on the local case.
+
+### Verify
+
+```bash
+cd prototypes/p25-git-boundary
+cargo run -- gix-clone-local
+cargo run -- shellout-clone-local
+cargo run -- gix-clone-https      # best-effort through the proxy
+cargo run -- deps-report
+cargo run -- all
+```
+
+### Pass evidence
+
+- gix clones the local bare repo at a ref and strips `.git`; result matches
+  the shell-out clone byte-for-byte on tracked files,
+- `deps-report` prints: incremental crate count and compile-time delta of
+  the clone/fetch feature set OVER the §2.3 baseline (`cargo tree` diff),
+  and the release binary size delta,
+- shell-out baseline works with zero added crates but needs `git` on PATH at
+  runtime (documented as the cost),
+- a clear recommendation with the numbers: gix (no runtime git dep, +N
+  crates / +M KB) vs shell-out (runtime git dep, 0 crates).
+
+### SPEC impact
+
+Turn §9.5's "release engineering's choice" into a decided default with the
+measured tradeoff recorded; note whether the §9.13 jj boundary (jj-lib vs jj
+binary) deserves the same treatment as a follow-up.
+
 ## Reporting Template
 
 Each completed prototype updates this plan with a result block in the
