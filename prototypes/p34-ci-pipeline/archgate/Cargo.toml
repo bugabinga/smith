@@ -1,0 +1,8 @@
+# Tiny stand-in for the smith crate graph. Legal edges only:
+#   wharness -> wcore, wharness -> wai.
+# The §11 rule under test: wcore must never depend on wai (the real spec forbids
+# smith-core -> smith-ai). The CI job injects that forbidden edge and asserts
+# the gate flips from pass to fail.
+[workspace]
+resolver = "2"
+members = ["wcore", "wai", "wharness"]

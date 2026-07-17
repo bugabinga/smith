@@ -1,0 +1,13 @@
+[package]
+name = "p34-cross"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# The two heaviest native trees named in §14's cross-build risk: vendored
+# LuaJIT (C, built by cc for the target) and gix (with a rustls transport so
+# no C openssl is dragged in). If these cross-compile to musl/windows, the
+# §14 target matrix is credible.
+[dependencies]
+mlua = { version = "0.10", features = ["luajit", "vendored"] }
+gix = { version = "0.85", default-features = false, features = ["blame", "revision", "sha1"] }

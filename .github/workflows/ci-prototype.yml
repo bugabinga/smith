@@ -1,0 +1,125 @@
+# TEMPORARY CI prototype (p34) — evidence for SPEC §14 cross-build, §11
+# arch-gate, and §13.1 cold-build sub-budget. Not the production pipeline:
+# it targets the prototype crates because no production crate exists yet.
+# Delete once its PLAN.md result block is recorded.
+name: ci-prototype
+
+on:
+  push:
+    branches: ["claude/specs-progress-n5u27n"]
+    paths:
+      - ".github/workflows/ci-prototype.yml"
+      - "prototypes/p34-ci-pipeline/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  # §13.1 cold-build sub-budget + §17.10 hermeticity: build and test every
+  # prototype crate on a clean runner, record per-crate wall-clock.
+  prototypes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: rustup default stable && rustc -V && cargo -V
+      - name: build + test each prototype, timed
+        run: |
+          echo "## Prototype cold build+test (§13.1)" >> "$GITHUB_STEP_SUMMARY"
+          echo "| crate | build+test | seconds |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-----------|---------|" >> "$GITHUB_STEP_SUMMARY"
+          total=0
+          for d in prototypes/p*/; do
+            name=$(basename "$d")
+            [ -f "$d/Cargo.toml" ] || continue
+            start=$SECONDS
+            if cargo test --manifest-path "$d/Cargo.toml" --quiet >/dev/null 2>&1; then
+              status="ok"
+            else
+              status="FAIL"
+            fi
+            dur=$((SECONDS - start))
+            total=$((total + dur))
+            echo "| $name | $status | $dur |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          echo "| **total** | | **$total** |" >> "$GITHUB_STEP_SUMMARY"
+
+  # §14 cross-build (un-gates P30): does the heavy native tree cross-compile?
+  cross-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain + targets
+        run: |
+          rustup default stable
+          rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-pc-windows-gnu
+      - name: zig + cargo-zigbuild
+        run: |
+          pip3 install ziglang
+          cargo install cargo-zigbuild --locked
+      - name: cross x86_64-unknown-linux-musl
+        id: musl_x64
+        continue-on-error: true
+        run: cargo zigbuild --target x86_64-unknown-linux-musl --manifest-path prototypes/p34-ci-pipeline/cross/Cargo.toml
+      - name: cross aarch64-unknown-linux-musl
+        id: musl_arm
+        continue-on-error: true
+        run: cargo zigbuild --target aarch64-unknown-linux-musl --manifest-path prototypes/p34-ci-pipeline/cross/Cargo.toml
+      - name: cross x86_64-pc-windows-gnu
+        id: win_gnu
+        continue-on-error: true
+        run: cargo zigbuild --target x86_64-pc-windows-gnu --manifest-path prototypes/p34-ci-pipeline/cross/Cargo.toml
+      - name: per-target summary
+        run: |
+          echo "## §14 cross-build (mlua vendored + gix)" >> "$GITHUB_STEP_SUMMARY"
+          echo "| target | result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| x86_64-unknown-linux-musl | ${{ steps.musl_x64.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| aarch64-unknown-linux-musl | ${{ steps.musl_arm.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| x86_64-pc-windows-gnu | ${{ steps.win_gnu.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+
+  # §14 native matrix: prove the required OS runners exist and the native tree
+  # builds+runs on each (Windows here covers the msvc target zigbuild can't).
+  native-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup default stable
+      - name: build + run cross bin natively
+        run: cargo run --manifest-path prototypes/p34-ci-pipeline/cross/Cargo.toml
+
+  # §11 arch-gate (un-gates P32): the stable-metadata gate is the hard
+  # assertion; cargo-pup is attempted best-effort as the nightly source gate.
+  arch-gate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: prototypes/p34-ci-pipeline/archgate
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup default stable
+      - name: metadata gate PASSES the legal graph
+        run: python3 gate.py
+      - name: metadata gate FAILS once the forbidden edge is injected
+        run: |
+          cp wcore/Cargo.toml /tmp/wcore.bak
+          printf 'wai = { path = "../wai" }\n' >> wcore/Cargo.toml
+          if python3 gate.py; then
+            echo "BUG: gate passed an illegal graph"; cp /tmp/wcore.bak wcore/Cargo.toml; exit 1
+          fi
+          cp /tmp/wcore.bak wcore/Cargo.toml
+          echo "gate correctly rejected the injected wcore->wai edge"
+      - name: cargo-pup on pinned nightly (best-effort P32 probe)
+        id: pup
+        continue-on-error: true
+        run: |
+          rustup toolchain install nightly-2026-01-22 --profile minimal || rustup toolchain install nightly --profile minimal
+          cargo +nightly-2026-01-22 install cargo-pup --locked || cargo install cargo-pup --locked
+          cargo +nightly-2026-01-22 pup || cargo pup
+      - name: pup outcome
+        run: echo "cargo-pup probe outcome:: ${{ steps.pup.outcome }}" >> "$GITHUB_STEP_SUMMARY"

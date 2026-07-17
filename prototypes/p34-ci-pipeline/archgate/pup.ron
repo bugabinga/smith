@@ -1,0 +1,16 @@
+// Best-effort cargo-pup config expressing the §11 forbidden edge wcore -> wai.
+// P32's open question is exactly whether cargo-pup's schema can state this; the
+// CI job runs pup as `continue-on-error` and captures the real outcome, while
+// the stable-metadata fallback gate (§3.5) is the hard assertion. If this RON
+// shape is wrong, that error IS the evidence that §11 should lean on the
+// metadata gate rather than the nightly source lint.
+Pup(
+    lints: [
+        ArchitectureLint(
+            name: "core-must-not-depend-on-ai",
+            forbidden: [
+                (from: "wcore", to: "wai"),
+            ],
+        ),
+    ],
+)
