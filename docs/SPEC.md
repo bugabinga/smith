@@ -1422,6 +1422,27 @@ One predefined border layout exists: center + north/east/south/west panels,
 each panel carrying `visible`, `size`, and its own layout. Panels are invisible
 when empty. Default layout is a Lua plugin.
 
+Composition rules (prototype-proven, p27):
+
+- `overlay` floats over its container area and is excluded from the flow
+  tiling set — flow siblings still tile as if it were absent, and the overlay
+  is positioned by the §8.6 anchor model. Overlays may cover flow content by
+  design (modals, command palette, autocomplete).
+- `tabs` reserves a one-row tab bar; the active child gets the remaining area.
+- `scrollable` is layout-transparent — a viewport over its child, not an axis
+  partition.
+- `Size::Percent` rounds to the nearest cell.
+
+**Resolution (prototype-proven, p27).** Layout resolution never re-enters Lua
+on the render path. A plugin builds the layout on change (`set_center_layout`,
+`set_*_panel`); the harness converts that Lua tree once into an owned Rust
+`LayoutTree` that retains no Lua handle (`Send + 'static`, so it can be built
+off the render thread) and drops the Lua value. Every frame, a pure resolver
+maps `(LayoutTree, terminal size) → Rect per widget slot` — deterministic for
+equal inputs, zero Lua calls in the loop. This is what keeps §12's plugin-
+thread round-trips (~81µs, serialized) off the §13 2ms frame budget; measured
+per-frame resolution is ~0.4µs (release p99 &lt; 0.8µs) across 80×24 to 400×100.
+
 ### 8.8 Theme
 
 Themes are Lua tables validated by Rust schemas (prototype-proven, p08).
@@ -2686,7 +2707,11 @@ Required property areas:
 - valid Lua config parsing,
 - token estimator monotonicity,
 - event-to-session-entry conversion,
-- trace filtering preserves order.
+- trace filtering preserves order,
+- layout resolution (§8.7): every child Rect within its parent's bounds; flow
+  siblings tile their axis without overlap; `expanded` is the exact remainder;
+  `split` honors `split_ratio` (± one cell) and tiles exactly; resolution is
+  deterministic for equal `(tree, size)`.
 
 Commit `proptest-regressions/`.
 

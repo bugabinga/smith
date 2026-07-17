@@ -1922,6 +1922,20 @@ into owned Rust data; Rust resolves `Rect`s every frame as a pure,
 deterministic function of `(tree, size)` with no Lua in the render loop; name
 the layout property invariants as a §17 property-test target.
 
+### Result
+
+Status: complete. Proved: the two-phase zero-Lua-in-loop pipeline holds — a
+Lua-call counter stayed flat across 10k resolves at 80×24/200×50/400×100; the
+owned `LayoutTree` is `Send + 'static` (compile-asserted) and resolves
+identically after `drop(lua)` on another thread; release per-frame resolution
+median ~0.4µs / p99 &lt;0.8µs vs the 2ms budget; property invariants hold over
+192 (tree,size) pairs. **Disproved nothing** (the "must re-enter Lua / can't
+hit 2ms" counter-hypothesis is refuted). Surfaced a real gap: §8.7 had no
+overlay-over-base composition operator, nor rules for tabs/scrollable/Size::Pct
+— the prototype's resolutions are now the §8.7 composition rules. Folded into
+§8.7 and §17.6. Spec issues: P1 resolution contract, P2 property target, P2
+composition rules.
+
 ## Reporting Template
 
 Each completed prototype updates this plan with a result block in the
