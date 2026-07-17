@@ -1,0 +1,17 @@
+[package]
+name = "p25-git-boundary"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "p25-git-boundary"
+path = "src/main.rs"
+
+[dependencies]
+gix = { version = "0.83", default-features = false, features = ["blame", "blob-diff", "revision", "sha1"] }
+
+[features]
+default = ["https"]
+clone = ["gix/blocking-network-client", "gix/worktree-mutation"]
+https = ["clone", "gix/blocking-http-transport-reqwest-rust-tls"]
