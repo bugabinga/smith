@@ -219,6 +219,15 @@ tar = "0.4"
 flate2 = "1"
 ```
 
+This list is the canonical dependency registry. Adding, removing, or
+version-bumping any crate here is a spec decision (PROJECT-INVARIANTS §5):
+worker agents escalate to the spec owner and never introduce a dependency on
+their own; a prototype under `prototypes/` validates a candidate first, and its
+evidence is what the decision rests on. Heavy dependencies attach at the crate
+that owns the concern and never propagate up into `smith` (PROJECT-INVARIANTS
+§11 dependency-siloing invariant), so a leaf-crate edit never rebuilds an
+unrelated crate's dependency tree.
+
 Two version constraints are load-bearing (prototype-decided, p25/p26): `gix`
 is pinned to the version `jj-lib` pulls (0.85) so the two never compile a
 duplicate gix tree, and `jj-lib` is pinned exact because it is pre-1.0 with a
@@ -927,7 +936,7 @@ compaction is a mask applied at context-assembly time, not a storage
 mutation:
 
 - **Storage never shrinks.** The session file keeps every entry verbatim;
-  memory stays bounded by lazy loading (§13.1).
+  memory stays bounded by lazy loading (§13.2).
 - **A compaction pass appends a summary entry** to the current path,
   recording the covered span (from/to `EntryId`), the summary text, and
   before/after token estimates.
@@ -2451,7 +2460,28 @@ plugin diagnostic (§9.17), not killed.
 - Agent loop turn target < 30s excluding provider/network stalls beyond timeout.
 - Bench regressions fail nightly/release gates (thresholds in §17.9).
 
-### 13.1 Memory Policy
+### 13.1 Compile-Time Budget
+
+Compile time is budgeted on two distinct axes, because they answer different
+questions:
+
+- **Incremental rebuild is the governing dev/agent metric.** After a one-crate
+  edit, the rebuild recompiles that crate and its reverse-dependency closure
+  only — never an unrelated leaf crate or its heavy dependency tree. This is a
+  structural guarantee of the workspace split + dependency siloing
+  (PROJECT-INVARIANTS §11), not just a time target; the edit→check loop that
+  dominates agent and dev work depends on it.
+- **Cold build and crate count are a CI-cost sub-budget.** The full transitive
+  tree (mlua/LuaJIT, jj-lib, gix, reqwest+tokio, aws-lc/TLS, syntastica) is
+  paid once and cached; the gate is on *regression* — a dependency change that
+  materially grows cold build or crate count fails CI the same way a
+  binary-size or bench regression does. Exact thresholds are set from the
+  first real full-workspace build.
+
+A single TLS backend is shared across `reqwest` and `gix` rather than shipping
+two stacks (p25).
+
+### 13.2 Memory Policy
 
 Prototype-proven against the measured session corpus (p09; see
 `docs/research/SMITH-MEMORY-ALLOCATION-PROFILE.md`):
@@ -2549,18 +2579,21 @@ Documentation gates:
 
 ### 17.1 Fast Tier
 
-Every commit:
+Every commit, scoped to the touched crates and their reverse-dependency
+closure (`-p <crate>`), so the §13.1 incremental guarantee is realized rather
+than erased by a full-workspace `--all-features` sweep:
 
 ```bash
 cargo fmt --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo clippy -p <touched...> --all-targets -- -D warnings
 cargo run -p xtask -- arch
-cargo +nightly-2026-01-22 pup
-cargo nextest run --profile fast
-cargo test --doc
+cargo +nightly-2026-01-22 pup -p <touched...>
+cargo nextest run --profile fast -p <touched...>
+cargo test --doc -p <touched...>
 ```
 
-Blocks push.
+The full `--workspace --all-features` clippy/build/test sweep runs in the
+medium tier (§17.2), not per-commit. Blocks push.
 
 Scope:
 

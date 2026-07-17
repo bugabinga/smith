@@ -254,9 +254,19 @@ xtask commands must be thin orchestrators. They delegate to cargo, nextest, clip
 Files that coding agents MUST NOT modify without explicit user approval:
 - `docs/PROJECT-INVARIANTS.md`
 - `docs/SPEC.md` (source of truth — agents read, don't edit without approval)
-- `Cargo.toml` workspace root (agents read dependencies, don't add/remove)
+- `Cargo.toml` workspace root
+- any crate's `Cargo.toml` `[dependencies]` (see the dependency rule below)
 - `.cargo/config.toml`
 - `rust-toolchain.toml`
+
+**Dependencies are a spec decision.** Adding, removing, or version-bumping any
+third-party crate in any production `Cargo.toml` requires spec-owner approval —
+a worker agent must escalate, never introduce a dependency on its own
+initiative. The canonical dependency set is SPEC §2.3; a dependency change is a
+change to §2.3 and follows the spec-approval path. Prototypes under
+`prototypes/` are exempt: adding a crate there to validate it before production
+is exactly their job (SPEC §18), and the validated result is what gets
+escalated for the §2.3 decision.
 
 Files that coding agents MAY modify freely:
 - `*/src/*.rs` (implementation)
@@ -406,6 +416,17 @@ Forbidden:
 - `smith-cli` must not depend directly on `smith-core`, `smith-ai`, or `smith-tui`.
 - `mod.rs` files contain only module declarations and re-exports.
 - Wildcard imports are forbidden outside tests.
+
+**Dependency siloing (incremental-build invariant).** Heavy or fast-moving
+third-party crates attach at the leaf crate that owns the concern —
+`reqwest`/`tokio` in `smith-ai`, `syntastica`/`ratatui` in `smith-tui`,
+`jj-lib`/`gix` behind `smith-core`/`smith-harness` — and MUST NOT propagate up
+into `smith`. The foundation crate is depended on by every other crate, so any
+churn or heavy dependency there invalidates the whole workspace's incremental
+cache; keeping it minimal is what lets an edit to one leaf crate rebuild
+without touching the others' compiled artifacts. `smith` carries only small,
+stable, universally-shared code (its one heavy dependency, `mlua`, is a locked
+exception because the SDK type surface needs it).
 
 Architecture gates:
 - `cargo run -p xtask -- arch` verifies stable Rust metadata/source invariants.
