@@ -279,7 +279,7 @@ Files that coding agents SHOULD read before modifying:
 
 - **VCS:** jj (Jujutsu) — modern DVCS with git compatibility.
 - **No merge commits:** Use `jj squash` or `jj rebase` for linear history.
-- **Commit messages:** Conventional Commits (`feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`).
+- **Commit messages:** Plain imperative subject naming the decision or its effect; no required type prefix. Messages argue *why*, not *what* — see CLAUDE.md "Writing commits and PRs". No AI attribution trailers.
 - **Branch naming:** Not applicable with jj (bookmarks), but if using git: `feature/description`, `fix/description`.
 
 ## 8. Performance Invariants
@@ -429,6 +429,7 @@ Rules:
 
 | Date | Change | Author |
 |------|--------|--------|
+| 2026-07-16 | §7 drop Conventional Commits mandate; commit/PR style moves to CLAUDE.md; no AI attribution (user-approved) | smith-spec |
 | 2026-07-16 | AGENTS.md files renamed to CLAUDE.md repo-wide; references updated (user-directed) | smith-spec |
 | 2026-07-15 | §8a CI wording scoped to release automation; §4 fetch-providers source models.dev; §1 zig/cargo-zigbuild exception (user-approved) | smith-spec |
 | 2026-07-15 | §2 tree: design/ absorbed into SPEC.md and deleted; prototypes/ added (user-approved) | smith-spec |
