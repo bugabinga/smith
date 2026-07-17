@@ -2411,10 +2411,14 @@ notification).
   client can answer block/allow/replace. A pure observer client that
   registers nothing still needs the reverse channel for these.
 - **A driver namespace has no §9.10 origin** and is RPC-only: `session/open`,
-  `session/attach`, `session/list`, `session/dump`, `session/fork`,
-  `session/subscribe`, `prompt/submit`, `command/run`. Lua never needs these
-  because a plugin already runs inside a live session; an RPC client must
-  drive one from outside.
+  `session/attach`, `session/list`, `session/dump`, `session/snapshot`,
+  `session/fork`, `session/subscribe`, `prompt/submit`, `command/run`. Lua
+  never needs these because a plugin already runs inside a live session; an RPC
+  client must drive one from outside. `session/dump` returns persisted state
+  (transcript, tree, leaf, folds); `session/snapshot` returns the *ephemeral*
+  process state a live tail cannot replay — the steering/follow-up queue
+  (§6.1) and in-flight run status — which a mid-session attach needs and which
+  is never a session entry (prototype-proven, p28).
 - **Lua-runtime-only surfaces are omitted** in headless RPC: `tui`,
   `shortcut` (no terminal, no keyboard).
 
@@ -2427,10 +2431,22 @@ stream (§6.3) — the same source the TUI consumes — not the plugin bridge
 (§9.8). It is an adapter, not a mirror, by three rules: non-blocking events
 project to notifications; blocking events (`tool_call`, `session_before_*`)
 project to server→client requests the client answers; and frontend-private
-`EngineEvent` variants (TUI-internal UI state) are omitted. Whether this
-adapter is *complete* — every externally-meaningful `EngineEvent` reaching a
-frontend that needs it — is prototype-gated (p28); p24 proved the projection
-mechanics, not sufficiency for a full alternative UI.
+`EngineEvent` variants (panel toggle, resize, selection/focus/scroll) are
+omitted. Prototype-proven sufficient for a full alternative UI (p28: a headless
+client reconstructed transcript, tools, steering queue, tree/leaf, model, cost,
+fold, and secret placeholders from the wire alone), subject to:
+
+- two notification payload guarantees the reconstruction depends on —
+  `session_compact` carries the covered span `{summary_id, start, end}` (the
+  fold is assembly-time and storage-invisible, §6.9), and `session_tree`
+  carries `{id, parent, kind}` plus the leaf (branches are emergent, §6.5);
+- `session/snapshot` for mid-session attach, since the live notification tail
+  has no replay and the steering queue + run status are ephemeral (above);
+- cost/context is poll-only via `getContextUsage` in v1 (no push event); a
+  `context_usage` notification may be added if a live indicator warrants it.
+
+Secret plaintext never crosses the wire — only `smith:sec:N` placeholders and
+their labels (§6.7), tap-verified in p28.
 
 ## 11. Security Model
 

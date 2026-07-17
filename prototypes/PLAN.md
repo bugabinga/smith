@@ -2000,6 +2000,21 @@ cargo run -- all
 Upgrade the §10.4 completeness claim from p28-gated to proven, or add the
 missing driver methods / event projections the spike finds.
 
+### Result
+
+Status: complete. Proved: a headless client reconstructs a full session's
+`UiState` (transcript with reassembled deltas, tool views, steering queue,
+tree/leaf, model, cost, fold, secret labels) deep-equal to ground truth from
+the RPC stream alone; 34 EngineEvent variants classify as 25 notification / 4
+request / 5 frontend-private; blocking `tool_call` round-trips; secret
+plaintext never crosses the wire. **Disproved**: the sufficiency claim for
+mid-session ATTACH — the live tail has no replay, so a late client cannot
+rebuild the ephemeral steering queue + run status (never a session entry;
+`session/dump` covers persisted state only). Folded into §10.4: added
+`session/snapshot`, two notification payload guarantees (`session_compact`
+span, `session_tree` node), poll-only cost/context for v1. Spec issues: P2
+session/snapshot, P2 payload guarantees, P3 cost/context push.
+
 ## Reporting Template
 
 Each completed prototype updates this plan with a result block in the
