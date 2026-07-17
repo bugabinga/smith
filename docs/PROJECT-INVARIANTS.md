@@ -254,9 +254,25 @@ xtask commands must be thin orchestrators. They delegate to cargo, nextest, clip
 Files that coding agents MUST NOT modify without explicit user approval:
 - `docs/PROJECT-INVARIANTS.md`
 - `docs/SPEC.md` (source of truth — agents read, don't edit without approval)
-- `Cargo.toml` workspace root (agents read dependencies, don't add/remove)
+- `Cargo.toml` workspace root
+- adding or removing a crate in any `Cargo.toml` `[dependencies]` (version
+  bumps are maintenance — see the dependency rule below)
 - `.cargo/config.toml`
 - `rust-toolchain.toml`
+
+**Adding a dependency is a spec decision; bumping one is maintenance.** A new
+third-party crate — or removing one — changes the architecture, crate set,
+compile budget, and siloing, so a worker agent escalates to the spec owner and
+never introduces a crate on its own initiative. The canonical set is SPEC §2.3
+and the change follows the spec-approval path. A **version bump** of an
+already-approved crate is routine upkeep, not a spec decision: it may be done
+by a dedicated dependency-maintenance agent or automation, provided it passes
+every gate — build, tests, clippy, `cargo deny`, and the §13.1 compile-budget
+regression gate. A bump that is semver-incompatible, raises the toolchain MSRV,
+or trips the compile-budget gate escalates like a new dependency, because it
+can change behavior or cost. Prototypes under `prototypes/` are exempt from all
+of this (SPEC §18): adding a crate to validate it before production is their
+job, and that evidence is what gets escalated.
 
 Files that coding agents MAY modify freely:
 - `*/src/*.rs` (implementation)
@@ -406,6 +422,17 @@ Forbidden:
 - `smith-cli` must not depend directly on `smith-core`, `smith-ai`, or `smith-tui`.
 - `mod.rs` files contain only module declarations and re-exports.
 - Wildcard imports are forbidden outside tests.
+
+**Dependency siloing (incremental-build invariant).** Heavy or fast-moving
+third-party crates attach at the leaf crate that owns the concern —
+`reqwest`/`tokio` in `smith-ai`, `syntastica`/`ratatui` in `smith-tui`,
+`jj-lib`/`gix` behind `smith-core`/`smith-harness` — and MUST NOT propagate up
+into `smith`. The foundation crate is depended on by every other crate, so any
+churn or heavy dependency there invalidates the whole workspace's incremental
+cache; keeping it minimal is what lets an edit to one leaf crate rebuild
+without touching the others' compiled artifacts. `smith` carries only small,
+stable, universally-shared code (its one heavy dependency, `mlua`, is a locked
+exception because the SDK type surface needs it).
 
 Architecture gates:
 - `cargo run -p xtask -- arch` verifies stable Rust metadata/source invariants.

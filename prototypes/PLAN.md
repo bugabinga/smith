@@ -1859,6 +1859,83 @@ must pin 2.0.2). Decision: embed jj-lib. Folded into §2.3 and §9.13. Spec
 issues: P1 kstring pin; P2 §9.13 embed default, jj-lib API-stability caveat,
 gix 0.83→0.85 alignment.
 
+## Campaign 5 — TUI layout resolution
+
+## P27 — `p27-per-frame-layout`
+
+### SPEC claims
+
+- §8.7: "Rust provides primitives; Lua defines layout."
+- §8.5: the render loop ticks at 16ms; §13: TUI frame draw < 2ms.
+- §12/p15: Lua runs on one dedicated plugin thread; calls into it are ~81µs
+  round-trips that serialize.
+
+### Risk
+
+If layout resolution calls INTO Lua every frame, it puts plugin-thread
+round-trips on the render hot path — fighting both the 2ms budget and the §12
+thread model. The intended-but-unstated design must be validated: Lua builds
+the layout tree ONCE (or on change) into owned Rust data, and Rust resolves it
+to ratatui `Rect`s every frame with ZERO Lua in the loop.
+
+### Minimal artifact
+
+```text
+p27-per-frame-layout/
+  Cargo.toml        (mlua luajit vendored, ratatui — prototype-exempt deps)
+  src/main.rs
+```
+
+A Lua plugin defines a layout via the §8.7 primitives; the harness converts it
+once into an owned Rust `LayoutTree`; a resolver maps `(tree, terminal size) →
+Rect per widget slot`, called every frame.
+
+### Verify
+
+```bash
+cd prototypes/p27-per-frame-layout
+cargo run -- build-once
+cargo run -- resolve-frame
+cargo run -- properties
+cargo run -- invalidation
+cargo run -- all
+```
+
+### Pass evidence
+
+- the Lua-defined layout becomes owned Rust data; resolution runs with the Lua
+  state uninvoked (a call counter proves zero Lua calls per frame), and works
+  even after the tree is detached from Lua,
+- per-frame resolution time measured at 80x24, 200x50, 400x100 for a realistic
+  default tree (border panels + column of status/messages/input/hints +
+  overlay) — reported, and far under 2ms,
+- layout properties hold: children within parent bounds, siblings do not
+  overlap, `expanded` fills the remainder, `split_ratio` honored, resolution
+  deterministic for equal `(tree, size)` — the §17 property-test target,
+- the tree is rebuilt only on explicit mutation (`set_center_layout` /
+  `set_*_panel`); between mutations no Lua re-entry occurs.
+
+### SPEC impact
+
+State the §8 layout-resolution contract: Lua builds the layout tree on change
+into owned Rust data; Rust resolves `Rect`s every frame as a pure,
+deterministic function of `(tree, size)` with no Lua in the render loop; name
+the layout property invariants as a §17 property-test target.
+
+### Result
+
+Status: complete. Proved: the two-phase zero-Lua-in-loop pipeline holds — a
+Lua-call counter stayed flat across 10k resolves at 80×24/200×50/400×100; the
+owned `LayoutTree` is `Send + 'static` (compile-asserted) and resolves
+identically after `drop(lua)` on another thread; release per-frame resolution
+median ~0.4µs / p99 &lt;0.8µs vs the 2ms budget; property invariants hold over
+192 (tree,size) pairs. **Disproved nothing** (the "must re-enter Lua / can't
+hit 2ms" counter-hypothesis is refuted). Surfaced a real gap: §8.7 had no
+overlay-over-base composition operator, nor rules for tabs/scrollable/Size::Pct
+— the prototype's resolutions are now the §8.7 composition rules. Folded into
+§8.7 and §17.6. Spec issues: P1 resolution contract, P2 property target, P2
+composition rules.
+
 ## Reporting Template
 
 Each completed prototype updates this plan with a result block in the

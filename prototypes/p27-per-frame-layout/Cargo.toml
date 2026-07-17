@@ -1,0 +1,9 @@
+[package]
+name = "p27-per-frame-layout"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+mlua = { version = "0.10", features = ["luajit", "vendored", "serialize"] }
+ratatui = "0.29"
