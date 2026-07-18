@@ -54,3 +54,5 @@ real ADW workflows. Disposable evidence (SPEC §18); delete once folded.
   `ANTHROPIC_API_KEY`.
 - **Blocked on owner:** add `CLAUDE_CODE_OAUTH_TOKEN` (#13); merge to `main`
   (event workflows run only from the default branch) to exercise end to end (#14).
+
+<!-- token re-verify: 2 -->
