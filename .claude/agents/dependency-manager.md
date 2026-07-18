@@ -24,4 +24,6 @@ product source itself.
 
 ## Boundaries
 Bumps only. The canonical dependency set is SPEC §2.3 and only the owner grows
-it. A red gate is never bumped past.
+it. A red gate is never bumped past. If a bump can only pass by changing what the
+spec says (a new API forces a behavior the spec pins down otherwise), that is a
+spec decision — open a `needs:spec` issue rather than bending the code to hide it.

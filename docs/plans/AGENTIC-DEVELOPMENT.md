@@ -123,6 +123,10 @@ second opinion, not self-congratulation.
 The state of Smith advances spec → issue → branch → review → trunk, with the
 human present only at the three touchpoints. Auto-merge is gated (integrity
 floor: PROJECT-INVARIANTS §5; merge policy: this plan — see **Open decisions**).
+The diagram below is deliberately *not* only the happy path — it shows the
+self-heal loop (red CI), the change-request loop (review), and the two ways work
+bounces back to the owner: a risky change (touchpoint 3) and a defective spec
+(the escape valve, touchpoint 1).
 
 ```mermaid
 sequenceDiagram
@@ -130,9 +134,10 @@ sequenceDiagram
     participant Spec as docs/SPEC.md
     participant Sur as surveyor
     participant Plan as planner
-    participant Board as Issues + Board
+    participant Board as Issues · Milestones · Board
     participant Tri as triager
     participant Bld as builder
+    participant CI as CI gates
     participant PR as Pull Request
     participant Rev as reviewer
     participant Sec as security-reviewer
@@ -140,34 +145,44 @@ sequenceDiagram
 
     Note over Owner,Spec: Touchpoint 1 — the spec
     Owner->>Spec: merge a spec change
-    Spec-->>Plan: push to main (docs/SPEC.md)
-    Plan->>Board: open work-orders, refresh plan
+    Spec-->>Plan: push to main
+    Plan->>Board: work-orders, sorted into a milestone (wave)
 
     Note over Sur,Board: Autonomous — no owner input
     loop every 6h, WIP permitting
-        Sur->>Spec: read goal
-        Sur->>Board: open next unbuilt slice as `ready`
+        Sur->>Board: open next slice of the current milestone as `ready`
     end
 
     Note over Owner,Board: Touchpoint 2 — issues
     Owner->>Board: file an issue
     Board-->>Tri: issue opened
-    Tri->>Board: classify · anchor · label `ready`
+    Tri->>Board: classify · anchor · size · route · card→Ready
 
-    Board-->>Bld: labeled `ready`
-    Bld->>Bld: build slice, wield /sabotnik + /handmade
-    Bld->>PR: open PR (closes #N)
+    Board-->>Bld: labeled `ready` (card→In Progress)
+    loop until gates green
+        Bld->>CI: push slice
+        CI-->>Bld: red → self-heal
+    end
+    Bld->>PR: open PR, closes #N (card→In Review)
     PR-->>Rev: pull_request
     PR-->>Sec: pull_request
-    Rev->>PR: correctness verdict
-    Sec->>PR: security verdict
 
-    alt gates green & risk:low
-        PR->>Trunk: gated auto-merge
-        Trunk-->>Plan: cycle continues
+    alt reviewer requests changes
+        Rev-->>Bld: file-anchored findings
+        Bld->>PR: revise → re-review
+    else spec is wrong, missing, or self-contradictory
+        Note over Bld,Rev: escape valve → Touchpoint 1
+        Bld->>Board: open `needs:spec`, block the slice
+        Board->>Owner: escalate
+        Owner->>Spec: resolve via /smith, then re-plan
+    end
+
+    alt gates green · risk:low · sev:low
+        PR->>Trunk: gated rebase-merge (signed) — card→Done
+        Trunk-->>Sur: front clears → next slice
     else risk:high / sev:high
         Note over PR,Owner: Touchpoint 3 — PR review
-        PR->>Owner: request review
+        Sec->>Owner: escalate; never auto-merges
     end
 ```
 
@@ -182,6 +197,55 @@ The two schedulers are deliberately opposed: `surveyor` only ever *adds* one uni
 of work and only when nothing is in flight, while `sweeper` enforces the WIP
 ceiling and brakes runaways. Together they hold the cycle at a steady, low
 throughput — the "predictability over speed" dial, made mechanical.
+
+## The escape valve — when work contradicts the spec
+
+The spec is touchpoint 1, and agents may not edit it. But building against a spec
+is the surest way to discover the spec is *wrong* — silent on an edge case,
+self-contradictory, or resting on a claim the code disproves. Without a defined
+outlet, an agent facing that has only bad options: guess (corrupts everything
+downstream), or stall silently. So the spec is not only the cycle's **input**, it
+is also its **sink for reality's feedback** — the one escape valve every agent
+shares.
+
+The rule is uniform across the roster: **discover the spec is wrong → stop, don't
+guess, open a `needs:spec` issue, and block the dependent work.** Then:
+
+1. The finder (`builder`, `reviewer`, `security-reviewer`, `dependency-manager`,
+   or `/pioneer`) opens a `needs:spec` issue: the contradiction, the SPEC anchor,
+   the evidence (a failing test, a disproof, a review finding). The work-order that
+   hit the wall gets `blocked` and a comment linking the new issue — it does *not*
+   merge on a guess.
+2. `needs:spec` is the owner's alone. The owner resolves it via `/smith` — clarify,
+   correct, or decide — which is a spec change, i.e. touchpoint 1.
+3. That spec change lands on `main` and wakes `planner`, which re-plans the delta
+   and clears the `blocked` slice back to `ready`. The cycle resumes with the
+   contradiction resolved at the source, not patched around in code.
+
+`/pioneer` is the sharp end of this: a prototype that *disproves* a spec claim
+emits a "Spec Issues" report (its result contract), and that report becomes the
+`needs:spec` issue verbatim. Evidence, not opinion, reopens the spec.
+
+## Unhappy paths — where each failure routes
+
+The happy path is one row of this table. Every other outcome has a defined owner
+and destination; nothing dead-ends or merges on a guess.
+
+| When… | Detected by | Handled by | Routes to |
+|---|---|---|---|
+| CI is red | CI gates | `builder` | self-heal in place; after repeated failure → `sweeper` brakes it `stalled` |
+| review requests changes | `reviewer` | `builder` | revise the PR → re-review loop |
+| PR green but unmerged / conflicted / `ready` with no branch | schedule | `sweeper` | re-kick if tractable, else label `stalled` with why |
+| change is high-risk / high-severity | `security-reviewer` | owner | `risk:high` → **touchpoint 3**; never auto-merges |
+| the issue needs info only the reporter has | `triager` / `builder` | reporter | `needs:info`; parked until answered |
+| the spec is wrong / missing / contradictory | any agent | owner | `needs:spec` → **the escape valve above** |
+| a spec claim is unproven | `planner` / `surveyor` | `/pioneer` | `needs:prototype`; a prototype proves or disproves it |
+| a Dependabot bump is semver-incompatible / MSRV-raising | `dependency-manager` | owner | escalate as its own issue; the bump waits |
+| the cycle floods (WIP exceeded) or an agent loops | schedule | `sweeper` | enforce WIP, brake the runaway — the circuit-breaker |
+
+Two invariants hold across every row: an agent never fakes a green gate to move a
+PR (PROJECT-INVARIANTS §5), and an agent never resolves ambiguity by guessing — it
+routes to the human via one of `needs:spec`, `risk:high`, or `needs:info`.
 
 ## Control surfaces — agents vs output styles vs CLAUDE.md
 
@@ -209,10 +273,10 @@ do is invisible. Beyond the issue→PR spine:
 
 | Concern | Feature | Owned by |
 |---|---|---|
-| unit of work | **Issues** (+ sub-issues) | triager / planner |
-| lifecycle state | **Project (v2)** board: Triage → Ready → In Progress → In Review → Security → Done; fields for risk / wave / owner | all |
+| unit of work | **Issues** (+ sub-issues) | triager / planner / surveyor |
+| lifecycle state | **Project (v2)** board: Triage → Ready → In Progress → In Review → Security → Done; fields for risk / wave / owner | each agent moves its own card; `sweeper` reconciles drift |
 | routing & gates | **Labels** (`.github/labels.yml`, as code) | triager / security-reviewer |
-| grouping | **Milestones** = waves | planner / release-manager |
+| grouping | **Milestones** = waves | `planner` opens + assigns; `surveyor` fills the current one; `release-manager` closes |
 | every change | **PRs** linked to issues, agent-reviewed | builder |
 | spec protection | **CODEOWNERS** + branch **ruleset** | (owner) |
 | dependency updates | **Dependabot** (`.github/dependabot.yml`) — bumps as maintenance | dependency-manager |
@@ -227,6 +291,34 @@ toolset but are reachable from `gh` / `gh api graphql` inside Actions — so the
 agents (which run in Actions) drive them. Code scanning, secret scanning, and
 push protection are **repo settings** the owner enables once; the agents then
 triage their alerts.
+
+### Milestones and the board — planning in the open
+
+The two features exist to make the plan *visible on GitHub itself*, not buried in
+`docs/plans/`. They carry different axes and have different maturity:
+
+- **Milestones = waves (wire now).** A milestone is one wave of the walking
+  skeleton. `planner` opens a milestone per wave and files each work-order into it;
+  `surveyor` only opens slices from the **current** milestone, in order, and does
+  not reach into the next wave until the current one closes — that ordering is what
+  keeps autonomous build-out marching the skeleton rather than sprawling.
+  `release-manager` treats a milestone going all-closed-and-green as the trigger to
+  cut a release. Milestones are first-class REST (reachable from the MCP `milestone`
+  field and from `gh`), so this is cheap and encoded now — no proof needed.
+- **The board = lifecycle (gated on proof).** The Project (v2) board carries the
+  *state* axis milestones don't: Triage → Ready → In Progress → In Review →
+  Security → Done, with fields for risk / wave / owner. Each agent moves its own
+  card as the diagram annotates (`triager`→Ready, `builder`→In Progress→In Review,
+  reviewers→Security/Done, merge→Done), and `sweeper` reconciles cards that drift
+  from reality (a card stuck "In Review" on a PR that already merged). **But
+  Projects v2 is reachable only via `gh api graphql`, which p35 did not exercise** —
+  so board-driving is *designed, not yet proven*. It is gated on two things: the
+  board existing (owner, issue #14) and a mechanic proof that an Action step can
+  read and move a card with the App token (a `needs:prototype`, the same discipline
+  p35 applied to the action). Until both land, **issues + labels + milestones are
+  the load-bearing state**, and the board is best-effort mirror, not source of
+  truth. This keeps the cycle honest: no agent blocks on a surface that isn't
+  proven to work.
 
 ## Release lifecycle — Releases, not Packages
 

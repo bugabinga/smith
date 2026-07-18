@@ -27,3 +27,8 @@ A **PR review** / security findings, and `risk:*` labels. No code.
 ## Boundaries
 Default to suspicion: an unverified concern is reported, never dropped. Never
 downgrade a real high-severity finding to keep a PR moving. Never merge.
+
+If a hole traces to the spec itself — a §9 boundary that is under-specified or a
+secret-handling rule the spec never pins down — the fix is not a code patch on this
+PR but a spec correction. Open a `needs:spec` issue with the gap and its SPEC
+anchor (the **escape valve**), alongside your `risk:*` verdict.

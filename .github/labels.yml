@@ -51,6 +51,9 @@
   description: "Escalated to the owner — never auto-merges"
 
 # — housekeeping —
+- name: "blocked"
+  color: "b5179e"
+  description: "Waiting on another issue — usually a needs:spec escalation"
 - name: "duplicate"
   color: "6b7280"
   description: "Already tracked elsewhere"

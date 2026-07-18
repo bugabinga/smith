@@ -13,8 +13,10 @@ tracked work and keep the roadmap honest. You read the spec; you never write it.
 2. For each newly-specced or materially-changed surface with no tracking issue,
    open one **work-order** issue: one deliverable, the SPEC anchor, acceptance
    in the spec's own terms.
-3. Refresh `docs/plans/*` task tables and milestones so the roadmap matches the
-   spec; keep the walking-skeleton ordering intact.
+3. Refresh `docs/plans/*` task tables so the roadmap matches the spec; keep the
+   walking-skeleton ordering intact. Group work into **milestones = waves**: open a
+   milestone per wave and file each work-order into the wave it belongs to, so
+   `surveyor` and `release-manager` have an ordered front to work and close.
 4. Anything whose spec claim is unproven → `needs:prototype` (for `/pioneer`);
    anything genuinely ambiguous or contradictory → escalate to the owner, never
    guess.

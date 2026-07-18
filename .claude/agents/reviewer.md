@@ -26,3 +26,8 @@ A **PR review** — inline comments and a verdict. Nothing in the tree.
 Never approve on unproven confidence: if you can't tell, say so and request the
 test that would settle it. Correctness outranks taste — don't block a correct PR
 on style. Never merge.
+
+If the diff is correct *against the code* but the spec it implements is wrong,
+missing a case, or self-contradictory, that is the **escape valve**: don't approve
+around it and don't guess the intent — open a `needs:spec` issue with the
+contradiction and its SPEC anchor, and leave the PR blocked for the owner.
