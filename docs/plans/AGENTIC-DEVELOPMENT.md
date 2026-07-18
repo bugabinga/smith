@@ -68,8 +68,8 @@ API/UI (a drift risk to minimize by preferring the as-code option).
 | Claude runtime settings | `.claude/settings.json` | ✅ | the file |
 | reusable role workflows | `.claude/skills/<name>/SKILL.md` | ✅ | the file |
 | integrity floor (never fake green) | `PROJECT-INVARIANTS.md §5`, enforced by CI | ✅ | invariant |
-| spec-review requirement | `CODEOWNERS` + a branch **ruleset** | ✅ CODEOWNERS; ⚠️ ruleset exportable as JSON | ruleset |
-| merge gates / auto-merge | branch ruleset + workflow gate logic | ⚠️ partial | ruleset + workflow |
+| spec-review requirement | `CODEOWNERS` + a branch **ruleset** | ✅ `CODEOWNERS` + `.github/rulesets/main.json` | ruleset |
+| merge gates / auto-merge | branch ruleset + workflow gate logic | ✅ ruleset as-code; ⚠️ workflow gate partial | ruleset + workflow |
 | routing labels | `.github/labels.yml` + a label-sync action | ✅ if adopted as-code | `labels.yml` |
 | waves | Milestones | ❌ GitHub API/UI | GitHub |
 | lifecycle board | Project (v2) | ❌ mostly (scriptable via `gh`) | GitHub |
@@ -281,7 +281,8 @@ clean audit identity.
 ## Signed commits — verified trail, now; enforced, later
 
 The reviewed trail is also a **cryptographically** verified one. Two layers,
-which come apart cleanly on a private free-plan repo:
+both available now that the repo is **public** (rulesets, branch protection, and
+code scanning are free on public repos):
 
 - **Agents sign — on now.** The committing workflows (`adw-build`, `adw-plan`,
   `adw-deps`) set `use_commit_signing: true`, so `claude-code-action` writes each
@@ -289,17 +290,28 @@ which come apart cleanly on a private free-plan repo:
   lands **Verified**, signed by `agent-smith-bugabinga-adc` — no keys to manage,
   no local GPG. The owner's own edits from the GitHub web UI are auto-signed too,
   so the phone-only path stays Verified.
-- **Enforce it — deferred.** *Requiring* signed commits on `main` needs a branch
-  **ruleset**, and rulesets/branch-protection are unavailable on a private repo on
-  the free plan (they need an organization or a paid plan). So enforcement waits
-  on that repo change (issue #14); until then signing is practiced, not policed —
-  the trail is Verified in fact even though a stray unsigned commit isn't yet
-  *blocked*. This is a proposed upgrade to the PROJECT-INVARIANTS §7 version-control
-  rule, pending owner approval before that invariant is edited.
+- **Enforce it — now possible.** A branch **ruleset** on `main` with *Require
+  signed commits* + *Require a pull request before merging* (CODEOWNERS review) +
+  *Require linear history* makes only Verified, reviewed, rebase-merged commits
+  land. This was blocked while the repo was private on the free plan; going public
+  removed the block. It is the one owner enable-step (issue #14), and a proposed
+  upgrade to the PROJECT-INVARIANTS §7 version-control rule — pending owner
+  approval before that invariant is edited.
 
-The cost of enforcement, once available, is that a local unsigned commit (bare
-git/jj with no signing key) would be rejected on `main` — acceptable for a
-mostly-agent + web-owner flow.
+The cost of enforcement is that a local unsigned commit (bare git/jj with no
+signing key) would be rejected on `main` — acceptable for a mostly-agent +
+web-owner flow, since web-UI edits are auto-signed.
+
+The ruleset lives as-code at `.github/rulesets/main.json` (importable via
+Settings → Rules, or `gh api`). Its `pull_request` rule is tuned so autonomy
+survives enforcement: `required_approving_review_count: 0` with
+`require_code_owner_review: true` means an ordinary agent PR merges with **no**
+human approval, while any PR touching a CODEOWNERS-owned path — `docs/SPEC.md`,
+the workflows, the agent files, the invariants — still requires the owner's
+review. That is touchpoints 1 and 3, expressed as one rule: the spec and the
+machinery are gated to the human; everything the spec already implies flows on
+its own. GitHub signs the rebase-merge commits it creates on merge, so
+`required_signatures` is satisfied without the App holding a key.
 
 ## Runners — how an agent actually executes (proven by p35)
 
