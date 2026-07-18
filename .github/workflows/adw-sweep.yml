@@ -1,0 +1,45 @@
+# ADW sweep — sweeper unsticks stalls and brakes runaways on a schedule.
+# schedule events have no issue/PR context, so this uses the headless CLI runner
+# (not claude-code-action). Read-mostly: labels and comments only.
+# Needs secrets APP_ID, APP_PRIVATE_KEY, and a model-auth secret.
+name: adw-sweep
+
+on:
+  schedule:
+    - cron: "17 * * * *"        # hourly, off the hour to avoid the rush
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: adw-sweep
+  cancel-in-progress: true
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - run: npm install -g @anthropic-ai/claude-code
+      - name: sweeper sweeps the board
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          claude -p "Use the sweeper subagent (.claude/agents/sweeper.md). Via gh,
+          find stalled PRs and issues in ${{ github.repository }} — green but
+          unmerged, red with no fix, ready with no branch, merge-conflicted,
+          reviews never posted — re-kick the tractable ones and label the rest
+          'stalled' with why. Enforce WIP limits. Report a one-line board state;
+          stay silent if nothing changed. Never merge, never touch code." \
+            --model claude-haiku-4-5-20251001 \
+            --permission-mode acceptEdits \
+            --allowedTools "Bash,Read,Grep,Glob"

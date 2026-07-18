@@ -19,3 +19,35 @@ evidence.
 
 Once the correct invocation is pinned here, the same shape is applied to the
 real ADW workflows. Disposable evidence (SPEC §18); delete once folded.
+
+## Findings
+
+- **Run 1 (claude-code-action@v1):** App token minted cleanly (identity works),
+  but the action failed with `Unsupported event type: push`. The action only
+  handles issue / pull_request / comment events. Consequence: the
+  push/schedule/tag-triggered agents (planner, sweeper, docs-writer,
+  release-manager) cannot use the action and need the event-agnostic
+  `claude -p` headless CLI runner. The action stays valid for the issue/PR
+  agents (triager, reviewer, security-reviewer, dependency-manager) — but those
+  workflows only fire once they are on `main` (event workflows run from the
+  default branch), so they can't be exercised from a branch.
+- **Run 2 (headless `claude -p`):** the CLI installs and runs (`2.1.214`), so the
+  event-agnostic runner path is real — but the call failed `Not logged in`
+  because **`ANTHROPIC_API_KEY` is empty** in the job env (only `GH_TOKEN` was
+  set). The model-auth secret (`ANTHROPIC_API_KEY` or, for subscription auth,
+  `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`) was never added. Owner
+  action; no agent can call a model until it exists.
+
+## Verdict
+
+- **Proven:** App token mints (identity); the action *accepts* the input syntax
+  `github_token` / `anthropic_api_key` / `prompt` / `claude_args --model` (it
+  only rejected the event, not the inputs); the CLI installs and runs in CI.
+- **Design decision:** the ADW uses **two runners** — `claude-code-action` for
+  issue/PR/comment agents (triager, reviewer, security-reviewer,
+  dependency-manager), and the headless `claude -p` CLI for push/schedule/tag
+  agents (planner, sweeper, docs-writer, release-manager), which the action
+  can't serve.
+- **Blocked on owner:** add the model-auth secret; then merge the ADW workflows
+  to `main` (event workflows run only from the default branch) to exercise them
+  end to end.

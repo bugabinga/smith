@@ -1,0 +1,42 @@
+# ADW plan — planner turns a merged spec change into tracked work-orders.
+# Triggered by a push to main touching the spec, which claude-code-action cannot
+# serve (p35: "Unsupported event type: push"), so this uses the headless CLI
+# runner. Needs secrets APP_ID, APP_PRIVATE_KEY, and a model-auth secret
+# (ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN).
+name: adw-plan
+
+on:
+  push:
+    branches: ["main"]
+    paths: ["docs/SPEC.md"]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0            # planner diffs SPEC against the previous main
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - run: npm install -g @anthropic-ai/claude-code
+      - name: planner opens work-orders
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          claude -p "Use the planner subagent (.claude/agents/planner.md). Diff
+          docs/SPEC.md at ${{ github.sha }} against its previous state on main,
+          and for each newly-specced or materially-changed surface with no
+          tracking issue, open one work-order issue via gh and refresh
+          docs/plans/*. Do not edit the spec." \
+            --model claude-opus-4-8 \
+            --permission-mode acceptEdits \
+            --allowedTools "Bash,Read,Grep,Glob,Edit,Write"

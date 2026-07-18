@@ -1,0 +1,58 @@
+# ADW review — reviewer (correctness) and security-reviewer (security) run on
+# every PR, in parallel. Both are issue/PR agents → claude-code-action. Verdicts
+# only; neither merges. reviewer runs on a different model than the builder on
+# purpose. Needs secrets APP_ID, APP_PRIVATE_KEY, ANTHROPIC_API_KEY.
+name: adw-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: adw-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  reviewer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Use the reviewer subagent to review PR
+            #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+            Follow .claude/agents/reviewer.md: adversarial correctness review vs
+            the spec, craft lenses, a file-anchored verdict. Do not merge.
+          claude_args: --model claude-opus-4-8
+
+  security-reviewer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Use the security-reviewer subagent to review PR
+            #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+            Follow .claude/agents/security-reviewer.md: sandbox, secrets, unsafe,
+            injection, supply chain; set risk:high and escalate on high severity.
+          claude_args: --model claude-opus-4-8
