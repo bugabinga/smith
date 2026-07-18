@@ -2286,10 +2286,29 @@ complete
   the way `Cargo.toml` dependency resolution does, so `cargo-pup` (hyphen) was
   "not found". Secondary cause: the source gate needs
   `rust-src rustc-dev llvm-tools-preview` on `nightly-2026-01-22` (it links
-  rustc internals), which the minimal nightly lacked. cargo_pup's own README
-  pins the same `nightly-2026-01-22` the spec uses. So §3.5/§11/§15 are correct
-  as written; no demotion. The corrected pup recipe is validated in the re-run
-  recorded below.
+  rustc internals), which the minimal nightly lacked.
+- Re-run (run 29633526704, arch-gate job) with the corrected recipe: cargo_pup
+  **v0.1.8 downloaded from crates.io, built in 47s, installed `cargo-pup` +
+  `pup-driver`**, and `cargo +nightly-2026-01-22 pup` ran against the workspace.
+  So §3.5/§11/§15 are correct as written; **cargo_pup stays, no demotion.**
+  Working recipe:
+  ```bash
+  rustup toolchain install nightly-2026-01-22 --profile minimal
+  rustup component add --toolchain nightly-2026-01-22 rust-src rustc-dev llvm-tools-preview
+  cargo +nightly-2026-01-22 install cargo_pup --locked   # v0.1.8, ~47s
+  ```
+- Two things the re-run also nailed down, both matters for the fixture, not the
+  spec:
+  1. The real `pup.ron` top-level struct is **`LintBuilder`**, not the `Pup(..)`
+     this prototype guessed (`Expected struct LintBuilder but found Pup`).
+  2. `pup print-modules` on the 3-crate fixture emits **`unknown_crate`** —
+     exactly the §3.5-documented caveat that pup synthesizes `unknown_crate`
+     for crates with no child `mod` items. The trivial single-file crates are
+     too structureless for pup's module matcher; a real enforcement proof needs
+     crates with genuine module structure and a source-level import to catch.
+  So cargo_pup is proven installable and runnable; proving it *enforces* the
+  §11 edge is still open, blocked only on a richer fixture + a `LintBuilder`
+  config, not on the tool or the spec.
 
 ### Spec Issues
 - `docs/SPEC.md §14`
@@ -2322,11 +2341,13 @@ complete
 - arch: `python3 gate.py` (pass), inject edge → `python3 gate.py` (fail)
 
 ### Next Steps
-- Prove cargo_pup end-to-end with the corrected recipe (`cargo_pup` underscore
-  + `rust-src rustc-dev llvm-tools-preview` on nightly-2026-01-22): install,
-  run against the 3-crate workspace, and confirm it flags a source-level
-  forbidden import. Keep the stable metadata gate as the always-on companion
-  (§3.5 already specifies both). No spec change.
+- Close the pup enforcement proof: give the archgate crates real module
+  structure (so pup sees `wcore`/`wai` instead of `unknown_crate`), add a
+  source-level `use wai::...` in wcore for the illegal case, write a
+  `LintBuilder` pup.ron with a `restrict_imports` rule per §3.5's
+  `^crate($|::.*)` guidance, and prove pup PASSES the legal graph and FAILS the
+  illegal one. Keep the stable metadata gate as the always-on companion (§3.5
+  already specifies both). No spec change.
 - Extend the cross bin with `jj-lib` and the TLS/aws-lc tree to close the P30
   gap, or accept it as a release-time risk.
 - Split standing prototype CI (`prototypes.yml`, evidence bit-rot guard) from
