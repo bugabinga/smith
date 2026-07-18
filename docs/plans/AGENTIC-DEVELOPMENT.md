@@ -283,7 +283,7 @@ do is invisible. Beyond the issue→PR spine:
 | code scanning | **DevSkim** (`.github/workflows/devskim.yml`, SARIF → Security tab) + **CodeQL** (Rust) + `cargo audit`/`cargo deny` in CI | security-reviewer |
 | secret scanning | **Secret scanning + push protection** (repo setting) | security-reviewer |
 | shipping | **Releases** (binaries + checksums, §14) — *not* Packages | release-manager |
-| user docs / site | **Astro → Pages** (`.github/workflows/astro.yml`, deploys on push to `main`) | docs-writer |
+| user docs / site | **mdBook → Pages** (`.github/workflows/docs.yml`, deploys on push to `main`) | docs-writer |
 | compute | **Actions** workflows | — |
 
 Projects v2, Discussions, Pages, and Releases aren't reachable from the MCP
@@ -300,24 +300,16 @@ rather than replacing them:
   deny`; `security-reviewer` triages its alerts the same way (SPEC §9 / §6.7
   lenses), and a finding that traces to a spec gap takes the escape valve
   (`needs:spec`). Being on `main` already, it needs no merge to activate.
-- **`astro.yml`** builds an Astro site and deploys it to GitHub Pages on push to
-  `main`. This is the concrete pipeline behind the "user docs / site" row:
-  `docs-writer` owns the Astro sources (content, not this workflow), and the push
-  to `main` publishes them. It stays dormant until the site is scaffolded, so its
-  first runs no-op or fail until that work-order lands — expected, like the ADW
-  event workflows waiting on merge.
-
-  **Reconciliation needed (owner decision).** Astro is a Node/npm project and needs
-  a `package.json` — which PROJECT-INVARIANTS §1 *prohibits* ("Cargo is the sole
-  build system"), and `astro.yml` currently builds from repo root (`BUILD_PATH:
-  "."`), which §2 reserves for the Rust workspace. The recommended fix keeps both
-  honest: put the site in its **own directory** (`site/`), point `astro.yml` at it
-  (`BUILD_PATH: site`), and add a §1 carve-out — *Cargo is sole build system for
-  the Rust workspace; the docs site is a separate artifact built by Astro under
-  `site/`, exempt from the package.json prohibition.* This scopes §1 to what it
-  actually protects (the Rust build) without letting a second build system leak
-  into the workspace. Pending owner approval, since it touches `astro.yml` and an
-  invariant (see **Open decisions**).
+- **`docs.yml`** builds the docs site with **mdBook** and deploys it to GitHub
+  Pages on push to `main`. This is the concrete pipeline behind the "user docs /
+  site" row: `docs-writer` owns the book sources under `docs/book/` (content, not
+  this workflow), and the push to `main` publishes them. mdBook was chosen over the
+  Astro sample precisely because it is **Rust-native and `cargo install`-able**, so
+  it *satisfies* §1 ("Cargo is the sole build system") instead of needing a
+  carve-out — no `package.json`, no Node — and its Markdown sources sit inside the
+  existing `docs/` tree, so no §2 change either. It stays dormant until the book is
+  scaffolded: a guard skips the build and deploy while `docs/book/book.toml` is
+  absent, so `main` stays green until that work-order lands.
 
 ### Milestones and the board — planning in the open
 
@@ -489,10 +481,6 @@ action's docs settled the rest:
    which threshold? Nothing auto-merges until this row is filled in.
 2. **Create the `smith-bot` App** (only the owner can).
 3. **Risk threshold** for what forces human review (touchpoint #3).
-4. **Docs-site toolchain vs §1.** Astro (`astro.yml`) needs `package.json`, which
-   §1 prohibits and its root `BUILD_PATH` collides with §2. Approve the site in
-   `site/` + `BUILD_PATH: site` + a §1 carve-out (recommended above), or pick a
-   Rust-native static-site generator instead to keep §1 absolute.
 
 ## Phased rollout
 
