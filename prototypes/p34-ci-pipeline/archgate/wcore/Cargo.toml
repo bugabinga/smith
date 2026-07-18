@@ -1,0 +1,7 @@
+[package]
+name = "wcore"
+version = "0.1.0"
+edition = "2021"
+publish = false
+# Legal: depends on nothing in-workspace. The §11 rule forbids a wai edge here.
+[dependencies]

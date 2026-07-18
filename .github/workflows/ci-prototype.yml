@@ -1,0 +1,123 @@
+# p34-ci-pipeline evidence run — §14 cross-build and §11 arch-gate. Path-scoped
+# to the p34 dir and this file, so it only runs when that evidence changes, not
+# on every prototype edit (the standing guard is prototypes.yml). Not the
+# production pipeline; it targets prototype fixtures because no production crate
+# exists yet.
+#
+# Every cargo *compile* runs with its CWD under prototypes/, because the
+# prototype cap-lints=warn exemption (prototypes/.cargo/config.toml, §18) is
+# resolved by working directory, not by --manifest-path.
+name: ci-prototype
+
+on:
+  push:
+    branches: ["claude/specs-progress-n5u27n"]
+    paths:
+      - ".github/workflows/ci-prototype.yml"
+      - "prototypes/p34-ci-pipeline/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-prototype-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # §14 cross-build (un-gates P30): does the heavy native tree cross-compile?
+  cross-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: prototypes/p34-ci-pipeline/cross
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain + targets
+        run: |
+          rustup default stable
+          rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-pc-windows-gnu
+      - name: zig + cargo-zigbuild
+        run: |
+          pip3 install ziglang
+          cargo install cargo-zigbuild --locked
+      - name: cross x86_64-unknown-linux-musl
+        id: musl_x64
+        continue-on-error: true
+        run: cargo zigbuild --target x86_64-unknown-linux-musl
+      - name: cross aarch64-unknown-linux-musl
+        id: musl_arm
+        continue-on-error: true
+        run: cargo zigbuild --target aarch64-unknown-linux-musl
+      - name: cross x86_64-pc-windows-gnu
+        id: win_gnu
+        continue-on-error: true
+        run: cargo zigbuild --target x86_64-pc-windows-gnu
+      - name: per-target summary
+        run: |
+          echo "## §14 cross-build (mlua vendored + gix)" >> "$GITHUB_STEP_SUMMARY"
+          echo "| target | result |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|--------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| x86_64-unknown-linux-musl | ${{ steps.musl_x64.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| aarch64-unknown-linux-musl | ${{ steps.musl_arm.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| x86_64-pc-windows-gnu | ${{ steps.win_gnu.outcome }} |" >> "$GITHUB_STEP_SUMMARY"
+
+  # §14 native matrix: prove the required OS runners exist and the native tree
+  # builds+runs on each (Windows here covers the msvc target zigbuild can't).
+  native-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: prototypes/p34-ci-pipeline/cross
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup default stable
+      - name: build + run cross bin natively
+        run: cargo run
+
+  # §11 arch-gate (un-gates P32): two gates, exactly as §3.5 specifies.
+  #  1. stable `cargo metadata` gate — always-on boundary enforcement (hard).
+  #  2. cargo_pup — pinned-nightly source-level gate (needs rustc-dev
+  #     components). Best-effort here while its pup.ron rule schema is pinned
+  #     down from the generated sample; captured, not guessed.
+  arch-gate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: prototypes/p34-ci-pipeline/archgate
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup default stable
+      - name: metadata gate PASSES the legal graph
+        run: python3 gate.py
+      - name: metadata gate FAILS once the forbidden edge is injected
+        run: |
+          cp wcore/Cargo.toml /tmp/wcore.bak
+          printf 'wai = { path = "../wai" }\n' >> wcore/Cargo.toml
+          if python3 gate.py; then
+            echo "BUG: gate passed an illegal graph"; cp /tmp/wcore.bak wcore/Cargo.toml; exit 1
+          fi
+          cp /tmp/wcore.bak wcore/Cargo.toml
+          echo "gate correctly rejected the injected wcore->wai edge"
+      - name: cargo_pup source gate on pinned nightly (P32 probe)
+        id: pup
+        continue-on-error: true
+        run: |
+          set -x
+          rustup toolchain install nightly-2026-01-22 --profile minimal
+          rustup component add --toolchain nightly-2026-01-22 rust-src rustc-dev llvm-tools-preview
+          cargo +nightly-2026-01-22 install cargo_pup --locked
+          echo "=== generate-config sample (reveals the real pup.ron schema) ==="
+          cp pup.ron pup.ron.mine
+          cargo +nightly-2026-01-22 pup generate-config || true
+          echo "--- generated pup.ron ---"; cat pup.ron || true
+          echo "=== print-modules ==="; cargo +nightly-2026-01-22 pup print-modules || true
+          echo "=== lint the legal 3-crate workspace with the generated config ==="
+          cargo +nightly-2026-01-22 pup
+      - name: pup outcome
+        run: |
+          echo "cargo_pup probe outcome = ${{ steps.pup.outcome }}" >> "$GITHUB_STEP_SUMMARY"

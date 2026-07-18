@@ -1,0 +1,18 @@
+// KNOWN-WRONG SCHEMA, kept as the evidence that produced the finding.
+// The re-run (run 29633526704) proved the real cargo_pup top-level struct is
+// `LintBuilder`, not `Pup` (error: "Expected struct LintBuilder but found Pup").
+// It also showed these single-file crates present to pup as `unknown_crate`
+// (the §3.5-documented caveat), so they are too structureless to hang a
+// restrict_imports rule on. Closing the enforcement proof needs a richer
+// fixture + a LintBuilder config — see PLAN.md P34 "Next Steps". Until then the
+// stable `cargo metadata` gate (gate.py) is the proven §11 enforcement.
+Pup(
+    lints: [
+        ArchitectureLint(
+            name: "core-must-not-depend-on-ai",
+            forbidden: [
+                (from: "wcore", to: "wai"),
+            ],
+        ),
+    ],
+)

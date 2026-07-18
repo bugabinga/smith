@@ -1936,9 +1936,422 @@ overlay-over-base composition operator, nor rules for tabs/scrollable/Size::Pct
 §8.7 and §17.6. Spec issues: P1 resolution contract, P2 property target, P2
 composition rules.
 
+## Campaign 6 — Multi-frontend readiness
+
+## P28 — `p28-rpc-frontend-sufficiency`
+
+### SPEC claims
+
+- §8 frontend boundary / §10.4: `smith rpc` is the multi-frontend boundary; an
+  RPC client is a frontend peer of the TUI, consuming an adapter over the
+  `EngineEvent` stream (§6.3) — non-blocking → notifications, blocking →
+  requests, frontend-private omitted.
+- Implicit sufficiency claim: a full alternative UI (web/native/mobile) can be
+  built on the RPC surface alone.
+
+### Risk
+
+p24 proved the projection *mechanics*, not *sufficiency*. An `EngineEvent`
+variant may carry state a real frontend must render that is unreachable over
+the §10.4 surface — a completeness gap that would only surface when someone
+actually builds a web UI.
+
+### Minimal artifact
+
+```text
+p28-rpc-frontend-sufficiency/
+  Cargo.toml        (serde, serde_json)
+  src/main.rs
+```
+
+A mock engine emits the full `EngineEvent` stream over the RPC adapter during a
+scripted complete session; a headless mock frontend client (no smith-tui code,
+no Lua) consumes only the RPC surface and reconstructs everything a UI renders.
+
+### Verify
+
+```bash
+cd prototypes/p28-rpc-frontend-sufficiency
+cargo run -- classify
+cargo run -- reconstruct
+cargo run -- blocking-roundtrip
+cargo run -- all
+```
+
+### Pass evidence
+
+- `classify`: every `EngineEvent` variant (§6.2 AgentEvent + §6.3 harness
+  events: session lifecycle, steering/follow-up, UI-state, provider/model
+  change, error, shutdown) tagged `notification` / `request` /
+  `frontend-private-omitted` / `MISSING`; the MISSING set is the finding,
+- `reconstruct`: a scripted session (turns, streaming text/thinking deltas,
+  tool calls incl. a blocking `tool_call`, steering queue, compaction/fold,
+  leaf switch/tree, secret placeholders, model change, error) drives the mock
+  client, whose reconstructed UI state (transcript, tool views, steering queue,
+  leaf/tree, cost/context, active model) deep-equals the engine's ground truth,
+  built from the RPC stream ALONE,
+- `blocking-roundtrip`: a blocking `tool_call` reaches the client as a request
+  and the client's reply flows back into the engine,
+- verdict: the RPC surface is sufficient for a full frontend, or the exact
+  MISSING variants/state are listed.
+
+### SPEC impact
+
+Upgrade the §10.4 completeness claim from p28-gated to proven, or add the
+missing driver methods / event projections the spike finds.
+
+### Result
+
+Status: complete. Proved: a headless client reconstructs a full session's
+`UiState` (transcript with reassembled deltas, tool views, steering queue,
+tree/leaf, model, cost, fold, secret labels) deep-equal to ground truth from
+the RPC stream alone; 34 EngineEvent variants classify as 25 notification / 4
+request / 5 frontend-private; blocking `tool_call` round-trips; secret
+plaintext never crosses the wire. **Disproved**: the sufficiency claim for
+mid-session ATTACH — the live tail has no replay, so a late client cannot
+rebuild the ephemeral steering queue + run status (never a session entry;
+`session/dump` covers persisted state only). Folded into §10.4: added
+`session/snapshot`, two notification payload guarantees (`session_compact`
+span, `session_tree` node), poll-only cost/context for v1. Spec issues: P2
+session/snapshot, P2 payload guarantees, P3 cost/context push.
+
+## Campaign 7 — external integration surface
+
+The internal architecture is heavily validated; the least-tested claims are the
+external boundaries — real provider wire formats, tool mutation semantics,
+OAuth, cross-platform builds, and the arch-gate tooling. Ranked by
+spec-impact × uncertainty. p29/p31/p33 are environment-feasible; p30/p32 are
+tooling-gated (need a release/CI toolchain) and are attempted where possible.
+
+## P29 — `p29-provider-streaming`
+
+### SPEC claims
+
+- §7.1/§7.2: required providers (Anthropic, OpenAI, Google, OpenAI-compatible)
+  normalize vendor wire formats into `ProviderEvent` (§5.2); quirks handled at
+  the boundary — partial tool-call argument chunks assembled, thinking/
+  reasoning fields (reasoning may arrive in `content`), provider stop reasons,
+  cache usage; non-SSE JSON error on a streaming request → `ProviderEvent::Error`.
+- §5.1: `Thinking { content, provider_metadata? }` — signed thinking round-trips.
+
+### Risk
+
+Each provider's streaming shape differs (Anthropic content-block events, OpenAI
+delta chunks, Google candidates); normalizing all into one `ProviderEvent`
+sequence, assembling split tool-call JSON, and preserving thinking signatures
+is unvalidated for the current provider set (only pre-consolidation MiniMax was).
+
+### Minimal artifact
+
+```text
+p29-provider-streaming/
+  Cargo.toml        (serde, serde_json)
+  fixtures/anthropic.sse  fixtures/openai.sse  fixtures/google.sse
+  fixtures/anthropic-error-200.json  (non-SSE error body)
+  src/main.rs
+```
+
+Realistic hand-authored fixtures of each provider's streaming bytes (no
+network). A per-provider normalizer parses them into a `Vec<ProviderEvent>`.
+
+### Verify
+
+```bash
+cd prototypes/p29-provider-streaming
+cargo run -- anthropic
+cargo run -- openai
+cargo run -- google
+cargo run -- tool-call-assembly
+cargo run -- error-detection
+cargo run -- thinking-roundtrip
+cargo run -- all
+```
+
+### Pass evidence
+
+- each provider's fixture → the expected deterministic `ProviderEvent`
+  sequence (TextDelta/ThinkingDelta/ToolCall assembled/Done{usage,stop}),
+- a tool call whose JSON arguments are split across chunks assembles to one
+  complete `ToolCall`,
+- a non-SSE JSON error body returned with HTTP 200 becomes
+  `ProviderEvent::Error`, not a hang,
+- a thinking block with a provider signature survives as
+  `provider_metadata` and replays on a follow-up request,
+- report any provider shape §7.2's quirk list does not cover.
+
+### SPEC impact
+
+Tighten §7.2 with the concrete per-provider normalization rules and any quirk
+the fixtures expose.
+
+## P31 — `p31-edit-write-tool`
+
+### SPEC claims
+
+- §9.12 `write`: atomic temp-file + rename, creates parent dirs, records a VCS op.
+- §9.12 `edit`: read → validate (non-empty `old_text`, non-binary) → count exact
+  matches (zero fails, multiple fails unless `allow_multiple`) → re-read+hash
+  before write → fail `ESTALE` if changed → write atomically → return change
+  count + before/after hashes. Errors: `ENOENT`, `EEMPTY`, `EBINARY`,
+  `ENOMATCH`, `EMULTI`, `ESTALE`, `ELOCK`.
+- §5.3/§6.1: parallel vs sequential tool execution; every tool observes abort.
+
+### Risk
+
+The stale-hash race (re-read between match and write) and the exact error-code
+taxonomy are subtle and unvalidated; p07 only mocked tools. Atomic rename must
+hold on same-filesystem temp.
+
+### Minimal artifact
+
+```text
+p31-edit-write-tool/
+  Cargo.toml        (sha2; std only otherwise)
+  src/main.rs
+```
+
+Real files in temp dirs; drive `write`/`edit` against them.
+
+### Verify
+
+```bash
+cd prototypes/p31-edit-write-tool
+cargo run -- write-atomic
+cargo run -- edit-happy
+cargo run -- edit-errors
+cargo run -- edit-stale-race
+cargo run -- parallel-abort
+cargo run -- all
+```
+
+### Pass evidence
+
+- write: temp+rename is atomic (a crash between leaves either old or new, never
+  partial — simulate by asserting no partial file); parent dirs created,
+- edit: happy path returns change count + before/after hashes; each error code
+  reproduced with its exact condition,
+- stale race: mutate the file between match-count and write → `ESTALE`, no write,
+- parallel mode runs independent edits concurrently; an abort mid-batch stops
+  cleanly and leaves no half-written file.
+
+### SPEC impact
+
+Confirm or refine the §9.12 edit algorithm ordering and the stale/atomic
+guarantees under real filesystem semantics.
+
+## P33 — `p33-oauth-flow`
+
+### SPEC claims
+
+- §7.4: OAuth configured with `id/name/auth_url/token_url/scope/client_id`;
+  login surfaces the auth URL, receives the code via a local callback HTTP
+  server on a random port (or manual paste), exchanges it for
+  `{access_token, refresh_token, expires_at}`, persists to `auth.json`,
+  auto-refreshes on expiry.
+
+### Risk
+
+The callback-server + exchange + refresh flow (state/PKCE, random-port bind,
+redirect capture, refresh timing) is fiddly and unvalidated.
+
+### Minimal artifact
+
+```text
+p33-oauth-flow/
+  Cargo.toml        (serde, serde_json; std TcpListener for both servers)
+  src/main.rs
+```
+
+A mock OAuth provider (std `TcpListener`) plays authorize + token endpoints; the
+client runs the §7.4 flow end to end, no external network.
+
+### Verify
+
+```bash
+cd prototypes/p33-oauth-flow
+cargo run -- login
+cargo run -- callback-capture
+cargo run -- refresh
+cargo run -- persist
+cargo run -- all
+```
+
+### Pass evidence
+
+- login binds a random-port callback server, emits the auth URL with `state`,
+  the mock provider redirects with a code, the server captures it, exchange
+  yields tokens,
+- `state` mismatch is rejected,
+- an expired `access_token` triggers a refresh using `refresh_token`; a revoked
+  refresh surfaces a clear auth error,
+- tokens persist to and reload from the `auth.json` shape (§7.4).
+
+### SPEC impact
+
+Pin any §7.4 OAuth detail the flow exposes (state/PKCE requirement, callback
+timeout, refresh-ahead-of-expiry window).
+
+## P30 — `p30-cross-build` (tooling-gated)
+
+### SPEC claim
+
+§14: `cargo run -p xtask -- release` cross-builds all targets via
+cargo-zigbuild — windows-msvc, apple-silicon, linux gnu/musl (x86_64 + arm64).
+
+### Risk
+
+The heavy C tree (vendored LuaJIT, aws-lc-sys via cmake, jj-lib's gix/prost)
+cross-compiled to Windows/musl is a real "does it even build" unknown, like p17
+and p26 — and could force dependency or feature changes.
+
+### Verify (attempt where tooling allows)
+
+Install `cargo-zigbuild` + `zig`; attempt `cargo zigbuild --target
+x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` on a minimal bin
+pulling mlua(vendored) + aws-lc + gix. Report per-target build success/failure
+and the first blocking C/link error. If zig/targets are unavailable, report
+BLOCKED with what a release environment must provide.
+
+### SPEC impact
+
+Confirm §14's target list is buildable, or record the per-target blockers /
+feature changes needed.
+
+## P32 — `p32-arch-gate` (tooling-gated)
+
+### SPEC claim
+
+§11 / PROJECT-INVARIANTS §11: `cargo run -p xtask -- pup` on pinned nightly
+enforces the forbidden inter-crate dependency rules (e.g. `smith-core` must not
+depend on `smith-ai`).
+
+### Risk
+
+The whole architecture gate bets on cargo-pup expressing these rules; if it
+cannot, §11 enforcement is vapor and needs a different mechanism.
+
+### Verify (attempt where tooling allows)
+
+On the pinned nightly, install `cargo_pup`; author a rule expressing a §11
+forbidden edge over a tiny 3-crate workspace; prove it PASSES a legal graph and
+FAILS an illegal one. If the nightly/tool is unavailable, report BLOCKED and
+whether `cargo run -p xtask -- arch` (stable metadata check) can enforce the
+same rules as a fallback.
+
+### SPEC impact
+
+Confirm cargo-pup enforces §11, or fall back the arch gate to the stable
+metadata check and record it.
+
 ## Reporting Template
 
 Each completed prototype updates this plan with a result block in the
 Markdown shape required by `prototypes/CLAUDE.md` (canonical:
 `.claude/skills/pioneer/SKILL.md`). Result blocks recorded before
 2026-07-16 use the earlier JSON shape and stand as historical records.
+
+## Result — P34 `p34-ci-pipeline` (2026-07-17)
+
+CI stood up on GitHub Actions to un-gate the two tooling-gated Campaign 7
+claims. Run: bugabinga/smith actions run 29595424305, all six jobs green.
+
+### Status
+complete
+
+### Proved
+- **§14 cross-build**: a bin pulling the two heaviest native trees — vendored
+  LuaJIT (`mlua`) and `gix` — cross-compiles cleanly via `cargo-zigbuild` to
+  `x86_64-unknown-linux-musl` (~73s), `aarch64-unknown-linux-musl` (~76s), and
+  `x86_64-pc-windows-gnu` (~121s), and builds+runs natively on `ubuntu-latest`
+  (~71s), `macos-latest` (~62s), and `windows-latest`/msvc (~218s). The §14
+  required matrix is buildable for the LuaJIT+gix trees; zig covers the
+  linux/windows-gnu cross, native runners cover msvc/darwin.
+- **§11 arch-gate (stable path)**: the `cargo metadata` gate PASSES the legal
+  3-crate graph and FAILS the moment a forbidden `wcore -> wai` edge is injected
+  (`ARCH VIOLATION: wcore -> wai is forbidden by §11`). §11 has a working
+  enforcement path on plain stable, no nightly required.
+- **§17.10 hermeticity / §13.1 cold build**: a clean runner cold-builds and
+  tests all 28 prototype crates in ~9m46s (ubuntu-latest, 2 vCPU) with no TTY
+  and no network — the first real seed for the cold-build sub-budget.
+
+### Disproved
+- Nothing in the spec. An earlier draft of this block claimed cargo-pup was
+  unpublished; that was a defect in this prototype's recipe, not the spec —
+  see the correction below. §3.5's two-gate design stands.
+
+### Correction (recipe bug, not a spec defect)
+- The first arch-gate run reported `cargo install cargo-pup` "not in registry".
+  Root cause: the crate is published by DataDog as **`cargo_pup`** (underscore);
+  `cargo install` matches the name literally and does not normalize the hyphen
+  the way `Cargo.toml` dependency resolution does, so `cargo-pup` (hyphen) was
+  "not found". Secondary cause: the source gate needs
+  `rust-src rustc-dev llvm-tools-preview` on `nightly-2026-01-22` (it links
+  rustc internals), which the minimal nightly lacked.
+- Re-run (run 29633526704, arch-gate job) with the corrected recipe: cargo_pup
+  **v0.1.8 downloaded from crates.io, built in 47s, installed `cargo-pup` +
+  `pup-driver`**, and `cargo +nightly-2026-01-22 pup` ran against the workspace.
+  So §3.5/§11/§15 are correct as written; **cargo_pup stays, no demotion.**
+  Working recipe:
+  ```bash
+  rustup toolchain install nightly-2026-01-22 --profile minimal
+  rustup component add --toolchain nightly-2026-01-22 rust-src rustc-dev llvm-tools-preview
+  cargo +nightly-2026-01-22 install cargo_pup --locked   # v0.1.8, ~47s
+  ```
+- Two things the re-run also nailed down, both matters for the fixture, not the
+  spec:
+  1. The real `pup.ron` top-level struct is **`LintBuilder`**, not the `Pup(..)`
+     this prototype guessed (`Expected struct LintBuilder but found Pup`).
+  2. `pup print-modules` on the 3-crate fixture emits **`unknown_crate`** —
+     exactly the §3.5-documented caveat that pup synthesizes `unknown_crate`
+     for crates with no child `mod` items. The trivial single-file crates are
+     too structureless for pup's module matcher; a real enforcement proof needs
+     crates with genuine module structure and a source-level import to catch.
+  So cargo_pup is proven installable and runnable; proving it *enforces* the
+  §11 edge is still open, blocked only on a richer fixture + a `LintBuilder`
+  config, not on the tool or the spec.
+
+### Spec Issues
+- `docs/SPEC.md §14`
+  - Issue: cross-build is proven only for the LuaJIT+gix trees. `jj-lib`
+    (+ prost) and the `aws-lc`/reqwest-TLS tree named in §13.1/P30's risk were
+    NOT in the cross bin and remain unproven under cross-compilation.
+  - Evidence: p34-ci-pipeline/cross/Cargo.toml pulls mlua+gix only.
+  - Severity: P2
+- `prototypes/.cargo/config.toml (§18)`
+  - Issue: the prototype cap-lints=warn exemption is resolved by working
+    directory, not by `--manifest-path`. A prototype built from the repo root
+    (or by any tool passing `--manifest-path` from outside `prototypes/`)
+    inherits the production `-D warnings`/`-D missing_docs` policy and fails.
+  - Evidence: identical `-D missing_docs` failure on all three OS runners in the
+    first run; reproduced locally (errors via `--manifest-path` from root, warns
+    when CWD is under prototypes/). Fixed by building from inside the tree.
+  - Severity: P3
+
+### Prototype Artifacts
+- `prototypes/p34-ci-pipeline/NOTES.md`
+- `prototypes/p34-ci-pipeline/cross/` (mlua+gix cross bin)
+- `prototypes/p34-ci-pipeline/archgate/` (3-crate workspace, `gate.py`, `pup.ron`)
+- `.github/workflows/ci-prototype.yml` (temporary)
+
+### Commands
+- `git push` → GitHub Actions run 29595424305 (push trigger)
+- cross: `cargo zigbuild --target {x86_64,aarch64}-unknown-linux-musl`,
+  `--target x86_64-pc-windows-gnu`
+- native: `cargo run` on ubuntu/macos/windows runners
+- arch: `python3 gate.py` (pass), inject edge → `python3 gate.py` (fail)
+
+### Next Steps
+- (Deferred by owner 2026-07-18 — "pup works" accepted; reopen only if the
+  source-level rules become load-bearing.) Close the pup enforcement proof:
+  give the archgate crates real module
+  structure (so pup sees `wcore`/`wai` instead of `unknown_crate`), add a
+  source-level `use wai::...` in wcore for the illegal case, write a
+  `LintBuilder` pup.ron with a `restrict_imports` rule per §3.5's
+  `^crate($|::.*)` guidance, and prove pup PASSES the legal graph and FAILS the
+  illegal one. Keep the stable metadata gate as the always-on companion (§3.5
+  already specifies both). No spec change.
+- Extend the cross bin with `jj-lib` and the TLS/aws-lc tree to close the P30
+  gap, or accept it as a release-time risk.
+- Split standing prototype CI (`prototypes.yml`, evidence bit-rot guard) from
+  the p34-specific cross/arch evidence (`ci-prototype.yml`, path-scoped).
+  deleted now that its evidence is recorded.

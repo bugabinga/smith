@@ -1,0 +1,9 @@
+[package]
+name = "wharness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+# Legal wiring crate: allowed to see both leaves.
+[dependencies]
+wcore = { path = "../wcore" }
+wai = { path = "../wai" }
