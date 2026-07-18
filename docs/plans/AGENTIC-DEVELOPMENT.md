@@ -1,10 +1,13 @@
-# Agentic Development — Proposal
+# Agentic Development — Guide
 
-> Non-normative proposal. `docs/SPEC.md` is canonical. This describes *how the
-> project is built* (an orchestration layer), not what Smith is. Anything here
-> that becomes mission-critical — chiefly the auto-merge policy — is promoted to
-> SPEC by the owner before it governs anything; until then this is a design
-> under review.
+> Guide and overview, **not** the source of truth. The ADW *is* the encoded
+> config — `.github/workflows/`, GitHub settings (CODEOWNERS, rulesets, labels,
+> the Project board), and `.claude/` (agents, settings, skills). This doc
+> explains and ties those together; when the doc and the config disagree, **the
+> config wins** and the doc is corrected — never the reverse, because the config
+> is what actually runs. `docs/SPEC.md` stays canonical for what Smith *is*;
+> agent conduct and merge policy deliberately live here and in
+> PROJECT-INVARIANTS §5, not in the spec.
 
 ## Vision
 
@@ -19,6 +22,35 @@ and leave a reviewed GitHub trail the human can inspect, step into, and steer.
 
 Everything else — trigger, triage, implement, review, security-review, merge,
 track — is autonomous.
+
+## Encoding surface — where the ADW actually lives
+
+This doc is the map; these are the territory. Each concept resolves to a
+concrete artifact that *executes*; the doc only narrates them. "In repo?" flags
+what is version-controlled and reviewable via PR versus what lives in GitHub's
+API/UI (a drift risk to minimize by preferring the as-code option).
+
+| Concept | Encoded in | In repo? | Authority |
+|---|---|---|---|
+| agent persona / model / tool scope | `.claude/agents/<role>.md` | ✅ | the file |
+| which agent runs on which event | `.github/workflows/<role>.yml` | ✅ | the workflow |
+| shared rules all agents inherit | `CLAUDE.md` (+ nested) | ✅ | the file |
+| Claude runtime settings | `.claude/settings.json` | ✅ | the file |
+| reusable role workflows | `.claude/skills/<name>/SKILL.md` | ✅ | the file |
+| integrity floor (never fake green) | `PROJECT-INVARIANTS.md §5`, enforced by CI | ✅ | invariant |
+| spec-review requirement | `CODEOWNERS` + a branch **ruleset** | ✅ CODEOWNERS; ⚠️ ruleset exportable as JSON | ruleset |
+| merge gates / auto-merge | branch ruleset + workflow gate logic | ⚠️ partial | ruleset + workflow |
+| routing labels | `.github/labels.yml` + a label-sync action | ✅ if adopted as-code | `labels.yml` |
+| waves | Milestones | ❌ GitHub API/UI | GitHub |
+| lifecycle board | Project (v2) | ❌ mostly (scriptable via `gh`) | GitHub |
+| bot identity | GitHub App + secrets | ⚠️ App-manifest JSON can live in repo; key/install manual | GitHub |
+
+**Rule:** prefer the as-code option for anything that can be one (rulesets,
+labels-as-code, the App manifest) so the ADW is reviewable and reproducible;
+accept that the Project board, milestones, and the App installation are
+irreducibly GitHub-side. A `xtask adw` (or CI) check can assert the in-repo
+artifacts agree with this doc's tables — the same no-drift discipline as the
+arch gate.
 
 ## The autonomous lifecycle
 
@@ -40,11 +72,11 @@ decisions**.
 
 ## Agent roster — the central review surface for models
 
-This table is the one place to see and change per-role model assignments. Agent
-files (`.claude/agents/*.md`) mirror it; a future `xtask agents` check can fail
-CI if any frontmatter drifts from this roster (same "one source of truth, no
-drift" discipline as the arch gate). Models are **proposed defaults** — change
-them here.
+The **authority** for each role's model and tool scope is that agent's
+`.claude/agents/<role>.md` frontmatter — the one central directory to review and
+change them. `xtask agents` renders this table *from* that frontmatter, so the
+snapshot below is illustrative and generated, never hand-authoritative. To
+change a model, edit the frontmatter; the table follows.
 
 | Agent | Trigger | Model | Scoped tools | Role |
 |-------|---------|-------|--------------|------|
