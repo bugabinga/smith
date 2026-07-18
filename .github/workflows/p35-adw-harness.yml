@@ -1,0 +1,59 @@
+# p35 — ADW harness test. Disposable prototype (SPEC §18). Push-triggered on the
+# working branch and path-scoped, so it runs only when p35 changes and needs no
+# presence on main. Proves the App token + claude-code-action + subagent + model
+# override actually work, and pins down the action's real input syntax. Delete
+# once folded into the real ADW workflows.
+name: p35-adw-harness
+
+on:
+  push:
+    branches: ["claude/specs-progress-n5u27n"]
+    paths:
+      - ".github/workflows/p35-adw-harness.yml"
+      - "prototypes/p35-adw-harness/**"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: p35-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: mint the bot token
+        id: token
+        continue-on-error: true
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: token outcome
+        run: |
+          echo "create-github-app-token outcome = ${{ steps.token.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "token minted: ${{ steps.token.outputs.token != '' }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: run claude-code-action (probe input syntax)
+        id: action
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            This is a wiring test for the smith agentic workflow. Reply with
+            exactly this line and take no other action:
+            ADW-HARNESS-OK repo=${{ github.repository }}
+          claude_args: --model claude-haiku-4-5-20251001
+
+      - name: action outcome
+        run: |
+          echo "claude-code-action outcome = ${{ steps.action.outcome }}" >> "$GITHUB_STEP_SUMMARY"
