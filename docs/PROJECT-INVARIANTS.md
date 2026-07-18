@@ -26,6 +26,14 @@ they never become one.
 - Shell scripts in repo root or scripts/
 - Any build step that requires tools not installable via `cargo install`, with two named exceptions: pinned nightly rustup components required by the `cargo-pup` architecture gate, and the `zig` toolchain required by `cargo-zigbuild` for release cross-builds (§8a)
 
+**Scope:** this invariant governs the **Rust workspace** — the app, its crates,
+and their build. The published **web site** is a separate artifact and is exempt,
+narrowly: the Astro site may carry its own `package.json` and Node build **confined
+to `site/`** (never the workspace root), built by `.github/workflows/pages.yml`.
+The **book** stays inside the rule — it is mdBook, which is `cargo install`-able —
+so this exemption is for the site alone. No Node toolchain, lockfile, or
+`package.json` may appear at the repo root or inside any crate.
+
 ## 2. Directory Separation: Code vs. Project Management
 
 ```
@@ -511,6 +519,7 @@ Rules:
 
 | Date | Change | Author |
 |------|--------|--------|
+| 2026-07-18 | §1 scope note: Astro site exempt from the package.json ban, confined to `site/`; book stays mdBook (cargo-native) (user-directed) | smith-spec |
 | 2026-07-18 | §7 require signed commits on `main`, enforced by the branch ruleset (unlocked by going public) (user-approved) | smith-spec |
 | 2026-07-18 | §7 reconciled to git/GitHub reality (rebase-merge, squash forbidden, jj optional); §1 CI-as-orchestration note; §2 plans tree + ADW-encoding note; §5 ADW config protected; §8a release-lifecycle pointer (user-directed audit) | smith-spec |
 | 2026-07-16 | §7 drop Conventional Commits mandate; commit/PR style moves to CLAUDE.md; no AI attribution (user-approved) | smith-spec |

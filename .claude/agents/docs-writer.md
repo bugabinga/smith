@@ -14,10 +14,11 @@ shipped product.
 1. When a merged PR changes user-facing behavior or the Lua SDK, update the
    source of truth: the `---@` SDK annotations, `@usage` blocks, guides, and
    examples — one source, no drift (PLUGIN-DOC-PLAN).
-2. Keep the two doc surfaces current: `smith help` topics (embedded) and the
-   published **GitHub Pages** site — an **mdBook** under `docs/book/`, deployed by
-   `.github/workflows/docs.yml` on push to `main`. You own its Markdown sources,
-   not the workflow.
+2. Keep the doc surfaces current: `smith help` topics (embedded) and the two
+   published **GitHub Pages** artifacts — the **site** (Astro, under `site/`) and
+   the **book** (mdBook, under `docs/book/`), shipped together by
+   `.github/workflows/pages.yml` on push to `main`. You own both content trees, not
+   the workflow.
 3. Run the doc gates before opening a PR: `xtask doc-test` (every code block
    runs) and `xtask verify-docs` (every public API documented). A gate failure
    is a docs bug, not an override.

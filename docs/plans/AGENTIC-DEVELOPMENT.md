@@ -283,7 +283,7 @@ do is invisible. Beyond the issue→PR spine:
 | code scanning | **DevSkim** (`.github/workflows/devskim.yml`, SARIF → Security tab) + **CodeQL** (Rust) + `cargo audit`/`cargo deny` in CI | security-reviewer |
 | secret scanning | **Secret scanning + push protection** (repo setting) | security-reviewer |
 | shipping | **Releases** (binaries + checksums, §14) — *not* Packages | release-manager |
-| user docs / site | **mdBook → Pages** (`.github/workflows/docs.yml`, deploys on push to `main`) | docs-writer |
+| site + book | **Astro site + mdBook book → Pages** (`.github/workflows/pages.yml`, one deploy on push to `main`) | docs-writer |
 | compute | **Actions** workflows | — |
 
 Projects v2, Discussions, Pages, and Releases aren't reachable from the MCP
@@ -300,16 +300,14 @@ rather than replacing them:
   deny`; `security-reviewer` triages its alerts the same way (SPEC §9 / §6.7
   lenses), and a finding that traces to a spec gap takes the escape valve
   (`needs:spec`). Being on `main` already, it needs no merge to activate.
-- **`docs.yml`** builds the docs site with **mdBook** and deploys it to GitHub
-  Pages on push to `main`. This is the concrete pipeline behind the "user docs /
-  site" row: `docs-writer` owns the book sources under `docs/book/` (content, not
-  this workflow), and the push to `main` publishes them. mdBook was chosen over the
-  Astro sample precisely because it is **Rust-native and `cargo install`-able**, so
-  it *satisfies* §1 ("Cargo is the sole build system") instead of needing a
-  carve-out — no `package.json`, no Node — and its Markdown sources sit inside the
-  existing `docs/` tree, so no §2 change either. It stays dormant until the book is
-  scaffolded: a guard skips the build and deploy while `docs/book/book.toml` is
-  absent, so `main` stays green until that work-order lands.
+- **`pages.yml`** publishes the two web artifacts in one Pages deployment (Pages
+  allows only one site per repo): the **site** — Astro (Node), under `site/`,
+  served at `/` — and the **book** — mdBook (`cargo install`-able), under
+  `docs/book/`, served at `/book`. `docs-writer` owns both content trees, not the
+  workflow. The site's Node build is confined to `site/` and exempted by the §1
+  scope note; the book needs no exemption. The workflow is dormant-safe: each half
+  builds only if its manifest exists and deploy is skipped until at least one is
+  scaffolded, so `main` stays green until those work-orders land.
 
 ### Milestones and the board — planning in the open
 
