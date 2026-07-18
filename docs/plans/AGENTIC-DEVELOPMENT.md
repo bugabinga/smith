@@ -278,6 +278,29 @@ clean audit identity.
    `github_token` (and to `gh` via `GH_TOKEN`). That token both cascades and
    carries Projects scope.
 
+## Signed commits — verified trail, now; enforced, later
+
+The reviewed trail is also a **cryptographically** verified one. Two layers,
+which come apart cleanly on a private free-plan repo:
+
+- **Agents sign — on now.** The committing workflows (`adw-build`, `adw-plan`,
+  `adw-deps`) set `use_commit_signing: true`, so `claude-code-action` writes each
+  commit through GitHub's API with the App installation token. Every agent commit
+  lands **Verified**, signed by `agent-smith-bugabinga-adc` — no keys to manage,
+  no local GPG. The owner's own edits from the GitHub web UI are auto-signed too,
+  so the phone-only path stays Verified.
+- **Enforce it — deferred.** *Requiring* signed commits on `main` needs a branch
+  **ruleset**, and rulesets/branch-protection are unavailable on a private repo on
+  the free plan (they need an organization or a paid plan). So enforcement waits
+  on that repo change (issue #14); until then signing is practiced, not policed —
+  the trail is Verified in fact even though a stray unsigned commit isn't yet
+  *blocked*. This is a proposed upgrade to the PROJECT-INVARIANTS §7 version-control
+  rule, pending owner approval before that invariant is edited.
+
+The cost of enforcement, once available, is that a local unsigned commit (bare
+git/jj with no signing key) would be rejected on `main` — acceptable for a
+mostly-agent + web-owner flow.
+
 ## Runners — how an agent actually executes (proven by p35)
 
 The live harness `prototypes/p35-adw-harness` settled the mechanics, and the

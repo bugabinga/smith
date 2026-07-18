@@ -2,7 +2,7 @@
 # A PR agent → claude-code-action, gated to Dependabot-authored PRs. A bump is
 # maintenance; a semver-incompatible / MSRV-raising / budget-tripping bump
 # escalates like a new dependency (PROJECT-INVARIANTS §5).
-# Needs secrets APP_ID, APP_PRIVATE_KEY, ANTHROPIC_API_KEY.
+# Needs secrets APP_ID, APP_PRIVATE_KEY, CLAUDE_CODE_OAUTH_TOKEN.
 name: adw-deps
 
 on:
@@ -32,6 +32,7 @@ jobs:
         with:
           github_token: ${{ steps.token.outputs.token }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_commit_signing: true
           prompt: |
             Use the dependency-manager subagent to handle Dependabot PR
             #${{ github.event.pull_request.number }} in ${{ github.repository }}.

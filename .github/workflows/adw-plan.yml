@@ -51,6 +51,7 @@ jobs:
         with:
           github_token: ${{ steps.token.outputs.token }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_commit_signing: true
           prompt: |
             Use the planner subagent (.claude/agents/planner.md) on
             ${{ github.repository }}. Diff docs/SPEC.md against

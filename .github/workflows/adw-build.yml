@@ -2,7 +2,8 @@
 # issue/PR agent → claude-code-action (which handles `issues` events; the CLI
 # path is only needed for push/schedule/tag, see p35). Runs as the App so its PR
 # cascades into review. Phase 1 posture: opens a PR, never merges.
-# Needs secrets APP_ID, APP_PRIVATE_KEY, ANTHROPIC_API_KEY.
+# Commits are signed via the App token (use_commit_signing) so they land Verified.
+# Needs secrets APP_ID, APP_PRIVATE_KEY, CLAUDE_CODE_OAUTH_TOKEN.
 name: adw-build
 
 on:
@@ -33,6 +34,7 @@ jobs:
         with:
           github_token: ${{ steps.token.outputs.token }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_commit_signing: true
           prompt: |
             Use the builder subagent to implement issue
             #${{ github.event.issue.number }} in ${{ github.repository }}.
