@@ -33,12 +33,23 @@ smith/ (types, StreamFn, AgentTool, Lua, config)
 CLAUDE.md is a navigation index. Do not mirror individual source-of-truth file
 lists here; use the canonical directories and docs tree instead.
 
-- Spec: `docs/SPEC.md` — canonical project specification.
+Two specifications sit at the top, one for each half of the project:
+
+- **What to build — `docs/SPEC.md`.** The canonical specification for every
+  smith artifact: the app, the site, the book, the documentation. It answers
+  *what*.
+- **How to build — `docs/plans/AGENTIC-DEVELOPMENT.md`.** The specification for
+  how smith is developed — the agentic workflow encoded in `.github/` and
+  `.claude/`. It answers *how*.
+
+Bound by the invariants, and supported by the rest:
+
+- **Invariants — `docs/PROJECT-INVARIANTS.md`.** Non-negotiable rules every
+  contributor, tool, and agent follows: build system, directory structure,
+  coding standards, version control. Overriding one needs explicit approval.
 - Research: `docs/research/` — ecosystem research and tool analysis
   (evidence, non-normative).
-- Plans: `docs/plans/` — task breakdowns and documentation plans.
-- Invariants: `docs/PROJECT-INVARIANTS.md` — build system, directory
-  structure, coding standards, and canonical docs inventory.
+- Plans: `docs/plans/` — execution plans (non-normative); `README.md` indexes them.
 - Prototypes: `prototypes/` — spec-validation prototypes and their plan.
 
 Former `docs/design/` subsystem docs and the P1–P20 prototype report are fully
