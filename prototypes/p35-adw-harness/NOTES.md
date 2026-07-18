@@ -43,11 +43,14 @@ real ADW workflows. Disposable evidence (SPEC §18); delete once folded.
 - **Proven:** App token mints (identity); the action *accepts* the input syntax
   `github_token` / `anthropic_api_key` / `prompt` / `claude_args --model` (it
   only rejected the event, not the inputs); the CLI installs and runs in CI.
-- **Design decision:** the ADW uses **two runners** — `claude-code-action` for
-  issue/PR/comment agents (triager, reviewer, security-reviewer,
-  dependency-manager), and the headless `claude -p` CLI for push/schedule/tag
-  agents (planner, sweeper, docs-writer, release-manager), which the action
-  can't serve.
-- **Blocked on owner:** add the model-auth secret; then merge the ADW workflows
-  to `main` (event workflows run only from the default branch) to exercise them
-  end to end.
+- **Design decision (revised):** one runner — `claude-code-action@v1` for
+  everything, in its two modes: *interactive* (issue/PR/comment) and *automation*
+  (`schedule`/`workflow_dispatch`). `push` fits neither, so `planner` is relayed
+  by a plain no-Claude watcher that `gh workflow run`s it on `workflow_dispatch`.
+  The headless CLI is dropped.
+- **Auth is subscription, not API.** All workflows use `claude_code_oauth_token`
+  (`claude setup-token`), drawing on the owner's plan — no metered API. The
+  earlier CLI failure was only because it was pointed at an (empty)
+  `ANTHROPIC_API_KEY`.
+- **Blocked on owner:** add `CLAUDE_CODE_OAUTH_TOKEN` (#13); merge to `main`
+  (event workflows run only from the default branch) to exercise end to end (#14).

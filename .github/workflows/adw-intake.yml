@@ -33,7 +33,7 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           github_token: ${{ steps.token.outputs.token }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             Use the triager subagent to triage issue #${{ github.event.issue.number }}
             in ${{ github.repository }}. Follow .claude/agents/triager.md exactly:

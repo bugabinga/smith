@@ -253,21 +253,24 @@ clean audit identity.
 
 ## Runners — how an agent actually executes (proven by p35)
 
-The live harness `prototypes/p35-adw-harness` settled the execution mechanics:
+The live harness `prototypes/p35-adw-harness` settled the mechanics, and the
+action's docs settled the rest:
 
 - **Identity works.** `actions/create-github-app-token@v1` mints a working
   installation token from `APP_ID` / `APP_PRIVATE_KEY`; agent actions run as
   `agent-smith-bugabinga-adc` and cascade.
-- **Two runners, by event.** `claude-code-action@v1` serves **issue / PR /
-  comment** events (and accepts `github_token` / `anthropic_api_key` / `prompt`
-  / `claude_args --model`), but **rejects `push`** (`Unsupported event type`).
-  So push / schedule / tag agents use the **headless `claude -p` CLI** instead.
-  The split: action for `triager`, `builder`, `reviewer`, `security-reviewer`,
-  `dependency-manager`; CLI for `planner`, `sweeper`, `docs-writer`,
-  `release-manager`.
-- **Model auth is a required secret.** Both runners need a model-auth secret —
-  `ANTHROPIC_API_KEY`, or `CLAUDE_CODE_OAUTH_TOKEN` for subscription auth. Until
-  it exists no agent can call a model (the harness found it missing; issue #13).
+- **One runner: `claude-code-action@v1`, in two modes.** It routes by event:
+  *interactive* (issue / PR / comment — reads that entity and replies) and
+  *automation* (`schedule` / `workflow_dispatch` — runs an explicit `prompt`).
+  It **rejects `push`** because that has no entity and fits neither mode. So a
+  push-triggered agent (`planner`) is split into a plain no-Claude watcher that
+  `gh workflow run`s the action on `workflow_dispatch`. No CLI is used — the
+  headless `claude -p` path is dropped.
+- **Subscription auth, no metered API.** Every workflow authenticates with
+  `claude_code_oauth_token` (`${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}`, generated
+  once with `claude setup-token`), which draws on the owner's Claude
+  subscription — not per-token API billing. `anthropic_api_key` is not used.
+  Until the secret exists no agent can call a model (issue #13).
 - **Event workflows fire only from `main`.** `issues` / `pull_request` /
   `schedule` workflows run from the default branch, so the ADW activates only
   once merged (issue #14). A branch can exercise `push`-triggered probes (how
