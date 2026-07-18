@@ -23,14 +23,25 @@ and leave a reviewed GitHub trail the human can inspect, step into, and steer.
 Everything else — trigger, triage, implement, review, security-review, merge,
 track — is autonomous.
 
+Crucially, the spec is a **standing** input, not a one-shot one: the owner does
+not have to file an issue for the build to advance. On a schedule the `surveyor`
+measures the gap between the spec (the goal) and the code (what exists) and opens
+the next work-order itself, one slice at a time. So touchpoint 1 alone — a
+realized spec sitting in `main` — is enough to pull the whole build forward on its
+own; issues (touchpoint 2) are for the extra, out-of-band work the spec doesn't
+already imply. Development flows over time from the spec, not only from the
+owner's next keystroke.
+
 ## Two phases — build-out, then indefinite maintenance
 
 One cycle whose character changes over time, not two:
 
-- **Build-out.** Drive the spec to a shipped product: `planner` turns spec into
-  work-orders, `builder` implements slice by slice along `WALKING-SKELETON`, the
-  reviewers gate each PR. Ends when the spec is realized and the first release
-  ships.
+- **Build-out.** Drive the spec to a shipped product, autonomously: the
+  `surveyor` finds the next unbuilt slice in `WALKING-SKELETON` order and opens a
+  work-order for it, `planner` folds in any owner spec change, `builder`
+  implements slice by slice, the reviewers gate each PR. It self-advances — no
+  issue required — throttled to one open slice at a time. Ends when the spec is
+  realized and the first release ships.
 - **Maintenance (indefinite).** The same machinery keeps the product healthy with
   near-zero owner input — `dependency-manager` on bumps, `security-reviewer` on
   alerts, `docs-writer` on drift, `release-manager` on the next release, `triager`
@@ -82,6 +93,7 @@ only for the reader's map. The craft skills (`sabotnik`, `handmade`, `pioneer`,
 
 | Agent | Woken by (in the workflow) | Mission | Artifact it owns | Model |
 |-------|----------------------------|---------|------------------|-------|
+| `surveyor` | `schedule` | measure the spec-vs-code gap and open the next unbuilt slice as a work-order — the engine of autonomous build-out | **one Issue** per tick | Opus |
 | `triager` | issue opened | triage a raw issue into a labeled, routed, spec-anchored work-order | the **Issue** + board card | Haiku |
 | `planner` | spec change lands on `main` | turn the spec diff into tracked work-orders + refresh the plan | **Issues** + `docs/plans/*` | Opus |
 | `builder` | issue labeled `ready` | build one slice per `WALKING-SKELETON`, hardened, tested | a **branch + PR** | Sonnet |
@@ -101,7 +113,8 @@ owner/skill-invoked, since the spec is touchpoint 1.
 
 Model tiering favours **quality over speed** (see *Two phases*): mechanical work
 (triager, sweeper) on Haiku; building/docs/deps/release on Sonnet; everything
-adversarial or judgment-heavy (reviewer, security-reviewer, planner) on Opus —
+adversarial or judgment-heavy (surveyor, reviewer, security-reviewer, planner) on
+Opus —
 and `reviewer` is deliberately a *different* model from `builder` so review is a
 second opinion, not self-congratulation.
 
@@ -115,6 +128,7 @@ floor: PROJECT-INVARIANTS §5; merge policy: this plan — see **Open decisions*
 sequenceDiagram
     actor Owner
     participant Spec as docs/SPEC.md
+    participant Sur as surveyor
     participant Plan as planner
     participant Board as Issues + Board
     participant Tri as triager
@@ -128,6 +142,12 @@ sequenceDiagram
     Owner->>Spec: merge a spec change
     Spec-->>Plan: push to main (docs/SPEC.md)
     Plan->>Board: open work-orders, refresh plan
+
+    Note over Sur,Board: Autonomous — no owner input
+    loop every 6h, WIP permitting
+        Sur->>Spec: read goal
+        Sur->>Board: open next unbuilt slice as `ready`
+    end
 
     Note over Owner,Board: Touchpoint 2 — issues
     Owner->>Board: file an issue
@@ -151,10 +171,17 @@ sequenceDiagram
     end
 ```
 
-`sweeper` runs across this on a schedule — outside any single event — sweeping
-for stalls and braking runaways; `docs-writer`, `dependency-manager`, and
+Two agents run on a schedule, outside any single event: `surveyor` *feeds* the
+spine — it opens the next `ready` slice when the front is clear, so the loop above
+turns without the owner filing an issue — and `sweeper` *maintains* it, sweeping
+for stalls and braking runaways. `docs-writer`, `dependency-manager`, and
 `release-manager` hang off the same trunk (a merged PR, a Dependabot PR, a green
 milestone) rather than the issue→PR spine.
+
+The two schedulers are deliberately opposed: `surveyor` only ever *adds* one unit
+of work and only when nothing is in flight, while `sweeper` enforces the WIP
+ceiling and brakes runaways. Together they hold the cycle at a steady, low
+throughput — the "predictability over speed" dial, made mechanical.
 
 ## Control surfaces — agents vs output styles vs CLAUDE.md
 
@@ -279,7 +306,9 @@ action's docs settled the rest:
 ## Guardrails
 
 - **Cost / runaway** — per-run `--max-turns`, concurrency caps, and the
-  `gardener` as circuit-breaker; token budgets.
+  `sweeper` as circuit-breaker; token budgets. The `surveyor` self-throttles: it
+  opens at most one slice per tick and only when the front is clear, so schedule
+  ticks cannot pile up work.
 - **Self-review blind spots** — reviewer on a different model than the
   implementer; security-reviewer never auto-approves high severity — it
   escalates to touchpoint #3.
@@ -310,7 +339,7 @@ action's docs settled the rest:
   **human reviews every PR** (build trust in the trail).
 - **Phase 2** — add `reviewer` + `security-reviewer`; enable gated auto-merge for
   `risk:low` only (requires decision #1).
-- **Phase 3** — add `spec-decomposer` + `gardener`; full autonomy with the human
-  at the three touchpoints.
+- **Phase 3** — add `surveyor` (self-advancing build-out) + `sweeper` (the
+  circuit-breaker); full autonomy with the human at the three touchpoints.
 
 Each phase is independently useful and reversible.
