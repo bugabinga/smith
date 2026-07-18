@@ -284,6 +284,20 @@ Files that coding agents SHOULD read before modifying:
 - `docs/SPEC.md` (the canonical spec)
 - `CLAUDE.md` (project overview)
 
+### Integrity rules (absolute)
+
+Binding on every agent, tool, and automation, with no gated exception — these
+protect the meaning of a green build:
+- never modify CI configuration to make a failing run pass,
+- never modify, delete, or skip a test to get green,
+- never merge on a red or bypassed gate.
+
+The *merge policy* — when an agent may merge a green PR versus defer to a
+human — is process, not integrity: it lives in
+`docs/plans/AGENTIC-DEVELOPMENT.md`, not here. (The former SPEC §17.10 rules
+moved here; its blanket "never auto-merge" became the gated policy in that plan,
+so the spec can focus on Smith's artifacts.)
+
 ## 6. Spec-Code Relationship
 
 1. **Spec before code.** No `.rs` changes without corresponding `docs/SPEC.md` coverage (or documented exception).

@@ -2825,12 +2825,10 @@ Gate tiers by context:
 | before merge | fast + medium tiers (coverage gate included, §17.4) |
 | CI only | slow tier, mutation, benchmarks |
 
-Agent CI-safety rules (binding for any coding agent working on Smith):
-
-- never auto-merge,
-- never modify CI configuration to make a run pass,
-- never modify or delete tests to make them pass,
-- never skip tests to get green.
+Agent conduct while building Smith — the integrity rules that protect a green
+run, and the policy for who may merge — lives outside this spec, in
+PROJECT-INVARIANTS §5 and `docs/plans/AGENTIC-DEVELOPMENT.md`. This section
+defines Smith's test artifacts, not who is allowed to run or merge them.
 
 Android/Termux (`aarch64-linux-android`) is a supported development
 environment, not a release target (§14): CI keeps a validation lane that

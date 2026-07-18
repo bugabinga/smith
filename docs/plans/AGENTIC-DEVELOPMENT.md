@@ -34,7 +34,8 @@ spec merged ──▶ spec-decomposer ──▶ issues/plan/board            ▼
                                      auto-merge*                        request human review (#3)
 ```
 
-`*` auto-merge is gated *and* currently forbidden by SPEC §17.10 — see **Open
+`*` auto-merge is gated; the integrity floor (never fake a green run) is
+PROJECT-INVARIANTS §5, and the merge *policy* is this plan — see **Open
 decisions**.
 
 ## Agent roster — the central review surface for models
@@ -131,21 +132,21 @@ clean audit identity.
 - **Self-review blind spots** — reviewer on a different model than the
   implementer; security-reviewer never auto-approves high severity — it
   escalates to touchpoint #3.
-- **Merge safety** — branch protection is the backstop; SPEC §17.10's existing
-  agent rules already bind every agent: never modify CI to pass, never
-  delete/skip tests. Those predate this proposal and are exactly the right
-  guardrails.
+- **Merge safety** — branch protection is the backstop; the integrity rules in
+  PROJECT-INVARIANTS §5 bind every agent absolutely: never fake a green run,
+  never delete/skip tests, never merge on a red gate. Those are the floor this
+  policy sits on.
 - **Spec decomposition quality** — the human still owns the spec; the decomposer
   only *proposes* issues. A soft `approved` label can gate the implementer until
   trust is established.
 
 ## Open decisions (owner / spec)
 
-1. **SPEC §17.10 says agents "never auto-merge."** This proposal needs *gated*
-   auto-merge (CI green + independent review approved + security clear + risk
-   below threshold). That is a mission-critical change and therefore a **spec
-   decision**: amend §17.10 to permit gated auto-merge, or keep a human on every
-   merge. Nothing auto-merges until this is decided.
+1. **Auto-merge gates.** Agent governance now lives outside the spec (the §17.10
+   rules moved to PROJECT-INVARIANTS §5 as the integrity floor), so this is no
+   longer a spec conflict — it is a policy call owned here. Decide the exact
+   gate: CI green + independent review approved + security clear + risk below
+   which threshold? Nothing auto-merges until this row is filled in.
 2. **Create the `smith-bot` App** (only the owner can).
 3. **Risk threshold** for what forces human review (touchpoint #3).
 
