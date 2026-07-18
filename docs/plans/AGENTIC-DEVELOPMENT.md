@@ -68,8 +68,8 @@ API/UI (a drift risk to minimize by preferring the as-code option).
 | Claude runtime settings | `.claude/settings.json` | ✅ | the file |
 | reusable role workflows | `.claude/skills/<name>/SKILL.md` | ✅ | the file |
 | integrity floor (never fake green) | `PROJECT-INVARIANTS.md §5`, enforced by CI | ✅ | invariant |
-| spec-review requirement | `CODEOWNERS` + a branch **ruleset** | ✅ `CODEOWNERS` + `.github/rulesets/main.json` | ruleset |
-| merge gates / auto-merge | branch ruleset + workflow gate logic | ✅ ruleset as-code; ⚠️ workflow gate partial | ruleset + workflow |
+| spec-review requirement | `CODEOWNERS` + a branch **ruleset** | ✅ `CODEOWNERS`; ⚠️ `main.json` recorded, applied via `gh api` (not auto-read) | ruleset |
+| merge gates / auto-merge | branch ruleset + workflow gate logic | ⚠️ ruleset recorded not auto-applied; workflow gate partial | ruleset + workflow |
 | routing labels | `.github/labels.yml` + a label-sync action | ✅ if adopted as-code | `labels.yml` |
 | waves | Milestones | ❌ GitHub API/UI | GitHub |
 | lifecycle board | Project (v2) | ❌ mostly (scriptable via `gh`) | GitHub |
@@ -302,9 +302,15 @@ The cost of enforcement is that a local unsigned commit (bare git/jj with no
 signing key) would be rejected on `main` — acceptable for a mostly-agent +
 web-owner flow, since web-UI edits are auto-signed.
 
-The ruleset lives as-code at `.github/rulesets/main.json` (importable via
-Settings → Rules, or `gh api`). Its `pull_request` rule is tuned so autonomy
-survives enforcement: `required_approving_review_count: 0` with
+The ruleset's definition is version-controlled at `.github/rulesets/main.json`.
+GitHub does **not** auto-read that path (unlike `.github/workflows/`,
+`dependabot.yml`, or `CODEOWNERS`) — the file is the reviewable *record* of intent,
+applied deliberately once with
+`gh api --method POST /repos/bugabinga/smith/rulesets --input .github/rulesets/main.json`
+(the REST shape; the UI importer wants the fatter *export* shape). Keeping it as a
+file means the ruleset is diffed and reviewed like any other change, even though a
+human runs the apply. Its `pull_request` rule is tuned so autonomy survives
+enforcement: `required_approving_review_count: 0` with
 `require_code_owner_review: true` means an ordinary agent PR merges with **no**
 human approval, while any PR touching a CODEOWNERS-owned path — `docs/SPEC.md`,
 the workflows, the agent files, the invariants — still requires the owner's

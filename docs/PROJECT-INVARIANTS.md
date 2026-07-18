@@ -336,6 +336,13 @@ so the spec can focus on Smith's artifacts.)
   `blame`. **Squash-merge is forbidden** — it destroys the per-decision commits
   the message discipline exists to produce. Merge commits are avoided; enforce
   this by allowing only rebase-merge in the repo's merge-method settings.
+- **Commits on `main` are signed.** Every commit that lands on `main` must be
+  **Verified**. Agents commit through GitHub's API under the App installation
+  token (`use_commit_signing`), which signs automatically; owner edits from the
+  GitHub web UI are auto-signed; GitHub signs the rebase-merge commits it creates.
+  Enforced by the `main` branch ruleset (`.github/rulesets/main.json`, *Require
+  signed commits*). A local unsigned commit (bare git/`jj` without a signing key)
+  is rejected on `main` — sign it or route it through the web UI.
 - **Commit messages:** plain imperative subject naming the decision or its
   effect; no required type prefix; argue *why*, not *what*; no AI attribution.
 - **Branch naming:** `feature/description`, `fix/description`, or the ADW's
@@ -504,6 +511,7 @@ Rules:
 
 | Date | Change | Author |
 |------|--------|--------|
+| 2026-07-18 | §7 require signed commits on `main`, enforced by the branch ruleset (unlocked by going public) (user-approved) | smith-spec |
 | 2026-07-18 | §7 reconciled to git/GitHub reality (rebase-merge, squash forbidden, jj optional); §1 CI-as-orchestration note; §2 plans tree + ADW-encoding note; §5 ADW config protected; §8a release-lifecycle pointer (user-directed audit) | smith-spec |
 | 2026-07-16 | §7 drop Conventional Commits mandate; commit/PR style moves to CLAUDE.md; no AI attribution (user-approved) | smith-spec |
 | 2026-07-16 | AGENTS.md files renamed to CLAUDE.md repo-wide; references updated (user-directed) | smith-spec |
