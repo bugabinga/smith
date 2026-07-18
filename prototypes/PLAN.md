@@ -2341,7 +2341,9 @@ complete
 - arch: `python3 gate.py` (pass), inject edge → `python3 gate.py` (fail)
 
 ### Next Steps
-- Close the pup enforcement proof: give the archgate crates real module
+- (Deferred by owner 2026-07-18 — "pup works" accepted; reopen only if the
+  source-level rules become load-bearing.) Close the pup enforcement proof:
+  give the archgate crates real module
   structure (so pup sees `wcore`/`wai` instead of `unknown_crate`), add a
   source-level `use wai::...` in wcore for the illegal case, write a
   `LintBuilder` pup.ron with a `restrict_imports` rule per §3.5's
