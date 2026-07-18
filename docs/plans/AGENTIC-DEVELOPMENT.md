@@ -251,6 +251,28 @@ clean audit identity.
    `github_token` (and to `gh` via `GH_TOKEN`). That token both cascades and
    carries Projects scope.
 
+## Runners — how an agent actually executes (proven by p35)
+
+The live harness `prototypes/p35-adw-harness` settled the execution mechanics:
+
+- **Identity works.** `actions/create-github-app-token@v1` mints a working
+  installation token from `APP_ID` / `APP_PRIVATE_KEY`; agent actions run as
+  `agent-smith-bugabinga-adc` and cascade.
+- **Two runners, by event.** `claude-code-action@v1` serves **issue / PR /
+  comment** events (and accepts `github_token` / `anthropic_api_key` / `prompt`
+  / `claude_args --model`), but **rejects `push`** (`Unsupported event type`).
+  So push / schedule / tag agents use the **headless `claude -p` CLI** instead.
+  The split: action for `triager`, `builder`, `reviewer`, `security-reviewer`,
+  `dependency-manager`; CLI for `planner`, `sweeper`, `docs-writer`,
+  `release-manager`.
+- **Model auth is a required secret.** Both runners need a model-auth secret —
+  `ANTHROPIC_API_KEY`, or `CLAUDE_CODE_OAUTH_TOKEN` for subscription auth. Until
+  it exists no agent can call a model (the harness found it missing; issue #13).
+- **Event workflows fire only from `main`.** `issues` / `pull_request` /
+  `schedule` workflows run from the default branch, so the ADW activates only
+  once merged (issue #14). A branch can exercise `push`-triggered probes (how
+  p35 ran), not the real triggers.
+
 ## Guardrails
 
 - **Cost / runaway** — per-run `--max-turns`, concurrency caps, and the
