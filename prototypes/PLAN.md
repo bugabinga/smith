@@ -2275,22 +2275,23 @@ complete
   and no network — the first real seed for the cold-build sub-budget.
 
 ### Disproved
-- **§3.5 / §15 `cargo install cargo-pup`**: cargo-pup is NOT published on
-  crates.io. `cargo +nightly-2026-01-22 install cargo-pup --locked` and the
-  stable fallback both fail with `error: could not find cargo-pup in registry
-  crates-io with version *`. The documented install path for the nightly source
-  gate does not exist; §11 cannot lean on it as written.
+- Nothing in the spec. An earlier draft of this block claimed cargo-pup was
+  unpublished; that was a defect in this prototype's recipe, not the spec —
+  see the correction below. §3.5's two-gate design stands.
+
+### Correction (recipe bug, not a spec defect)
+- The first arch-gate run reported `cargo install cargo-pup` "not in registry".
+  Root cause: the crate is published by DataDog as **`cargo_pup`** (underscore);
+  `cargo install` matches the name literally and does not normalize the hyphen
+  the way `Cargo.toml` dependency resolution does, so `cargo-pup` (hyphen) was
+  "not found". Secondary cause: the source gate needs
+  `rust-src rustc-dev llvm-tools-preview` on `nightly-2026-01-22` (it links
+  rustc internals), which the minimal nightly lacked. cargo_pup's own README
+  pins the same `nightly-2026-01-22` the spec uses. So §3.5/§11/§15 are correct
+  as written; no demotion. The corrected pup recipe is validated in the re-run
+  recorded below.
 
 ### Spec Issues
-- `docs/SPEC.md §3.5, §11, §15 (pup)` + `docs/PROJECT-INVARIANTS.md §11`
-  - Issue: the architecture gate is specified as `cargo-pup` on pinned nightly,
-    but cargo-pup is unpublished on crates.io, so `cargo install cargo-pup`
-    fails. The load-bearing §11 gate should be the stable `cargo metadata`
-    check (proven here); cargo-pup should be demoted to optional and, if kept,
-    installed from a pinned git rev, not crates.io.
-  - Evidence: run 29595424305 arch-gate job — metadata gate discriminates
-    legal/illegal graphs; `cargo install cargo-pup` errors "not in registry".
-  - Severity: P1
 - `docs/SPEC.md §14`
   - Issue: cross-build is proven only for the LuaJIT+gix trees. `jj-lib`
     (+ prost) and the `aws-lc`/reqwest-TLS tree named in §13.1/P30's risk were
@@ -2321,9 +2322,13 @@ complete
 - arch: `python3 gate.py` (pass), inject edge → `python3 gate.py` (fail)
 
 ### Next Steps
-- Owner decision: make the stable `cargo metadata` check the load-bearing §11
-  gate; demote cargo-pup to optional (git-pinned) or drop it (§3.5/§11/§15).
+- Prove cargo_pup end-to-end with the corrected recipe (`cargo_pup` underscore
+  + `rust-src rustc-dev llvm-tools-preview` on nightly-2026-01-22): install,
+  run against the 3-crate workspace, and confirm it flags a source-level
+  forbidden import. Keep the stable metadata gate as the always-on companion
+  (§3.5 already specifies both). No spec change.
 - Extend the cross bin with `jj-lib` and the TLS/aws-lc tree to close the P30
   gap, or accept it as a release-time risk.
-- Decide whether ci-prototype.yml stays as the seed of the real pipeline or is
+- Split standing prototype CI (`prototypes.yml`, evidence bit-rot guard) from
+  the p34-specific cross/arch evidence (`ci-prototype.yml`, path-scoped).
   deleted now that its evidence is recorded.

@@ -1,13 +1,12 @@
-# TEMPORARY CI prototype (p34) — evidence for SPEC §14 cross-build, §11
-# arch-gate, and §13.1 cold-build sub-budget. Not the production pipeline:
-# it targets the prototype crates because no production crate exists yet.
-# Delete once its PLAN.md result block is recorded.
+# p34-ci-pipeline evidence run — §14 cross-build and §11 arch-gate. Path-scoped
+# to the p34 dir and this file, so it only runs when that evidence changes, not
+# on every prototype edit (the standing guard is prototypes.yml). Not the
+# production pipeline; it targets prototype fixtures because no production crate
+# exists yet.
 #
-# Note: every cargo *compile* runs with its CWD under prototypes/, because the
+# Every cargo *compile* runs with its CWD under prototypes/, because the
 # prototype cap-lints=warn exemption (prototypes/.cargo/config.toml, §18) is
-# resolved by working directory, not by --manifest-path. Building a prototype
-# from the repo root picks up the root's -D warnings / -D missing_docs policy
-# and fails.
+# resolved by working directory, not by --manifest-path.
 name: ci-prototype
 
 on:
@@ -26,35 +25,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # §13.1 cold-build sub-budget + §17.10 hermeticity: build and test every
-  # prototype crate on a clean runner, record per-crate wall-clock.
-  prototypes:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: toolchain
-        run: rustup default stable && rustc -V && cargo -V
-      - name: build + test each prototype, timed
-        run: |
-          echo "## Prototype cold build+test (§13.1)" >> "$GITHUB_STEP_SUMMARY"
-          echo "| crate | build+test | seconds |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-------|-----------|---------|" >> "$GITHUB_STEP_SUMMARY"
-          total=0
-          for d in prototypes/p*/; do
-            name=$(basename "$d")
-            [ -f "$d/Cargo.toml" ] || continue
-            start=$SECONDS
-            if ( cd "$d" && cargo test --quiet ) >/dev/null 2>&1; then
-              status="ok"
-            else
-              status="FAIL"
-            fi
-            dur=$((SECONDS - start))
-            total=$((total + dur))
-            echo "| $name | $status | $dur |" >> "$GITHUB_STEP_SUMMARY"
-          done
-          echo "| **total** | | **$total** |" >> "$GITHUB_STEP_SUMMARY"
-
   # §14 cross-build (un-gates P30): does the heavy native tree cross-compile?
   cross-build:
     runs-on: ubuntu-latest
@@ -109,8 +79,11 @@ jobs:
       - name: build + run cross bin natively
         run: cargo run
 
-  # §11 arch-gate (un-gates P32): the stable-metadata gate is the hard
-  # assertion; cargo-pup is attempted best-effort as the nightly source gate.
+  # §11 arch-gate (un-gates P32): two gates, exactly as §3.5 specifies.
+  #  1. stable `cargo metadata` gate — always-on boundary enforcement (hard).
+  #  2. cargo_pup — pinned-nightly source-level gate (needs rustc-dev
+  #     components). Best-effort here while its pup.ron rule schema is pinned
+  #     down from the generated sample; captured, not guessed.
   arch-gate:
     runs-on: ubuntu-latest
     defaults:
@@ -130,13 +103,21 @@ jobs:
           fi
           cp /tmp/wcore.bak wcore/Cargo.toml
           echo "gate correctly rejected the injected wcore->wai edge"
-      - name: cargo-pup on pinned nightly (best-effort P32 probe)
+      - name: cargo_pup source gate on pinned nightly (P32 probe)
         id: pup
         continue-on-error: true
         run: |
-          rustup toolchain install nightly-2026-01-22 --profile minimal || rustup toolchain install nightly --profile minimal
-          cargo +nightly-2026-01-22 install cargo-pup --locked || cargo install cargo-pup --locked
-          cargo +nightly-2026-01-22 pup || cargo pup
+          set -x
+          rustup toolchain install nightly-2026-01-22 --profile minimal
+          rustup component add --toolchain nightly-2026-01-22 rust-src rustc-dev llvm-tools-preview
+          cargo +nightly-2026-01-22 install cargo_pup --locked
+          echo "=== generate-config sample (reveals the real pup.ron schema) ==="
+          cp pup.ron pup.ron.mine
+          cargo +nightly-2026-01-22 pup generate-config || true
+          echo "--- generated pup.ron ---"; cat pup.ron || true
+          echo "=== print-modules ==="; cargo +nightly-2026-01-22 pup print-modules || true
+          echo "=== lint the legal 3-crate workspace with the generated config ==="
+          cargo +nightly-2026-01-22 pup
       - name: pup outcome
         run: |
-          echo "cargo-pup probe outcome = ${{ steps.pup.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "cargo_pup probe outcome = ${{ steps.pup.outcome }}" >> "$GITHUB_STEP_SUMMARY"

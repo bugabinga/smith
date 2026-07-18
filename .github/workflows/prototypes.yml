@@ -1,0 +1,66 @@
+# Standing guard for the prototype evidence base. Prototypes are kept as
+# evidence for docs/SPEC.md (prototypes/CLAUDE.md, §18): locked deps and verify
+# commands that must keep exiting 0. This builds+tests every prototype crate on
+# a clean runner and FAILS if any regresses — a bit-rot guard against yanked
+# deps, pre-1.0 churn (jj-lib, kstring), and stable-compiler bumps.
+#
+# The p34-ci-pipeline dir is excluded: it is not a normal single-crate
+# prototype (it holds cross/ and archgate/ sub-crates) and is exercised by
+# ci-prototype.yml instead.
+name: prototypes
+
+on:
+  push:
+    branches: ["claude/specs-progress-n5u27n"]
+    paths:
+      - "prototypes/**"
+      - "!prototypes/p34-ci-pipeline/**"
+      - ".github/workflows/prototypes.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prototypes-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchain
+        run: rustup default stable && rustc -V && cargo -V
+      - name: build + test every prototype (fail if any regresses)
+        run: |
+          # Each cargo compile runs with CWD inside the prototype tree so the
+          # cap-lints=warn exemption (prototypes/.cargo/config.toml) applies;
+          # building via --manifest-path from the root inherits -D warnings.
+          echo "## Prototype build+test" >> "$GITHUB_STEP_SUMMARY"
+          echo "| crate | result | seconds |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|--------|---------|" >> "$GITHUB_STEP_SUMMARY"
+          failed=""
+          total=0
+          for d in prototypes/p*/; do
+            [ -f "$d/Cargo.toml" ] || continue
+            case "$d" in prototypes/p34-ci-pipeline/) continue;; esac
+            name=$(basename "$d")
+            start=$SECONDS
+            if ( cd "$d" && cargo test --quiet ) >/tmp/proto.log 2>&1; then
+              status="ok"
+            else
+              status="FAIL"
+              failed="$failed $name"
+              echo "::group::$name FAILED"; cat /tmp/proto.log; echo "::endgroup::"
+            fi
+            dur=$((SECONDS - start))
+            total=$((total + dur))
+            echo "| $name | $status | $dur |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          echo "| **total** | | **$total** |" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$failed" ]; then
+            echo "prototype regressions:$failed"
+            exit 1
+          fi
+          echo "all prototypes green"
