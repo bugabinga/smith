@@ -41,19 +41,26 @@ jobs:
           echo "create-github-app-token outcome = ${{ steps.token.outcome }}" >> "$GITHUB_STEP_SUMMARY"
           echo "token minted: ${{ steps.token.outputs.token != '' }}" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: run claude-code-action (probe input syntax)
-        id: action
-        continue-on-error: true
-        uses: anthropics/claude-code-action@v1
-        with:
-          github_token: ${{ steps.token.outputs.token }}
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          prompt: |
-            This is a wiring test for the smith agentic workflow. Reply with
-            exactly this line and take no other action:
-            ADW-HARNESS-OK repo=${{ github.repository }}
-          claude_args: --model claude-haiku-4-5-20251001
+      # Finding (run 1): claude-code-action@v1 rejects `push` — it only handles
+      # issue/PR/comment events. So push/schedule/tag-triggered agents (planner,
+      # sweeper, docs-writer, release-manager) need the event-agnostic CLI runner
+      # instead. Probe it here.
+      - name: install claude code CLI
+        run: npm install -g @anthropic-ai/claude-code && claude --version
 
-      - name: action outcome
+      - name: run headless (event-agnostic runner)
+        id: cli
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
-          echo "claude-code-action outcome = ${{ steps.action.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+          set -o pipefail
+          claude -p "Reply with exactly this line and nothing else: ADW-HARNESS-OK repo=${{ github.repository }}" \
+            --model claude-haiku-4-5-20251001 --output-format text 2>&1 | tee cli-out.txt
+          echo "---"
+          grep -q "ADW-HARNESS-OK" cli-out.txt && echo "CLI_RUNNER=ok" || { echo "CLI_RUNNER=fail"; exit 1; }
+
+      - name: cli outcome
+        run: |
+          echo "headless CLI runner outcome = ${{ steps.cli.outcome }}" >> "$GITHUB_STEP_SUMMARY"
