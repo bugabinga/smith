@@ -1,5 +1,11 @@
 # Smith Plugin SDK Documentation Plan
 
+> Non-normative execution plan. `docs/SPEC.md` is canonical; where this file and
+> the spec disagree, the spec wins. The normative pieces already live in SPEC —
+> doc resolution order + `SMITH_DOCS_PATH` (§16), dotted `topic.function`
+> addressing (§10.2), the system-prompt self-learn bootstrap (§6.8). This file
+> is the execution plan for file inventories and tooling only.
+
 ## Goal
 
 Smith must be able to extend itself when prompted by humans.
@@ -280,11 +286,6 @@ xtask/
     ├── verify_docs.rs       -- completeness checks
     └── doc_gen.rs           -- generate man pages + docs bundle
 ```
-
-> Normative pieces of this plan are now canonical in SPEC: doc resolution
-> order + `SMITH_DOCS_PATH` (§16), `smith help <topic>.<function>` dotted
-> addressing (§10.2), system-prompt SDK self-learn bootstrap (§6.8). This
-> file remains the execution plan for file inventories and tooling.
 
 ## TODO
 
