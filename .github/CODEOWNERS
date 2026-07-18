@@ -1,0 +1,9 @@
+# Touchpoint 1, mechanically enforced: the spec and the invariants are the
+# owner's domain. Any PR touching them requires @bugabinga's review — no agent
+# merges a change here. The ADW's own encoded config is protected the same way,
+# so agents can't quietly rewrite their own rules.
+docs/SPEC.md                    @bugabinga
+docs/PROJECT-INVARIANTS.md      @bugabinga
+.claude/agents/                 @bugabinga
+.github/workflows/              @bugabinga
+.github/CODEOWNERS              @bugabinga

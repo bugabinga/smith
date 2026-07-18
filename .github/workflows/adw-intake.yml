@@ -1,0 +1,42 @@
+# ADW intake — the first live agent workflow: herald triages every new issue.
+# The entry point of the cycle, and the cheapest to trust first (it only labels
+# and routes, never writes code). Other stages (build, review) follow the same
+# shape once this one is trusted.
+#
+# Identity: runs as the `agent-smith-bugabinga-adc` GitHub App, not the default
+# GITHUB_TOKEN, so herald's label/route actions cascade into the next stage and
+# every action is attributable to the bot. Requires repo secrets APP_ID and
+# APP_PRIVATE_KEY (App settings → private key). Confirm the claude-code-action
+# input names against its repo before relying on this.
+name: adw-intake
+
+on:
+  issues:
+    types: [opened, reopened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  herald:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: mint the bot token
+        id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - name: herald triages the issue
+        uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Use the herald subagent to triage issue #${{ github.event.issue.number }}
+            in ${{ github.repository }}. Follow .claude/agents/herald.md exactly:
+            classify, size, anchor to the spec, gate readiness, and route. Do not
+            write code or open a PR.
+          claude_args: --model claude-haiku-4-5-20251001

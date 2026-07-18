@@ -1,0 +1,59 @@
+# Routing labels as code — the ADW's control plane. Agents read and set these;
+# a label-sync action applies this file so the label set is reviewable, not
+# hand-tended in the GitHub UI. Colours group by axis (type / size / state / risk).
+# name, color (no #), description.
+
+# — type (herald classifies) —
+- name: "type:bug"
+  color: "d1345b"
+  description: "Something specced is broken"
+- name: "type:task"
+  color: "3f6fd1"
+  description: "New work toward the spec"
+- name: "type:question"
+  color: "8a6fd1"
+  description: "Needs clarification before it is work"
+
+# — size (herald sizes) —
+- name: "size:s"
+  color: "2b2d42"
+  description: "Small, a single slice"
+- name: "size:m"
+  color: "2b2d42"
+  description: "Medium"
+- name: "size:l"
+  color: "2b2d42"
+  description: "Large — likely needs decomposition first"
+
+# — state (drives routing) —
+- name: "ready"
+  color: "1f9d55"
+  description: "Well-formed and spec-covered — journeyman may pick it up"
+- name: "needs:info"
+  color: "c9a227"
+  description: "Blocked on a specific answer from the reporter"
+- name: "needs:spec"
+  color: "b5179e"
+  description: "Requires a spec change — owner's domain, via /smith"
+- name: "needs:prototype"
+  color: "e07a1f"
+  description: "Spec claim unproven — route to /pioneer"
+- name: "needs:security"
+  color: "7a1fa2"
+  description: "Force a sentinel security review"
+
+# — risk (sentinel sets; gates human review) —
+- name: "risk:low"
+  color: "3d7a3d"
+  description: "Eligible for gated auto-merge once trust is on"
+- name: "risk:high"
+  color: "9b1c1c"
+  description: "Escalated to the owner — never auto-merges"
+
+# — housekeeping —
+- name: "duplicate"
+  color: "6b7280"
+  description: "Already tracked elsewhere"
+- name: "stalled"
+  color: "6b7280"
+  description: "Gardener flagged no progress — see the comment for why"
