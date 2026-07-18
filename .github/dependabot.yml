@@ -1,11 +1,31 @@
-# To get started with Dependabot version updates, you'll need to specify which
-# package ecosystems to update and where the package manifests are located.
-# Please see the documentation for all configuration options:
-# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
-
+# Dependency automation. Per PROJECT-INVARIANTS §5, a version bump is
+# maintenance (the dependency-manager shepherds these through the gates); adding
+# a crate stays a spec decision and escalates to the owner.
+#
+# Two ecosystems:
+# - github-actions is live now — it is the only manifest that exists yet (the
+#   workflows pin actions like checkout and create-github-app-token).
+# - cargo is pre-wired (owner-added); it starts producing bumps once the
+#   production workspace root Cargo.toml lands. Prototypes are disposable
+#   evidence (SPEC §18) and are deliberately not tracked here.
+# Both label their PRs `type:task` so adw-deps routes them to the
+# dependency-manager.
 version: 2
 updates:
-  - package-ecosystem: "cargo" # See documentation for possible values
-    directory: "/" # Location of package manifests
+  - package-ecosystem: "github-actions"
+    directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      actions:
+        patterns: ["*"]
+    labels: ["type:task"]
+
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      rust:
+        patterns: ["*"]
+    labels: ["type:task"]

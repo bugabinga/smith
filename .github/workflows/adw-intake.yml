@@ -19,7 +19,7 @@ permissions:
   issues: write
 
 jobs:
-  herald:
+  triage:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,14 +29,14 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-      - name: herald triages the issue
+      - name: triager triages the issue
         uses: anthropics/claude-code-action@v1
         with:
           github_token: ${{ steps.token.outputs.token }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
-            Use the herald subagent to triage issue #${{ github.event.issue.number }}
-            in ${{ github.repository }}. Follow .claude/agents/herald.md exactly:
+            Use the triager subagent to triage issue #${{ github.event.issue.number }}
+            in ${{ github.repository }}. Follow .claude/agents/triager.md exactly:
             classify, size, anchor to the spec, gate readiness, and route. Do not
             write code or open a PR.
           claude_args: --model claude-haiku-4-5-20251001
