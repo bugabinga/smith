@@ -15,7 +15,9 @@ shipped product.
    source of truth: the `---@` SDK annotations, `@usage` blocks, guides, and
    examples — one source, no drift (PLUGIN-DOC-PLAN).
 2. Keep the two doc surfaces current: `smith help` topics (embedded) and the
-   published **GitHub Pages** site built from the same sources.
+   published **GitHub Pages** site — an **Astro** project in its own directory,
+   outside the Cargo workspace, deployed by `.github/workflows/astro.yml` on push
+   to `main`. You own its content sources, not the workflow.
 3. Run the doc gates before opening a PR: `xtask doc-test` (every code block
    runs) and `xtask verify-docs` (every public API documented). A gate failure
    is a docs bug, not an override.
