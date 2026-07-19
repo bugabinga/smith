@@ -338,19 +338,23 @@ so the spec can focus on Smith's artifacts.)
   canonical and load-bearing.
 - **Integration is by pull request.** Every change lands through a PR — the ADW
   spine. Direct pushes to `main` are reserved for the owner (the spec touchpoint).
-- **Preserve per-commit history — merge by rebase.** One commit, one decision
-  (CLAUDE.md, "Writing commits and PRs"). PRs integrate with **rebase-merge**,
-  which keeps history linear *and* keeps every commit meaningful for `bisect` and
-  `blame`. **Squash-merge is forbidden** — it destroys the per-decision commits
-  the message discipline exists to produce. Merge commits are avoided; enforce
-  this by allowing only rebase-merge in the repo's merge-method settings.
+- **One PR, one commit — merge by squash.** One issue → one PR → one decision, so
+  a squash lands exactly **one commit per decision** on `main`: history stays
+  linear and every commit is still meaningful for `bisect` and `blame`. This
+  reverses the earlier rebase-only rule for a hard reason: **GitHub cannot sign a
+  rebase-merge** (it re-parents each commit, invalidating any signature, and won't
+  re-sign), so *rebase-merge + required signed commits is impossible*. GitHub
+  **does** sign the single commit it creates on a **squash**, so squash is the only
+  method that satisfies signed-commits *and* linear history at once. Merge commits
+  stay disallowed (they break linearity). Enforce by allowing only squash-merge in
+  the repo's merge-method settings.
 - **Commits on `main` are signed.** Every commit that lands on `main` must be
-  **Verified**. Agents commit through GitHub's API under the App installation
-  token (`use_commit_signing`), which signs automatically; owner edits from the
-  GitHub web UI are auto-signed; GitHub signs the rebase-merge commits it creates.
-  Enforced by the `main` branch ruleset (`.github/rulesets/main.json`, *Require
-  signed commits*). A local unsigned commit (bare git/`jj` without a signing key)
-  is rejected on `main` — sign it or route it through the web UI.
+  **Verified**. GitHub signs the squash commit it creates on merge, so a PR merges
+  Verified regardless of whether its branch commits were signed. Agents also sign
+  at creation via `use_commit_signing` (branch commits show Verified too); owner
+  edits made through the GitHub **website** are auto-signed. Enforced by the `main`
+  branch ruleset (`.github/rulesets/main.json`, *Require signed commits*). Caveat:
+  the GitHub **mobile app does not sign** — commit from a browser, not the app.
 - **Commit messages:** plain imperative subject naming the decision or its
   effect; no required type prefix; argue *why*, not *what*; no AI attribution.
 - **Branch naming:** `feature/description`, `fix/description`, or the ADW's
@@ -519,6 +523,7 @@ Rules:
 
 | Date | Change | Author |
 |------|--------|--------|
+| 2026-07-19 | §7 switch rebase→squash merge: rebase-merge can't be signed, so squash is the only method that satisfies signed-commits + linear history; one-PR-one-decision keeps squash = one-commit-per-decision (user-directed) | smith-spec |
 | 2026-07-18 | §1 scope note: Astro site exempt from the package.json ban, confined to `site/`; book stays mdBook (cargo-native) (user-directed) | smith-spec |
 | 2026-07-18 | §7 require signed commits on `main`, enforced by the branch ruleset (unlocked by going public) (user-approved) | smith-spec |
 | 2026-07-18 | §7 reconciled to git/GitHub reality (rebase-merge, squash forbidden, jj optional); §1 CI-as-orchestration note; §2 plans tree + ADW-encoding note; §5 ADW config protected; §8a release-lifecycle pointer (user-directed audit) | smith-spec |
