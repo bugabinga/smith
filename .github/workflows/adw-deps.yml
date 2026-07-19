@@ -1,0 +1,43 @@
+# ADW deps — dependency-manager shepherds Dependabot bump PRs through the gates.
+# A PR agent → claude-code-action, gated to Dependabot-authored PRs. A bump is
+# maintenance; a semver-incompatible / MSRV-raising / budget-tripping bump
+# escalates like a new dependency (PROJECT-INVARIANTS §5).
+# Needs secrets APP_ID, APP_PRIVATE_KEY, CLAUDE_CODE_OAUTH_TOKEN.
+name: adw-deps
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: adw-deps-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  deps:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_commit_signing: true
+          prompt: |
+            Use the dependency-manager subagent to handle Dependabot PR
+            #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+            Follow .claude/agents/dependency-manager.md: pass it through the
+            gates; a clean semver-compatible bump is merge-eligible; a
+            semver-incompatible / MSRV-raising / budget-tripping bump escalates
+            with an issue for the owner. Never add a crate.
+          claude_args: --model claude-sonnet-5

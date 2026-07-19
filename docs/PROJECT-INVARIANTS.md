@@ -15,10 +15,24 @@ These invariants govern the smith codebase. They are non-negotiable rules that e
 
 **xtask boundary:** Any task not handled natively by cargo lives in the `xtask/` workspace crate. xtask is the single extension point for custom automation.
 
+**CI is orchestration, not a second build system.** The agentic workflow's
+GitHub Actions are permitted, but each workflow stays thin and delegates to
+`cargo` / `cargo run -p xtask -- <cmd>` — no business logic in YAML or inline
+shell, the same rule that binds xtask (§4). Workflows *call* the build system;
+they never become one.
+
 **Prohibited:**
 - Makefile, justfile, package.json, build.sh
 - Shell scripts in repo root or scripts/
 - Any build step that requires tools not installable via `cargo install`, with two named exceptions: pinned nightly rustup components required by the `cargo-pup` architecture gate, and the `zig` toolchain required by `cargo-zigbuild` for release cross-builds (§8a)
+
+**Scope:** this invariant governs the **Rust workspace** — the app, its crates,
+and their build. The published **web site** is a separate artifact and is exempt,
+narrowly: the Astro site may carry its own `package.json` and Node build **confined
+to `site/`** (never the workspace root), built by `.github/workflows/pages.yml`.
+The **book** stays inside the rule — it is mdBook, which is `cargo install`-able —
+so this exemption is for the site alone. No Node toolchain, lockfile, or
+`package.json` may appear at the repo root or inside any crate.
 
 ## 2. Directory Separation: Code vs. Project Management
 
@@ -46,9 +60,12 @@ docs/                           # ← project management (spec, research)
 │   ├── TESTING-STRATEGY-RESEARCH.md
 │   ├── CI-PATTERNS-RESEARCH.md
 │   └── CRATE-ECOSYSTEM-RESEARCH.md
-├── plans/                      # task breakdowns, documentation plans
-│   ├── TASK-BREAKDOWN.md
-│   └── PLUGIN-DOC-PLAN.md
+├── plans/                      # execution plans (non-normative)
+│   ├── README.md               #   plans index + coverage
+│   ├── WALKING-SKELETON.md      #   first vertical slice — implementation entry
+│   ├── TASK-BREAKDOWN.md        #   crate build order
+│   ├── PLUGIN-DOC-PLAN.md       #   doc-SDK tooling
+│   └── AGENTIC-DEVELOPMENT.md   #   the "how to build" spec (agentic workflow)
 └── PROJECT-INVARIANTS.md       # this file
 
 prototypes/                     # ← disposable spec-validation prototypes
@@ -58,6 +75,11 @@ prototypes/                     # ← disposable spec-validation prototypes
 
 Former `docs/design/` subsystem docs were fully absorbed into `docs/SPEC.md`
 and deleted (2026-07-15; see git history).
+
+The agentic workflow is encoded **outside** `docs/` — in `.github/` (workflows,
+`CODEOWNERS`, `labels.yml`, `dependabot.yml`) and `.claude/` (agents, settings,
+skills). That is configuration that *runs*, not code or spec, so it lives with
+neither; the plan that describes it is `docs/plans/AGENTIC-DEVELOPMENT.md`.
 
 **Rule:** Code review gates on `src/`, `Cargo.toml`, `tests/`. Project management review gates on `docs/`. No code in `docs/`, no specs in `src/`.
 
@@ -254,6 +276,9 @@ xtask commands must be thin orchestrators. They delegate to cargo, nextest, clip
 Files that coding agents MUST NOT modify without explicit user approval:
 - `docs/PROJECT-INVARIANTS.md`
 - `docs/SPEC.md` (source of truth — agents read, don't edit without approval)
+- `docs/plans/AGENTIC-DEVELOPMENT.md` (the "how to build" spec)
+- `.github/workflows/`, `.github/CODEOWNERS`, `.claude/agents/` (the agentic
+  workflow's own config — agents must not rewrite the rules they run under)
 - `Cargo.toml` workspace root
 - adding or removing a crate in any `Cargo.toml` `[dependencies]` (version
   bumps are maintenance — see the dependency rule below)
@@ -284,6 +309,20 @@ Files that coding agents SHOULD read before modifying:
 - `docs/SPEC.md` (the canonical spec)
 - `CLAUDE.md` (project overview)
 
+### Integrity rules (absolute)
+
+Binding on every agent, tool, and automation, with no gated exception — these
+protect the meaning of a green build:
+- never modify CI configuration to make a failing run pass,
+- never modify, delete, or skip a test to get green,
+- never merge on a red or bypassed gate.
+
+The *merge policy* — when an agent may merge a green PR versus defer to a
+human — is process, not integrity: it lives in
+`docs/plans/AGENTIC-DEVELOPMENT.md`, not here. (The former SPEC §17.10 rules
+moved here; its blanket "never auto-merge" became the gated policy in that plan,
+so the spec can focus on Smith's artifacts.)
+
 ## 6. Spec-Code Relationship
 
 1. **Spec before code.** No `.rs` changes without corresponding `docs/SPEC.md` coverage (or documented exception).
@@ -293,10 +332,32 @@ Files that coding agents SHOULD read before modifying:
 
 ## 7. Version Control
 
-- **VCS:** jj (Jujutsu) — modern DVCS with git compatibility.
-- **No merge commits:** Use `jj squash` or `jj rebase` for linear history.
-- **Commit messages:** Plain imperative subject naming the decision or its effect; no required type prefix. Messages argue *why*, not *what* — see CLAUDE.md "Writing commits and PRs". No AI attribution trailers.
-- **Branch naming:** Not applicable with jj (bookmarks), but if using git: `feature/description`, `fix/description`.
+- **VCS:** the repository is **git**, hosted on GitHub — the substrate the
+  agentic workflow (`docs/plans/AGENTIC-DEVELOPMENT.md`) runs on. `jj` (Jujutsu)
+  is git-compatible and may be used locally by anyone who prefers it, but git is
+  canonical and load-bearing.
+- **Integration is by pull request.** Every change lands through a PR — the ADW
+  spine. Direct pushes to `main` are reserved for the owner (the spec touchpoint).
+- **Preserve per-commit history — merge by rebase.** One commit, one decision
+  (CLAUDE.md, "Writing commits and PRs"). PRs integrate with **rebase-merge**,
+  which keeps history linear *and* keeps every commit meaningful for `bisect` and
+  `blame`. **Squash-merge is forbidden** — it destroys the per-decision commits
+  the message discipline exists to produce. Merge commits are avoided; enforce
+  this by allowing only rebase-merge in the repo's merge-method settings.
+- **Commits on `main` are signed.** Every commit that lands on `main` must be
+  **Verified**. Agents commit through GitHub's API under the App installation
+  token (`use_commit_signing`), which signs automatically; owner edits from the
+  GitHub web UI are auto-signed; GitHub signs the rebase-merge commits it creates.
+  Enforced by the `main` branch ruleset (`.github/rulesets/main.json`, *Require
+  signed commits*). A local unsigned commit (bare git/`jj` without a signing key)
+  is rejected on `main` — sign it or route it through the web UI.
+- **Commit messages:** plain imperative subject naming the decision or its
+  effect; no required type prefix; argue *why*, not *what*; no AI attribution.
+- **Branch naming:** `feature/description`, `fix/description`, or the ADW's
+  `claude/...` working branches.
+
+The merge *policy* — which agent may merge a green PR versus defer to the owner —
+is process, and lives in `docs/plans/AGENTIC-DEVELOPMENT.md`, not here.
 
 ## 8. Performance Invariants
 
@@ -354,7 +415,9 @@ No debug info in release builds. Debug symbols are produced only by the default 
 
 No CI-driven *release* automation yet: no automated distribution, no code
 signing — these are deferred. The test/lint/coverage CI gates themselves
-(SPEC §17.10) exist and are required.
+(SPEC §17.10) exist and are required. The agentic release lifecycle
+(`release-manager` + a tag-triggered workflow, GitHub Releases not Packages) is
+specified in `docs/plans/AGENTIC-DEVELOPMENT.md` but not yet built.
 
 See `docs/research/RELEASE-BUILD-RESEARCH.md` for cross-platform build tooling analysis.
 
@@ -456,6 +519,9 @@ Rules:
 
 | Date | Change | Author |
 |------|--------|--------|
+| 2026-07-18 | §1 scope note: Astro site exempt from the package.json ban, confined to `site/`; book stays mdBook (cargo-native) (user-directed) | smith-spec |
+| 2026-07-18 | §7 require signed commits on `main`, enforced by the branch ruleset (unlocked by going public) (user-approved) | smith-spec |
+| 2026-07-18 | §7 reconciled to git/GitHub reality (rebase-merge, squash forbidden, jj optional); §1 CI-as-orchestration note; §2 plans tree + ADW-encoding note; §5 ADW config protected; §8a release-lifecycle pointer (user-directed audit) | smith-spec |
 | 2026-07-16 | §7 drop Conventional Commits mandate; commit/PR style moves to CLAUDE.md; no AI attribution (user-approved) | smith-spec |
 | 2026-07-16 | AGENTS.md files renamed to CLAUDE.md repo-wide; references updated (user-directed) | smith-spec |
 | 2026-07-15 | §8a CI wording scoped to release automation; §4 fetch-providers source models.dev; §1 zig/cargo-zigbuild exception (user-approved) | smith-spec |

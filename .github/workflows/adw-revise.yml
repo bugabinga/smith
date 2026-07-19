@@ -1,0 +1,55 @@
+# ADW revise — closes the review→revise loop. builder and reviewer are one App
+# identity, and GitHub forbids submitting a formal review on your own PR, so the
+# reviewer signals "changes wanted" with the `changes-requested` LABEL, not a
+# review. This wakes builder on that label (and also on the owner's formal
+# changes-requested review, since the owner is a different identity).
+# Loop-safe: builder removes the label to acknowledge, then pushes; a push emits
+# `synchronize` (re-runs adw-review), never a label/review event, so no self-loop.
+# A reviewer never satisfied is braked by the sweeper (`stalled`).
+name: adw-revise
+
+on:
+  pull_request:
+    types: [labeled]
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: adw-revise-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  revise:
+    if: >-
+      github.event.pull_request.user.type == 'Bot' &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      (
+        (github.event_name == 'pull_request' && github.event.label.name == 'changes-requested') ||
+        (github.event_name == 'pull_request_review' && github.event.review.state == 'changes_requested')
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_commit_signing: true
+          prompt: |
+            Use the builder subagent to revise PR
+            #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+            A reviewer requested changes. First remove the `changes-requested`
+            label to acknowledge. Then read the review comments and the linked
+            issue, address every finding on the SAME branch (never open a new PR),
+            keep `cargo run -p xtask -- check` green, and push. The reviewers
+            re-run automatically on your push; do not merge.
+          claude_args: --model claude-sonnet-5

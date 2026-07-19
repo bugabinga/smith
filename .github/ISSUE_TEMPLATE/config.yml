@@ -1,0 +1,3 @@
+# Keep quick, blank issues available — the triager labels and routes whatever
+# comes in, so a template is a convenience, not a gate.
+blank_issues_enabled: true

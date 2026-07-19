@@ -1,0 +1,50 @@
+# ADW survey — surveyor advances the build on its own, without an owner filing
+# an issue. On a schedule it measures the gap between the spec (the goal) and the
+# code (what exists) and opens the single next work-order.
+# schedule is an automation event the action serves directly (unlike push), so
+# no CLI: claude-code-action in automation mode with an explicit prompt.
+# Subscription auth (CLAUDE_CODE_OAUTH_TOKEN) — no metered API.
+name: adw-survey
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"        # every six hours
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: adw-survey
+  cancel-in-progress: true
+
+jobs:
+  survey:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Use the surveyor subagent (.claude/agents/surveyor.md) on
+            ${{ github.repository }}. First check work-in-progress: if any open
+            `ready` issue exists, or more than one open agent PR, do nothing and
+            stop — the front is busy. Otherwise survey the gap between
+            docs/SPEC.md (the goal) and the code, in the order set by
+            docs/plans/WALKING-SKELETON.md then TASK-BREAKDOWN.md, and open ONE
+            `ready` work-order for the next unbuilt slice that has no tracking
+            issue — one deliverable, its SPEC anchor, acceptance in the spec's own
+            terms. If the next slice needs a spec decision, open it `needs:spec`
+            (owner, not ready); if it rests on an unproven spec claim, open it
+            `needs:prototype`. One issue per tick, or none. Never edit the spec,
+            never write code.
+          claude_args: --model claude-opus-4-8

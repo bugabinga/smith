@@ -1,0 +1,73 @@
+# ADW alerts — triage security findings that arrive OUTSIDE a PR: Dependabot
+# alerts and code-scanning (DevSkim/CodeQL) alerts from scheduled scans. adw-review
+# only covers alerts present while a PR is open; this closes the gap the roster
+# always claimed security-reviewer owned but nothing wired.
+#
+# The alert events are automation-only (the action rejects them like `push`), so
+# they relay to a workflow_dispatch — the event the action serves. A daily
+# schedule is the backstop so nothing lingers even if an event is missed.
+#
+# Needs the App to be granted "Dependabot alerts: read" and "Code scanning
+# alerts: read" (owner, #14) — without them the gh queries error (that error is
+# the evidence, same as p35).
+name: adw-alerts
+
+on:
+  dependabot_alert:
+    types: [created, reopened, reintroduced]
+  code_scanning_alert:
+    types: [created, reopened, appeared_in_branch]
+  schedule:
+    - cron: "41 6 * * *"        # daily backstop
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+  security-events: read
+
+concurrency:
+  group: adw-alerts
+  cancel-in-progress: true
+
+jobs:
+  # alert events can't run the action, so hand off to the automation event.
+  relay:
+    if: github.event_name == 'dependabot_alert' || github.event_name == 'code_scanning_alert'
+    runs-on: ubuntu-latest
+    steps:
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: gh workflow run adw-alerts.yml -R ${{ github.repository }}
+
+  triage:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Use the security-reviewer subagent on ${{ github.repository }} to sweep
+            open security alerts that no PR is covering. Read Dependabot alerts
+            (`gh api /repos/${{ github.repository }}/dependabot/alerts?state=open`)
+            and code-scanning alerts
+            (`gh api /repos/${{ github.repository }}/code-scanning/alerts?state=open`).
+            For each unresolved high/critical with no existing tracking issue, open
+            ONE escalation issue labeled `needs:security` (and `risk:high`) for the
+            owner. Alerts originating only from `prototypes/` are disposable
+            evidence (SPEC §18) — note them as low priority, do not escalate. Never
+            edit code.
+          claude_args: --model claude-opus-4-8

@@ -1,0 +1,82 @@
+# GitHub Pages — the two web artifacts, one deployment (Pages allows only one
+# site per repo, so they must ship together):
+#   - the SITE  → Astro (Node) under site/          → published at /
+#   - the BOOK  → mdBook (cargo-native) under docs/book/ → published at /book
+#
+# §1 note: Cargo stays the sole build system for the Rust workspace. The Astro
+# site is a separate web artifact confined to site/ (its own package.json, never
+# the workspace root), which §1 exempts by name; the book uses mdBook, which is
+# `cargo install`-able and needs no exemption.
+#
+# Dormant-safe: each half builds only if its manifest exists, and deploy is
+# skipped entirely until at least one is scaffolded, so main stays green.
+name: pages
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.assemble.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: detect
+        run: |
+          if [ -f site/package.json ]; then echo "site=true" >> "$GITHUB_OUTPUT"; else echo "site=false" >> "$GITHUB_OUTPUT"; fi
+          if [ -f docs/book/book.toml ]; then echo "book=true" >> "$GITHUB_OUTPUT"; else echo "book=false" >> "$GITHUB_OUTPUT"; fi
+      - if: steps.detect.outputs.site == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - if: steps.detect.outputs.site == 'true'
+        name: Build the site (Astro)
+        working-directory: site
+        run: |
+          npm ci
+          npx astro build --base "/"
+      - if: steps.detect.outputs.book == 'true'
+        name: Build the book (mdBook)
+        run: |
+          cargo install mdbook --locked
+          mdbook build docs/book
+      - id: assemble
+        name: Assemble the Pages tree
+        run: |
+          publish=false
+          rm -rf _site && mkdir -p _site
+          if [ "${{ steps.detect.outputs.site }}" = "true" ]; then cp -r site/dist/. _site/; publish=true; fi
+          if [ "${{ steps.detect.outputs.book }}" = "true" ]; then mkdir -p _site/book && cp -r docs/book/book/. _site/book/; publish=true; fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          if [ "$publish" = "false" ]; then echo "::notice::neither site/ nor docs/book/ scaffolded yet — skipping deploy."; fi
+      - if: steps.assemble.outputs.publish == 'true'
+        uses: actions/configure-pages@v5
+      - if: steps.assemble.outputs.publish == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.publish == 'true'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

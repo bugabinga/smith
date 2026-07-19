@@ -1,0 +1,47 @@
+# ADW docs — when a merged PR touches product code, wake docs-writer to keep the
+# user docs, SDK annotations, and site true to it. paths-ignore skips doc-only,
+# site-only, prototype, and config merges — which also breaks the loop: a
+# docs-writer PR that only edits docs/ merges without re-triggering this workflow.
+name: adw-docs
+
+on:
+  pull_request:
+    types: [closed]
+    paths-ignore:
+      - "docs/**"
+      - "site/**"
+      - "prototypes/**"
+      - ".github/**"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: adw-docs-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  docs:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_commit_signing: true
+          prompt: |
+            Use the docs-writer subagent on ${{ github.repository }}. Merged PR
+            #${{ github.event.pull_request.number }} changed product code. Read its
+            diff: if it changed user-facing behavior or the Lua SDK, update the
+            docs to match (SDK `---@` annotations, guides, `smith help` topics, and
+            the site/book sources) and open a PR. If nothing user-facing changed,
+            do nothing. Never invent undocumented behavior; never edit docs/SPEC.md.
+          claude_args: --model claude-sonnet-5

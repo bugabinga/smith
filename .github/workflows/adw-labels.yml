@@ -1,0 +1,25 @@
+# Labels as code — apply .github/labels.yml to the repo so the routing
+# control-plane is reviewed in PRs, not hand-tended in the UI. Runs on merge to
+# main when the label file changes, and on demand. Uses GITHUB_TOKEN (label sync
+# doesn't need to cascade into other workflows).
+name: adw-labels
+
+on:
+  push:
+    branches: ["main"]
+    paths: [".github/labels.yml"]
+  workflow_dispatch: {}
+
+permissions:
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: sync labels from .github/labels.yml
+        uses: crazy-max/ghaction-github-labeler@v5
+        with:
+          yaml-file: .github/labels.yml
+          skip-delete: true

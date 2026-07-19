@@ -1,0 +1,87 @@
+# ADW review — reviewer (correctness) and security-reviewer (security) run on
+# every PR, in parallel. Both are issue/PR agents → claude-code-action. Verdicts
+# only; neither merges. reviewer runs on a different model than the builder on
+# purpose. Each posts its verdict as a label (`reviewed` / `security-cleared` /
+# `risk:high`) that the merge-gate reads. Needs secrets APP_ID, APP_PRIVATE_KEY,
+# CLAUDE_CODE_OAUTH_TOKEN.
+#
+# The `reset` job strips stale verdict labels first, so a new push can never
+# inherit a prior review's `reviewed`/`security-cleared` and auto-merge unreviewed
+# code — the reviewers must re-earn them on the current head.
+name: adw-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: adw-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Strip stale verdict labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          for l in reviewed security-cleared changes-requested; do
+            gh pr edit "$PR" --repo "$REPO" --remove-label "$l" 2>/dev/null || true
+          done
+
+  reviewer:
+    needs: reset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Use the reviewer subagent to review PR
+            #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+            Follow .claude/agents/reviewer.md: adversarial correctness review vs
+            the spec, craft lenses, a file-anchored verdict. Do not merge.
+            Verdict as a label (you are the same identity as the author, so you
+            cannot submit a formal review — use labels + comments): on approve, add
+            `reviewed` and remove `changes-requested`; on request-changes, add
+            `changes-requested` (this wakes builder to revise) and remove
+            `reviewed`. Leave your findings as comments either way.
+          claude_args: --model claude-opus-4-8
+
+  security-reviewer:
+    needs: reset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Use the security-reviewer subagent to review PR
+            #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+            Follow .claude/agents/security-reviewer.md: sandbox, secrets, unsafe,
+            injection, supply chain; set risk:high and escalate on high severity.
+            Verdict as a label (the merge-gate reads it): if nothing high-severity,
+            add `security-cleared`; on a high finding, add `risk:high` and ensure
+            `security-cleared` is absent, holding the merge for the owner.
+          claude_args: --model claude-opus-4-8

@@ -1,0 +1,44 @@
+# ADW build — builder implements an issue once it is labeled `ready`.
+# issue/PR agent → claude-code-action (which handles `issues` events; the CLI
+# path is only needed for push/schedule/tag, see p35). Runs as the App so its PR
+# cascades into review. Phase 1 posture: opens a PR, never merges.
+# Commits are signed via the App token (use_commit_signing) so they land Verified.
+# Needs secrets APP_ID, APP_PRIVATE_KEY, CLAUDE_CODE_OAUTH_TOKEN.
+name: adw-build
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: adw-build-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.event.label.name == 'ready'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_commit_signing: true
+          prompt: |
+            Use the builder subagent to implement issue
+            #${{ github.event.issue.number }} in ${{ github.repository }}.
+            Follow .claude/agents/builder.md exactly: one slice per
+            WALKING-SKELETON, tests, self-harden with /sabotnik and /handmade,
+            open a PR that closes the issue. Do not merge.
+          claude_args: --model claude-sonnet-5

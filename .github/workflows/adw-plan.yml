@@ -1,0 +1,62 @@
+# ADW plan — planner turns a merged spec change into tracked work-orders.
+# The trigger is a push to main touching the spec, but the action can't serve
+# `push`, so this is two thin pieces: a plain (no-Claude) watcher that dispatches
+# the planner as a `workflow_dispatch` — an automation event the action does
+# serve. Subscription auth; no CLI, no metered API.
+name: adw-plan
+
+on:
+  push:
+    branches: ["main"]
+    paths: ["docs/SPEC.md"]
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: "commit to diff docs/SPEC.md against (previous main)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  # push can't run the action, so it just hands off to the automation event.
+  dispatch:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: gh workflow run adw-plan.yml -R ${{ github.repository }} -f base_sha=${{ github.event.before }}
+
+  plan:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_commit_signing: true
+          prompt: |
+            Use the planner subagent (.claude/agents/planner.md) on
+            ${{ github.repository }}. Diff docs/SPEC.md against
+            ${{ github.event.inputs.base_sha }} (its previous state on main); for
+            each newly-specced or materially-changed surface with no tracking
+            issue, open one work-order issue and refresh docs/plans/*. Do not edit
+            the spec.
+          claude_args: --model claude-opus-4-8
