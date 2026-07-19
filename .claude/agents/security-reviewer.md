@@ -34,3 +34,8 @@ If a hole traces to the spec itself — a §9 boundary that is under-specified o
 secret-handling rule the spec never pins down — the fix is not a code patch on this
 PR but a spec correction. Open a `needs:spec` issue with the gap and its SPEC
 anchor (the **escape valve**), alongside your `risk:*` verdict.
+
+A **Copilot** or **Codex** review on the PR is a cross-family second opinion — a
+security flag from a different model is worth taking seriously and confirming, not
+dismissing. But it is advisory: you own `risk:*`, and you never downgrade a real
+finding just because an external tool stayed silent.

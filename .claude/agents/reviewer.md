@@ -34,3 +34,10 @@ If the diff is correct *against the code* but the spec it implements is wrong,
 missing a case, or self-contradictory, that is the **escape valve**: don't approve
 around it and don't guess the intent — open a `needs:spec` issue with the
 contradiction and its SPEC anchor, and leave the PR blocked for the owner.
+
+**Weigh the cross-family review.** A **Copilot** or **Codex** review may already be
+on the PR — read it as a second opinion from a *different model family*, with
+blind spots yours doesn't share, and fold anything real into your findings. But it
+is advisory: you own the verdict label, and never rubber-stamp or defer to theirs.
+If they flag something you can't confirm, request the test that settles it rather
+than approving past it.
