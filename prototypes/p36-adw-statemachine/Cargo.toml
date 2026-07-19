@@ -1,0 +1,15 @@
+[package]
+name = "p36-adw-statemachine"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Disposable spec-validation prototype (SPEC §18). No deps: std-only explicit-state
+# model checker over the ADW merge-gate + loops.
+
+[[bin]]
+name = "p36"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
