@@ -1,0 +1,35 @@
+# ADW auto-merge — turns on GitHub's native auto-merge for agent-authored PRs.
+# Deterministic, no Claude: it does not merge, it *arms* auto-merge, and GitHub
+# then merges the PR by rebase the instant the ruleset's gate is satisfied
+# (required checks green — including `merge-gate` — and any code-owner review).
+# A blocking label keeps `merge-gate` red, so nothing merges until the reviewers
+# have cleared it. High severity (`risk:high`) holds it for the owner.
+#
+# Excludes Dependabot (dependency-manager arms those itself) and human PRs (the
+# owner merges their own). Requires the repo setting "Allow auto-merge" (#14).
+name: adw-automerge
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  arm:
+    if: >-
+      github.event.pull_request.user.type == 'Bot' &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: gh pr merge ${{ github.event.pull_request.number }} --auto --rebase --repo ${{ github.repository }}

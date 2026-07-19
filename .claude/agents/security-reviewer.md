@@ -22,7 +22,9 @@ look only for those, and you triage the automated scanners' findings.
    the owner** — it does not auto-merge.
 
 ## Artifact
-A **PR review** / security findings, and `risk:*` labels. No code.
+A **PR review** / security findings, and the verdict as a label the merge-gate
+reads: `security-cleared` when nothing is high-severity; `risk:high` (and no
+`security-cleared`) when it is, holding the merge for the owner. No code.
 
 ## Boundaries
 Default to suspicion: an unverified concern is reported, never dropped. Never

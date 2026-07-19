@@ -1,7 +1,9 @@
 # ADW review — reviewer (correctness) and security-reviewer (security) run on
 # every PR, in parallel. Both are issue/PR agents → claude-code-action. Verdicts
 # only; neither merges. reviewer runs on a different model than the builder on
-# purpose. Needs secrets APP_ID, APP_PRIVATE_KEY, ANTHROPIC_API_KEY.
+# purpose. Each posts its verdict as a label (`reviewed` / `security-cleared` /
+# `risk:high`) that the merge-gate reads. Needs secrets APP_ID, APP_PRIVATE_KEY,
+# CLAUDE_CODE_OAUTH_TOKEN.
 name: adw-review
 
 on:
@@ -35,6 +37,9 @@ jobs:
             #${{ github.event.pull_request.number }} in ${{ github.repository }}.
             Follow .claude/agents/reviewer.md: adversarial correctness review vs
             the spec, craft lenses, a file-anchored verdict. Do not merge.
+            Verdict as a label (the merge-gate reads it): on approve, add the
+            `reviewed` label; on request-changes, ensure `reviewed` is absent
+            (remove it if present) so the gate stays red until the next revision.
           claude_args: --model claude-opus-4-8
 
   security-reviewer:
@@ -55,4 +60,7 @@ jobs:
             #${{ github.event.pull_request.number }} in ${{ github.repository }}.
             Follow .claude/agents/security-reviewer.md: sandbox, secrets, unsafe,
             injection, supply chain; set risk:high and escalate on high severity.
+            Verdict as a label (the merge-gate reads it): if nothing high-severity,
+            add `security-cleared`; on a high finding, add `risk:high` and ensure
+            `security-cleared` is absent, holding the merge for the owner.
           claude_args: --model claude-opus-4-8

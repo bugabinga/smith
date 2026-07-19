@@ -1,0 +1,48 @@
+# ADW merge-gate — the deterministic check that native auto-merge waits on.
+# No Claude here: it just reads the PR's labels and decides mergeability, so the
+# LLM reviewers' verdicts (expressed as labels) drive the gate without parsing any
+# model output. Required by the `main` ruleset (.github/rulesets/main.json).
+#
+# Green iff BOTH review verdicts are in (`reviewed` + `security-cleared`) AND no
+# blocking label is present. Re-runs on every label change so the gate re-decides
+# the moment a reviewer posts its verdict.
+name: adw-gate
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: adw-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  merge-gate:
+    name: merge-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate merge readiness from labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          labels=$(gh pr view "$PR" --repo "$REPO" --json labels -q '[.labels[].name] | join(",")')
+          echo "labels: [$labels]"
+          csv=",$labels,"
+          held=""
+          for b in "risk:high" blocked "needs:info" "needs:spec" "needs:prototype" stalled; do
+            case "$csv" in *",$b,"*) held="$held $b";; esac
+          done
+          waiting=""
+          for p in reviewed security-cleared; do
+            case "$csv" in *",$p,"*) ;; *) waiting="$waiting $p";; esac
+          done
+          if [ -n "$held" ]; then echo "::error::merge held by label(s):$held"; exit 1; fi
+          if [ -n "$waiting" ]; then echo "::error::waiting on verdict label(s):$waiting"; exit 1; fi
+          echo "merge-gate green — reviewed + security-cleared, no blocking labels"

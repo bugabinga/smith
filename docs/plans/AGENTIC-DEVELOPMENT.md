@@ -69,7 +69,7 @@ API/UI (a drift risk to minimize by preferring the as-code option).
 | reusable role workflows | `.claude/skills/<name>/SKILL.md` | ✅ | the file |
 | integrity floor (never fake green) | `PROJECT-INVARIANTS.md §5`, enforced by CI | ✅ | invariant |
 | spec-review requirement | `CODEOWNERS` + a branch **ruleset** | ✅ `CODEOWNERS`; ⚠️ `main.json` recorded, applied via `gh api` (not auto-read) | ruleset |
-| merge gates / auto-merge | branch ruleset + workflow gate logic | ⚠️ ruleset recorded not auto-applied; workflow gate partial | ruleset + workflow |
+| merge gates / auto-merge | native auto-merge + `merge-gate` check + ruleset | ✅ `adw-automerge.yml` + `adw-gate.yml` + ruleset (`merge-gate` required); ⚠️ ruleset applied by hand | workflow + ruleset |
 | routing labels | `.github/labels.yml` + a label-sync action | ✅ if adopted as-code | `labels.yml` |
 | waves | Milestones | ❌ GitHub API/UI | GitHub |
 | lifecycle board | Project (v2) | ❌ mostly (scriptable via `gh`) | GitHub |
@@ -177,12 +177,13 @@ sequenceDiagram
         Owner->>Spec: resolve via /smith, then re-plan
     end
 
-    alt gates green · risk:low · sev:low
-        PR->>Trunk: gated rebase-merge (signed) — card→Done
+    alt reviewed + security-cleared, no blocking label
+        Note over PR,Trunk: native auto-merge, gated by merge-gate
+        PR->>Trunk: rebase-merge (signed) — card→Done
         Trunk-->>Sur: front clears → next slice
     else risk:high / sev:high
         Note over PR,Owner: Touchpoint 3 — PR review
-        Sec->>Owner: escalate; never auto-merges
+        Sec->>Owner: risk:high holds merge-gate red; escalate
     end
 ```
 
@@ -246,6 +247,38 @@ and destination; nothing dead-ends or merges on a guess.
 Two invariants hold across every row: an agent never fakes a green gate to move a
 PR (PROJECT-INVARIANTS §5), and an agent never resolves ambiguity by guessing — it
 routes to the human via one of `needs:spec`, `risk:high`, or `needs:info`.
+
+## Merging — native auto-merge, gated by labels
+
+Nothing needs a bespoke merge robot. The close of the loop is **GitHub's native
+auto-merge**, armed for every agent PR and released by the ruleset's gate:
+
+1. `adw-automerge` arms auto-merge (rebase) on each bot-authored, non-Dependabot
+   PR the moment it opens. GitHub now merges it *itself* the instant its gate is
+   green — no agent watches, polls, or clicks.
+2. The gate is the ruleset's **required status checks** plus its code-owner rule.
+   The load-bearing check is **`merge-gate`** (`adw-gate.yml`) — a plain, no-LLM
+   job that reads the PR's labels and is green only when both review verdicts are
+   in (`reviewed` + `security-cleared`) and no blocking label
+   (`risk:high`, `blocked`, `needs:*`, `stalled`) is present. CI checks join this
+   list once the workspace CI lands.
+3. The reviewers cast their verdict **as labels**, not approvals — deliberately.
+   `builder`, `reviewer`, and `security-reviewer` are one GitHub identity (the
+   App), and GitHub forbids approving your own PR, so a required *approval* could
+   never be satisfied by an agent. A required *check* driven by a label has no such
+   problem: `reviewer` adds `reviewed`, `security-reviewer` adds `security-cleared`,
+   and `merge-gate` turns green. `required_approving_review_count` stays `0`; the
+   code-owner rule still forces a **human** approval on CODEOWNERS paths (spec,
+   workflows, agents, invariants) — touchpoints 1 and 3 — where the author is the
+   App, not the owner, so there is no self-approval there either.
+4. `risk:high` keeps `merge-gate` red, so a risky PR simply never auto-merges and
+   waits for the owner. Same for a changes-requested review: `reviewed` is absent,
+   the gate stays red, and the PR waits for the revision that adds it back.
+
+Net: the merge is native and deterministic; the LLMs only move labels, and a
+label can't fake a green check. Two owner enable-steps make it live — **Allow
+auto-merge** (repo setting) and importing the ruleset with `merge-gate` required
+(issue #14).
 
 ## Control surfaces — agents vs output styles vs CLAUDE.md
 
@@ -428,6 +461,14 @@ machinery are gated to the human; everything the spec already implies flows on
 its own. GitHub signs the rebase-merge commits it creates on merge, so
 `required_signatures` is satisfied without the App holding a key.
 
+The ruleset also lists the **`merge-gate`** status check as required (that is what
+native auto-merge waits on — see *Merging*) and grants the **repository-admin role
+an `always` bypass**. The bypass is the owner's escape valve: because rulesets do
+*not* auto-exempt admins and `merge-gate` depends on the agents applying their
+verdict labels, without it the owner could be unable to merge their own spec PR if
+the agents were down or disagreed. The App is not an admin, so agents never
+inherit the bypass — only the human does.
+
 ## Runners — how an agent actually executes (proven by p35)
 
 The live harness `prototypes/p35-adw-harness` settled the mechanics, and the
@@ -472,13 +513,14 @@ action's docs settled the rest:
 
 ## Open decisions (owner / spec)
 
-1. **Auto-merge gates.** Agent governance now lives outside the spec (the §17.10
-   rules moved to PROJECT-INVARIANTS §5 as the integrity floor), so this is no
-   longer a spec conflict — it is a policy call owned here. Decide the exact
-   gate: CI green + independent review approved + security clear + risk below
-   which threshold? Nothing auto-merges until this row is filled in.
-2. **Create the `smith-bot` App** (only the owner can).
-3. **Risk threshold** for what forces human review (touchpoint #3).
+1. ~~**Auto-merge gates.**~~ **Decided: native auto-merge, low-risk** (see
+   *Merging* below). The gate is: required checks green (incl. `merge-gate`) +
+   `reviewed` + `security-cleared` + no blocking label. `risk:high` holds it for
+   the owner. Encoded, not just described.
+2. **Create the `smith-bot` App** (only the owner can). *(Done — installed.)*
+3. **Risk threshold** for what forces human review (touchpoint #3). Current line:
+   `risk:high` (set by `security-reviewer` on high/critical severity) and any PR
+   touching a CODEOWNERS path (spec, workflows, agents, invariants).
 
 ## Phased rollout
 

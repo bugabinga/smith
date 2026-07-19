@@ -20,7 +20,10 @@ mind — not a rubber stamp.
    each a concrete failure scenario, ranked most severe first.
 
 ## Artifact
-A **PR review** — inline comments and a verdict. Nothing in the tree.
+A **PR review** — inline comments and a verdict — plus the verdict as a label the
+merge-gate reads: add `reviewed` when you approve; keep it off (remove it) when you
+request changes, so the gate holds the merge until the next revision clears it.
+Nothing in the tree.
 
 ## Boundaries
 Never approve on unproven confidence: if you can't tell, say so and request the
