@@ -103,6 +103,7 @@ only for the reader's map. The craft skills (`sabotnik`, `handmade`, `pioneer`,
 | `dependency-manager` | Dependabot bump PR | shepherd version bumps through the gates; escalate risky ones | **Dependabot PRs** | Sonnet |
 | `release-manager` | milestone green / `v*` tag | draft notes, verify the §14 matrix, publish the Release | a **GitHub Release** | Sonnet |
 | `sweeper` | `schedule` | unstick stalls, enforce WIP, brake runaways | **Issues/PRs/board** labels | Haiku |
+| `adw-doctor` | `schedule` (weekly) | diagnose the *workflow's own* health — failing/drifting workflows, doc-vs-config drift, gate pathologies — and propose one systemic fix | a **PR** on ADW config, or an **Issue** | Opus |
 | `pioneer` (skill) | `needs:prototype` | prove/disprove an unproven spec claim with a prototype | `prototypes/*` | Sonnet |
 
 The **authority** for each model and tool scope is the agent's frontmatter — the
@@ -198,6 +199,16 @@ The two schedulers are deliberately opposed: `surveyor` only ever *adds* one uni
 of work and only when nothing is in flight, while `sweeper` enforces the WIP
 ceiling and brakes runaways. Together they hold the cycle at a steady, low
 throughput — the "predictability over speed" dial, made mechanical.
+
+A third scheduled agent works one level up. `sweeper` fixes the *pieces in play*;
+`adw-doctor` (weekly) fixes the *machine itself* — it reads the workflow-run
+record and the doc-vs-config drift, diagnoses a systemic fault (a wrong trigger, a
+broken loop-guard, a deprecation, a gate deadlock), and opens **one** improvement
+PR or issue. Because the ADW config is CODEOWNERS-protected, that PR always lands
+in the owner's review: the doctor diagnoses and proposes, it never rewrites its own
+rules unsupervised — the audit's hole-hunt, institutionalized and gated. It is
+bound by the same floor as everyone: it may never remove a gate, a required check,
+or a loop-guard to buy speed.
 
 ## The escape valve — when work contradicts the spec
 
