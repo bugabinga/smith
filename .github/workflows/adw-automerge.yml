@@ -1,6 +1,6 @@
 # ADW auto-merge — turns on GitHub's native auto-merge for agent-authored PRs.
 # Deterministic, no Claude: it does not merge, it *arms* auto-merge, and GitHub
-# then merges the PR by rebase the instant the ruleset's gate is satisfied
+# then merges the PR by squash the instant the ruleset's gate is satisfied
 # (required checks green — including `merge-gate` — and any code-owner review).
 # A blocking label keeps `merge-gate` red, so nothing merges until the reviewers
 # have cleared it. High severity (`risk:high`) holds it for the owner.
@@ -32,4 +32,4 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
       - env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
-        run: gh pr merge ${{ github.event.pull_request.number }} --auto --rebase --repo ${{ github.repository }}
+        run: gh pr merge ${{ github.event.pull_request.number }} --auto --squash --repo ${{ github.repository }}
