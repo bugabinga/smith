@@ -179,7 +179,7 @@ sequenceDiagram
 
     alt reviewed + security-cleared, no blocking label
         Note over PR,Trunk: native auto-merge, gated by merge-gate
-        PR->>Trunk: rebase-merge (signed) — card→Done
+        PR->>Trunk: squash-merge (signed) — card→Done
         Trunk-->>Sur: front clears → next slice
     else risk:high / sev:high
         Note over PR,Owner: Touchpoint 3 — PR review
@@ -253,7 +253,7 @@ routes to the human via one of `needs:spec`, `risk:high`, or `needs:info`.
 Nothing needs a bespoke merge robot. The close of the loop is **GitHub's native
 auto-merge**, armed for every agent PR and released by the ruleset's gate:
 
-1. `adw-automerge` arms auto-merge (rebase) on each bot-authored, non-Dependabot
+1. `adw-automerge` arms auto-merge (squash) on each bot-authored, non-Dependabot
    PR the moment it opens. GitHub now merges it *itself* the instant its gate is
    green — no agent watches, polls, or clicks.
 2. The gate is the ruleset's **required status checks** plus its code-owner rule.
@@ -482,13 +482,16 @@ code scanning are free on public repos):
   lands **Verified**, signed by `agent-smith-bugabinga-adc` — no keys to manage,
   no local GPG. The owner's own edits from the GitHub web UI are auto-signed too,
   so the phone-only path stays Verified.
-- **Enforce it — now possible.** A branch **ruleset** on `main` with *Require
-  signed commits* + *Require a pull request before merging* (CODEOWNERS review) +
-  *Require linear history* makes only Verified, reviewed, rebase-merged commits
-  land. This was blocked while the repo was private on the free plan; going public
-  removed the block. It is the one owner enable-step (issue #14), and a proposed
-  upgrade to the PROJECT-INVARIANTS §7 version-control rule — pending owner
-  approval before that invariant is edited.
+- **Enforce it.** A branch **ruleset** on `main` with *Require signed commits* +
+  *Require a pull request before merging* (CODEOWNERS review) + *Require linear
+  history* makes only Verified, reviewed, squash-merged commits land. This was
+  blocked while the repo was private on the free plan; going public removed the
+  block, and PROJECT-INVARIANTS §7 now enforces it.
+  **Merge method: squash, not rebase.** GitHub *cannot* sign a rebase-merge (it
+  re-parents commits, invalidating signatures, and won't re-sign) — so
+  rebase-merge + required-signed-commits is impossible. GitHub signs the single
+  commit it creates on a **squash**, and because one PR = one decision, a squash is
+  one-commit-per-decision. So squash is the method (§7).
 
 The cost of enforcement is that a local unsigned commit (bare git/jj with no
 signing key) would be rejected on `main` — acceptable for a mostly-agent +
@@ -508,8 +511,9 @@ human approval, while any PR touching a CODEOWNERS-owned path — `docs/SPEC.md`
 the workflows, the agent files, the invariants — still requires the owner's
 review. That is touchpoints 1 and 3, expressed as one rule: the spec and the
 machinery are gated to the human; everything the spec already implies flows on
-its own. GitHub signs the rebase-merge commits it creates on merge, so
-`required_signatures` is satisfied without the App holding a key.
+its own. GitHub signs the **squash** commit it creates on merge, so
+`required_signatures` is satisfied even when a PR's branch commits were unsigned —
+which is exactly why the merge method must be squash, not rebase (§7).
 
 The ruleset also lists the **`merge-gate`** status check as required (that is what
 native auto-merge waits on — see *Merging*) and grants the **repository-admin role
