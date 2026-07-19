@@ -291,6 +291,7 @@ events, each carrying a loop-guard so agents never react to themselves:
 | `adw-docs` | merged PR touching **product code** (not docs/site/prototypes/config) | `docs-writer` updates docs + site to match, or no-ops | doc-only PRs are `paths-ignore`d, so `docs-writer`'s own PR can't re-trigger it |
 | `adw-release` | `v*` tag (the owner's release touchpoint) | `release-manager` drafts notes, verifies §14, publishes a Release | tag push is owner-made; relayed via dispatch (the action can't serve `push`) |
 | `adw-comment` | **owner** writes `@smith …` on an issue/PR | routes the instruction to the fitting agent, or answers | locked to `author_association == OWNER` — a public-repo stranger's comment does nothing; agents' own comments aren't the owner |
+| `adw-alerts` | Dependabot / code-scanning alert (or daily) | `security-reviewer` sweeps open alerts, escalates real high-severity, ignores prototype-only ones | alert events relay to dispatch (action can't serve them); a schedule backstops missed events |
 | *CI self-heal* | — | folded into `sweeper` (hourly), not a per-event trigger | avoids the fiddly `check_suite`→PR mapping and its loop risk; fits the predictability dial |
 
 The one deliberately-owner-gated reaction is `adw-comment`: because the repo is
