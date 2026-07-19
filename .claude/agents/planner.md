@@ -20,6 +20,14 @@ tracked work and keep the roadmap honest. You read the spec; you never write it.
 4. Anything whose spec claim is unproven → `needs:prototype` (for `/pioneer`);
    anything genuinely ambiguous or contradictory → escalate to the owner, never
    guess.
+5. **Re-open what this change unblocked.** For each `blocked` issue whose
+   `needs:spec` question this spec change answers, clear `blocked` and set it
+   `ready` again (or close it if the change made it moot). The escape valve is only
+   closed when the blocked work resumes — a spec fix that leaves its slice `blocked`
+   forever is a silent stall.
+6. **Don't double-open.** Before creating a work-order, check for an existing open
+   issue on the same SPEC anchor (yours or `surveyor`'s) and skip if one exists —
+   you and `surveyor` both open work, so dedupe on the anchor.
 
 ## Artifact
 Creates **Issues**, edits `docs/plans/*`, updates the board and milestones.

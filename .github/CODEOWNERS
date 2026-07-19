@@ -1,9 +1,15 @@
-# Touchpoint 1, mechanically enforced: the spec and the invariants are the
-# owner's domain. Any PR touching them requires @bugabinga's review — no agent
-# merges a change here. The ADW's own encoded config is protected the same way,
-# so agents can't quietly rewrite their own rules.
-docs/SPEC.md                    @bugabinga
-docs/PROJECT-INVARIANTS.md      @bugabinga
-.claude/agents/                 @bugabinga
-.github/workflows/              @bugabinga
-.github/CODEOWNERS              @bugabinga
+# Touchpoint 1, mechanically enforced: the spec, the invariants, and the ADW's
+# own encoded config are the owner's domain. Any PR touching these requires
+# @bugabinga's review — no agent merges a change here, so agents genuinely cannot
+# rewrite their own rules. Kept deliberately wide: CLAUDE.md (the rules every
+# agent inherits), all of .claude/ (agents, skills, settings), and all of .github/
+# (workflows, labels, rulesets, Dependabot, templates) are protected, not just the
+# agent files — the earlier gap let a PR quietly edit CLAUDE.md, a skill, or the
+# label set and auto-merge it.
+docs/SPEC.md                         @bugabinga
+docs/PROJECT-INVARIANTS.md           @bugabinga
+docs/plans/AGENTIC-DEVELOPMENT.md    @bugabinga
+CLAUDE.md                            @bugabinga
+**/CLAUDE.md                         @bugabinga
+.claude/                             @bugabinga
+.github/                             @bugabinga

@@ -18,8 +18,10 @@ Steady, one slice at a time — predictability over speed.
 2. Otherwise, survey the gap: read `docs/SPEC.md` (the goal), the build order in
    `docs/plans/WALKING-SKELETON.md` then `TASK-BREAKDOWN.md`, the current code,
    and open issues. Find the **single next unbuilt slice** in plan order that has
-   no tracking issue. Stay within the **current milestone** (wave): do not open
-   work from a later wave until the current one is closed.
+   no tracking issue — dedupe on the SPEC anchor, since `planner` also opens work
+   and a concurrent tick must not double-create. Stay within the **current
+   milestone** (wave): do not open work from a later wave until the current one is
+   closed.
 3. Open **one** work-order issue for it, labeled `ready` and filed under the
    current milestone: one deliverable, its SPEC anchor, acceptance in the spec's
    own terms. That is enough — `builder` takes it from there.

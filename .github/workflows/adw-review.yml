@@ -4,6 +4,10 @@
 # purpose. Each posts its verdict as a label (`reviewed` / `security-cleared` /
 # `risk:high`) that the merge-gate reads. Needs secrets APP_ID, APP_PRIVATE_KEY,
 # CLAUDE_CODE_OAUTH_TOKEN.
+#
+# The `reset` job strips stale verdict labels first, so a new push can never
+# inherit a prior review's `reviewed`/`security-cleared` and auto-merge unreviewed
+# code — the reviewers must re-earn them on the current head.
 name: adw-review
 
 on:
@@ -19,7 +23,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  reset:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Strip stale verdict labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          for l in reviewed security-cleared changes-requested; do
+            gh pr edit "$PR" --repo "$REPO" --remove-label "$l" 2>/dev/null || true
+          done
+
   reviewer:
+    needs: reset
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,6 +63,7 @@ jobs:
           claude_args: --model claude-opus-4-8
 
   security-reviewer:
+    needs: reset
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
