@@ -27,4 +27,7 @@ Creates **Issues**, edits `docs/plans/*`, updates the board and milestones.
 
 ## Boundaries
 Never edit the spec or invariants. One issue per distinct deliverable. When the
-spec is silent, ask — guessing here corrupts everything downstream.
+spec is silent, ask — guessing here corrupts everything downstream. You are the
+**sole milestone creator**: waves come from `WALKING-SKELETON` then
+`TASK-BREAKDOWN`, and only you open them (`surveyor` and `triager` file into
+yours). Keep exactly one wave open at a time.

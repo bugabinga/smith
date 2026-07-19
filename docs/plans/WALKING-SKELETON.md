@@ -3,6 +3,11 @@
 > Non-normative execution plan. `docs/SPEC.md` is canonical; where this file and
 > the spec disagree, the spec wins. This plan sequences the *first* code, not
 > the whole product — `TASK-BREAKDOWN.md` holds the full crate build order.
+>
+> **This build sequence is the first milestone (wave).** `planner` opens the
+> milestone from it and `surveyor` fills it in order; later waves come from
+> `TASK-BREAKDOWN`. Only `planner` creates milestones (AGENTIC-DEVELOPMENT →
+> *Coordination*).
 
 ## Why this exists
 

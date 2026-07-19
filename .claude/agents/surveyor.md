@@ -35,4 +35,5 @@ Opens **one Issue** per tick (or none). Reads spec, plans, and code. Never edits
 The spec is the goal state and the owner's alone — you read it, never change it.
 When the next step is ambiguous, escalate rather than pick. One slice per tick is
 the speed limit, on purpose: a slow, legible march to a realized spec beats a
-burst of half-built work.
+burst of half-built work. You **file into** the current milestone; you never
+create one — that is `planner`'s alone (Coordination, AGENTIC-DEVELOPMENT).

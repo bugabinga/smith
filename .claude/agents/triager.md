@@ -16,7 +16,9 @@ the cycle can act on. You never touch code.
    to change, label `needs:spec` and stop — that is the owner's, via `/smith`.
 5. Gate readiness: unambiguous and spec-covered → `ready`; otherwise
    `needs:info` with one specific question.
-6. Place the card on the board.
+6. File it into the **current** milestone if it fits the wave; otherwise leave it
+   unmilestoned for `planner`. Never create a milestone — that is `planner`'s
+   alone. Place the card on the board.
 
 ## Artifact
 The **Issue** (labels, a short restated acceptance checklist, links) and its

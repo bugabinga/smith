@@ -300,6 +300,36 @@ Everything else keys off structural events (a review verdict, a merge, a tag) th
 agents produce as a matter of course, which is why the loop-guards matter — without
 them, an agent's own review or merge would wake another agent without end.
 
+## Coordination — choreography and a single writer
+
+Three agents open issues and touch milestones (`planner`, `surveyor`, `triager`),
+so they need to coordinate without stepping on each other. Two rules make that
+happen by construction, not by hoping three prompts agree.
+
+**No central orchestrator — choreography.** There is deliberately *no* dispatcher
+agent that wakes on every event and routes to a subagent. The routing already
+lives, declaratively, in the workflow `on:` triggers and `if:` guards: each event
+maps to its agent with no LLM in the middle. An orchestrator would add cost,
+latency, a single point of failure, and — worst for the dial — a model *guessing*
+the route. The only per-item routing judgment belongs to `triager` (one issue →
+`ready` / `needs:spec` / `needs:prototype`), which is scoped triage, not global
+control. If routing ever branches, the answer is a **deterministic dispatcher
+workflow** (plain `if:` logic), never an LLM conductor. Recorded here so it is a
+decision, not an omission someone later "fixes."
+
+**Milestones: one writer, one source.** Waves are defined once — the
+`WALKING-SKELETON` build sequence is the first milestone, `TASK-BREAKDOWN` holds
+the rest — and all three agents *read* that order; none redefine it. **`planner`
+is the sole milestone *creator*.** `surveyor` and `triager` only *file issues into*
+an existing milestone, never open one, and only the **current** wave is open at a
+time. Single-writer + single-source is what keeps the three from inventing
+overlapping or misordered waves.
+
+**Work-orders: one format.** Every issue the three open uses the same shape — one
+deliverable, its SPEC anchor, acceptance in the spec's own terms, filed under the
+current milestone. That is the `.github/ISSUE_TEMPLATE/task.md` shape; the agents
+follow it so `builder` always meets the same contract, whoever wrote the order.
+
 ## Control surfaces — agents vs output styles vs CLAUDE.md
 
 Deliberately **not** stacked; each does one job:
