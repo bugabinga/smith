@@ -36,7 +36,7 @@ jobs:
           echo "labels: [$labels]"
           csv=",$labels,"
           held=""
-          for b in "risk:high" blocked "needs:info" "needs:spec" "needs:prototype" stalled; do
+          for b in "risk:high" blocked "changes-requested" "needs:info" "needs:spec" "needs:prototype" stalled; do
             case "$csv" in *",$b,"*) held="$held $b";; esac
           done
           waiting=""

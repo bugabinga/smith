@@ -37,9 +37,11 @@ jobs:
             #${{ github.event.pull_request.number }} in ${{ github.repository }}.
             Follow .claude/agents/reviewer.md: adversarial correctness review vs
             the spec, craft lenses, a file-anchored verdict. Do not merge.
-            Verdict as a label (the merge-gate reads it): on approve, add the
-            `reviewed` label; on request-changes, ensure `reviewed` is absent
-            (remove it if present) so the gate stays red until the next revision.
+            Verdict as a label (you are the same identity as the author, so you
+            cannot submit a formal review — use labels + comments): on approve, add
+            `reviewed` and remove `changes-requested`; on request-changes, add
+            `changes-requested` (this wakes builder to revise) and remove
+            `reviewed`. Leave your findings as comments either way.
           claude_args: --model claude-opus-4-8
 
   security-reviewer:

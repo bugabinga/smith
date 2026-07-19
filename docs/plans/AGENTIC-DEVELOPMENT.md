@@ -234,8 +234,8 @@ and destination; nothing dead-ends or merges on a guess.
 
 | When… | Detected by | Handled by | Routes to |
 |---|---|---|---|
-| CI is red | CI gates | `builder` | self-heal in place; after repeated failure → `sweeper` brakes it `stalled` |
-| review requests changes | `reviewer` | `builder` | revise the PR → re-review loop |
+| CI is red | CI gates | `sweeper` (hourly) | re-kicks `builder` to self-heal; brakes `stalled` if no progress |
+| review requests changes | `reviewer` | `builder` via `adw-revise` | revise on the same branch → re-review on push |
 | PR green but unmerged / conflicted / `ready` with no branch | schedule | `sweeper` | re-kick if tractable, else label `stalled` with why |
 | change is high-risk / high-severity | `security-reviewer` | owner | `risk:high` → **touchpoint 3**; never auto-merges |
 | the issue needs info only the reporter has | `triager` / `builder` | reporter | `needs:info`; parked until answered |
@@ -279,6 +279,25 @@ Net: the merge is native and deterministic; the LLMs only move labels, and a
 label can't fake a green check. Two owner enable-steps make it live — **Allow
 auto-merge** (repo setting) and importing the ruleset with `merge-gate` required
 (issue #14).
+
+## Reaction workflows — the loops that make it self-sustaining
+
+Beyond the issue→PR spine, five workflows wake agents on GitHub's own feedback
+events, each carrying a loop-guard so agents never react to themselves:
+
+| Workflow | Wakes on | Does | Loop-guard |
+|---|---|---|---|
+| `adw-revise` | review = *changes requested* on a bot PR | `builder` addresses findings on the same branch; re-review fires on the push | a push emits `synchronize`, not a review — never self-triggers; `sweeper` brakes an endless loop |
+| `adw-docs` | merged PR touching **product code** (not docs/site/prototypes/config) | `docs-writer` updates docs + site to match, or no-ops | doc-only PRs are `paths-ignore`d, so `docs-writer`'s own PR can't re-trigger it |
+| `adw-release` | `v*` tag (the owner's release touchpoint) | `release-manager` drafts notes, verifies §14, publishes a Release | tag push is owner-made; relayed via dispatch (the action can't serve `push`) |
+| `adw-comment` | **owner** writes `@smith …` on an issue/PR | routes the instruction to the fitting agent, or answers | locked to `author_association == OWNER` — a public-repo stranger's comment does nothing; agents' own comments aren't the owner |
+| *CI self-heal* | — | folded into `sweeper` (hourly), not a per-event trigger | avoids the fiddly `check_suite`→PR mapping and its loop risk; fits the predictability dial |
+
+The one deliberately-owner-gated reaction is `adw-comment`: because the repo is
+public, a comment body is untrusted input, so only the owner may steer through it.
+Everything else keys off structural events (a review verdict, a merge, a tag) that
+agents produce as a matter of course, which is why the loop-guards matter — without
+them, an agent's own review or merge would wake another agent without end.
 
 ## Control surfaces — agents vs output styles vs CLAUDE.md
 

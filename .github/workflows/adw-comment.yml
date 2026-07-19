@@ -1,0 +1,53 @@
+# ADW comment — the steering channel. When the OWNER writes `@smith ...` on an
+# issue or PR, route it to the right agent. Locked to the owner on purpose: this
+# is a public repo, so anyone can comment, and a comment body is untrusted input
+# — only author_association OWNER may steer, so a stranger's `@smith` does nothing.
+# Loop-safe: the agents' own comments are not authored by the owner, so they can
+# never trigger this.
+name: adw-comment
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: adw-comment-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  steer:
+    if: >-
+      github.event.comment.author_association == 'OWNER' &&
+      contains(github.event.comment.body, '@smith')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_commit_signing: true
+          prompt: |
+            The owner left this steering comment on ${{ github.repository }}
+            (#${{ github.event.issue.number || github.event.pull_request.number }}):
+            ---
+            ${{ github.event.comment.body }}
+            ---
+            Act on it within the ADW's boundaries. Pick the fitting agent role
+            (triager, builder, reviewer, sweeper, docs-writer, …) and do that
+            role's job, or answer the question in a reply. Stay inside every
+            boundary: never edit docs/SPEC.md or PROJECT-INVARIANTS.md, never merge
+            past the gate; if it needs a spec change, open `needs:spec`.
+          claude_args: --model claude-sonnet-5
