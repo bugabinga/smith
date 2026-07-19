@@ -43,11 +43,31 @@ jobs:
             echo "::warning::CODEX_AUTH_JSON secret absent — the exec below reveals the auth requirement (that IS the evidence)"
           fi
 
-      - name: Codex exec — headless, subscription
+      - name: Codex exec — capture the JSONL stream
         continue-on-error: true
         run: |
+          set +e
           codex exec --json --ephemeral "Reply with exactly: CODEX-HARNESS-OK" \
-            || echo "::notice::codex exec exit=$? — read the log for the real auth/flag requirement"
+            > codex.jsonl 2> codex.err
+          echo "codex exec exit=$?"
+          echo "::group::raw JSONL (last 80 lines)"; tail -80 codex.jsonl 2>/dev/null; echo "::endgroup::"
+          echo "::group::stderr"; cat codex.err 2>/dev/null; echo "::endgroup::"
+
+      # The number that should drive the cadence: which model ran, how many tokens
+      # one review costs, and how much of the 5-hour window it burned. Schema-agnostic
+      # jq (recursive descent) so it survives Codex's exact event shape; a grep
+      # fallback surfaces anything jq misses.
+      - name: Report model, token cost, and 5-hour window usage
+        continue-on-error: true
+        run: |
+          echo "### resolved model"
+          jq -rs '[.. | objects | (.model? // empty)] | map(select(. != "")) | last // "not found in stream"' codex.jsonl 2>/dev/null || echo "n/a"
+          echo "### token usage (this one review)"
+          jq -c '.. | objects | select(has("usage") or has("input_tokens") or has("total_tokens") or has("token_count"))' codex.jsonl 2>/dev/null | tail -3 || echo "n/a"
+          echo "### rate limits / 5-hour window cost"
+          jq -c '.. | objects | select(has("rate_limits") or has("used_percent") or has("primary_used_percent") or has("resets_in_seconds") or has("window_minutes"))' codex.jsonl 2>/dev/null | tail -5 || echo "n/a"
+          echo "### keyword fallback (raw)"
+          grep -ioE '"[a-z_]*(rate_limit|used_percent|resets|window|remaining|quota|tokens?)[a-z_]*"[^,}]*' codex.jsonl codex.err 2>/dev/null | sort -u | head -40 || echo "(no quota/token keywords surfaced)"
 
       - name: Official action — the production path
         continue-on-error: true

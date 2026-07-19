@@ -42,6 +42,9 @@ half provable now)
 - Push this branch (or `workflow_dispatch`) to run the harness; read the run log.
 - Owner precondition for the auth half: `codex login` locally, then add the
   contents of `~/.codex/auth.json` as the repo secret **`CODEX_AUTH_JSON`**.
+- The harness prints, per single review: the **resolved model**, the **token
+  usage**, and the **5-hour-window cost** (rate-limit `used_percent` / reset), so
+  the owner can price a cadence before wiring `adw-codex-review.yml`.
 
 ## Next Steps
 - Owner: add `CODEX_AUTH_JSON` and re-run to confirm `codex exec` returns
