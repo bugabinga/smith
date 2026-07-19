@@ -5,11 +5,24 @@
 
 name: DevSkim
 
+# Incremental scans run only when source code changes — a docs/config/markdown
+# PR has nothing for a code security scanner to find. The weekly schedule is the
+# full-tree backstop, so nothing a path filter skips stays permanently unscanned.
+# (Safe because DevSkim is not a required merge check; only `merge-gate` is.)
 on:
   push:
     branches: [ "main" ]
+    paths: &code
+      - '**/*.rs'
+      - '**/*.lua'
+      - '**/*.js'
+      - '**/*.ts'
+      - '**/*.tsx'
+      - '**/*.astro'
+      - '**/*.sh'
   pull_request:
     branches: [ "main" ]
+    paths: *code
   schedule:
     - cron: '29 9 * * 5'
 
