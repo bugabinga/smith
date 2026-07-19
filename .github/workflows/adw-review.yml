@@ -60,7 +60,8 @@ jobs:
             `reviewed` and remove `changes-requested`; on request-changes, add
             `changes-requested` (this wakes builder to revise) and remove
             `reviewed`. Leave your findings as comments either way.
-          claude_args: --model claude-opus-4-8
+            You are a mission-critical gate — ultrathink.
+          claude_args: --model claude-fable-5
 
   security-reviewer:
     needs: reset
@@ -84,4 +85,5 @@ jobs:
             Verdict as a label (the merge-gate reads it): if nothing high-severity,
             add `security-cleared`; on a high finding, add `risk:high` and ensure
             `security-cleared` is absent, holding the merge for the owner.
-          claude_args: --model claude-opus-4-8
+            You are a mission-critical gate — ultrathink.
+          claude_args: --model claude-fable-5

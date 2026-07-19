@@ -58,5 +58,5 @@ jobs:
             ${{ github.event.inputs.base_sha }} (its previous state on main); for
             each newly-specced or materially-changed surface with no tracking
             issue, open one work-order issue and refresh docs/plans/*. Do not edit
-            the spec.
+            the spec. Think hard.
           claude_args: --model claude-opus-4-8

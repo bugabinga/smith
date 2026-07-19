@@ -97,8 +97,8 @@ only for the reader's map. The craft skills (`sabotnik`, `handmade`, `pioneer`,
 | `triager` | issue opened | triage a raw issue into a labeled, routed, spec-anchored work-order | the **Issue** + board card | Haiku |
 | `planner` | spec change lands on `main` | turn the spec diff into tracked work-orders + refresh the plan | **Issues** + `docs/plans/*` | Opus |
 | `builder` | issue labeled `ready` | build one slice per `WALKING-SKELETON`, hardened, tested | a **branch + PR** | Sonnet |
-| `reviewer` | `pull_request` | adversarial correctness review vs the spec — a *second* model | a **PR review** | Opus |
-| `security-reviewer` | PR on sensitive surface / `needs:security` / scanner alert | security review; escalate high severity | a **PR review** + `risk:*` | Opus |
+| `reviewer` | `pull_request` | adversarial correctness review vs the spec — a *second* model | a **PR review** | Fable |
+| `security-reviewer` | PR on sensitive surface / `needs:security` / scanner alert | security review; escalate high severity | a **PR review** + `risk:*` | Fable |
 | `docs-writer` | merged PR changes user-facing / SDK behavior | keep user + plugin-author docs and the site true to the product | doc sources + Pages, via **PR** | Sonnet |
 | `dependency-manager` | Dependabot bump PR | shepherd version bumps through the gates; escalate risky ones | **Dependabot PRs** | Sonnet |
 | `release-manager` | milestone green / `v*` tag | draft notes, verify the §14 matrix, publish the Release | a **GitHub Release** | Sonnet |
@@ -111,12 +111,27 @@ prospective `xtask agents` renders this table from it. `builder` and `reviewer`
 wield `/sabotnik` and `/handmade`; `pioneer` and `smith` stay
 owner/skill-invoked, since the spec is touchpoint 1.
 
-Model tiering favours **quality over speed** (see *Two phases*): mechanical work
-(triager, sweeper) on Haiku; building/docs/deps/release on Sonnet; everything
-adversarial or judgment-heavy (surveyor, reviewer, security-reviewer, planner) on
-Opus —
-and `reviewer` is deliberately a *different* model from `builder` so review is a
-second opinion, not self-congratulation.
+### Model and thinking tiers
+
+Two dials per agent, both favouring **quality over speed**: which *model* runs it,
+and how hard it *thinks* (extended-reasoning budget, set by the `think` /
+`think hard` / `ultrathink` keyword in the workflow prompt). Cost tracks both, so
+they climb together only where the stakes justify it.
+
+| Tier | Model | Thinking | Agents | Why |
+|---|---|---|---|---|
+| mechanical | Haiku | minimal | `triager`, `sweeper` | label/route/sweep — pattern work, not judgment |
+| build | Sonnet | `think` | `builder`, `docs-writer`, `dependency-manager`, `release-manager` | implement and maintain — competent, bounded |
+| judgment | Opus | `think hard` | `surveyor`, `planner`, `adw-doctor` | plan the build and heal the machine — one wrong call ripples |
+| **mission-critical** | **Fable** | **`ultrathink`** | `reviewer`, `security-reviewer` | the two autonomous gates into `main`; a wrong approve merges a defect or a sandbox escape with no human in the loop |
+
+**Fable is reserved for the gates** because their errors are the least reversible
+and the least supervised — everything else has a backstop (CI, the owner on
+`risk:high`, `sweeper`, the owner on protected paths), but a clean-looking bad PR
+that both reviewers wave through merges itself. `reviewer` on Fable also keeps the
+invariant that review runs a *different* model than `builder` (Sonnet), so it stays
+a second opinion, not self-congratulation. `release-manager` and `planner` are the
+next candidates if the mission-critical tier ever widens.
 
 ## How the cycle pushes Smith forward
 

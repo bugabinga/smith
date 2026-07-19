@@ -40,5 +40,5 @@ jobs:
             #${{ github.event.issue.number }} in ${{ github.repository }}.
             Follow .claude/agents/builder.md exactly: one slice per
             WALKING-SKELETON, tests, self-harden with /sabotnik and /handmade,
-            open a PR that closes the issue. Do not merge.
+            open a PR that closes the issue. Do not merge. Think.
           claude_args: --model claude-sonnet-5

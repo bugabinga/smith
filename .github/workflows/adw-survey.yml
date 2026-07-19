@@ -46,5 +46,5 @@ jobs:
             terms. If the next slice needs a spec decision, open it `needs:spec`
             (owner, not ready); if it rests on an unproven spec claim, open it
             `needs:prototype`. One issue per tick, or none. Never edit the spec,
-            never write code.
+            never write code. Think hard.
           claude_args: --model claude-opus-4-8
