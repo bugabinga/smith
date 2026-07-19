@@ -48,5 +48,5 @@ jobs:
             exactly ONE thing — a PR against the ADW config, or an issue if it needs
             a decision. One per tick. Never weaken a gate or safety mechanism, never
             edit the spec or invariants, never merge. Stay silent if the workflow is
-            healthy and nothing is worth a change.
+            healthy and nothing is worth a change. Think hard.
           claude_args: --model claude-opus-4-8
