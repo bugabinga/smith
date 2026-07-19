@@ -2,6 +2,10 @@
 # a label-sync action applies this file so the label set is reviewable, not
 # hand-tended in the GitHub UI. Colours group by axis (type / size / state / risk).
 # name, color (no #), description.
+#
+# First sync: adw-labels only runs on a push to main touching this file, and the
+# merge that introduced it didn't trigger it — so this no-op edit fires that first
+# run to create the label set.
 
 # — type (triager classifies) —
 - name: "type:bug"
