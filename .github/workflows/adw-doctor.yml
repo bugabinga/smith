@@ -1,0 +1,52 @@
+# ADW doctor — the meta-agent. On a weekly schedule it diagnoses the agentic
+# workflow's own health (failing/drifting workflows, doc-vs-config drift, gate
+# pathologies, deprecations) and opens ONE improvement PR or issue. Its PRs land
+# in CODEOWNERS-protected paths, so the owner reviews every ADW change — the
+# doctor proposes, it never self-merges. schedule is an automation event the
+# action serves directly; subscription auth, no metered API.
+name: adw-doctor
+
+on:
+  schedule:
+    - cron: "13 4 * * 1"        # weekly, Monday early
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  actions: read
+
+concurrency:
+  group: adw-doctor
+  cancel-in-progress: true
+
+jobs:
+  doctor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ steps.token.outputs.token }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_commit_signing: true
+          prompt: |
+            Use the adw-doctor subagent (.claude/agents/adw-doctor.md) on
+            ${{ github.repository }}. Take the ADW's pulse: read recent workflow-run
+            outcomes (`gh run list`, `gh run view`), open PRs stuck at the gate or
+            bypassed, and the open audit issues. Check drift between
+            docs/plans/AGENTIC-DEVELOPMENT.md and the actual workflows/agents/labels/
+            ruleset. Diagnose the single highest-value systemic fix and propose
+            exactly ONE thing — a PR against the ADW config, or an issue if it needs
+            a decision. One per tick. Never weaken a gate or safety mechanism, never
+            edit the spec or invariants, never merge. Stay silent if the workflow is
+            healthy and nothing is worth a change.
+          claude_args: --model claude-opus-4-8
