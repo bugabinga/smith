@@ -1,0 +1,105 @@
+# ADW Codex review — the cross-family reviewer, first-class. Codex (OpenAI) runs
+# on the owner's ChatGPT subscription and posts an independent review with
+# different blind spots than the Anthropic agents. It is deliberately ADVISORY:
+# it posts a comment and a `codex-reviewed` label, but it does NOT own a
+# merge-gate label — an external service must never be able to deadlock a merge.
+# Every step is fail-open for the same reason.
+#
+# Auth refreshes itself in CI: the rotated auth.json is saved to a rolling cache
+# each run and restored next run, so it stays alive as long as CI keeps using it
+# (proven mechanics: p37). The CODEX_AUTH_JSON secret is the cold-start seed.
+name: adw-codex-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: adw-codex-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  codex:
+    # first-class but frugal: skip drafts and Dependabot (dependency-manager owns
+    # those). The shared 5-hour window is protected by this filter; tighten to a
+    # `codex-review` label if p37's per-review cost turns out high.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Restore the rolling, self-refreshing auth; seed from the secret if cold.
+      - name: Restore Codex auth (rolling cache)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.codex/auth.json
+          key: codex-auth-${{ github.run_id }}
+          restore-keys: |
+            codex-auth-
+      - name: Seed auth from secret if cache cold
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          mkdir -p "$HOME/.codex"
+          if [ -s "$HOME/.codex/auth.json" ]; then
+            echo "auth.json restored from cache"
+          else
+            printf '%s' "$CODEX_AUTH_JSON" > "$HOME/.codex/auth.json"
+            echo "auth.json seeded from CODEX_AUTH_JSON secret"
+          fi
+
+      - name: Install Codex
+        run: npm install -g @openai/codex
+
+      - name: Codex review (fail-open)
+        id: review
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set +e
+          gh pr diff "$PR" --repo "$REPO" > pr.diff
+          codex exec --json --ephemeral "You are smith's cross-family reviewer (read AGENTS.md). Give an independent, file-anchored review of this pull request diff — correctness, security (untrusted Lua plugins, secrets, injection), and fit against docs/SPEC.md — flagging what a same-family reviewer might rationalize away. Concise markdown. Diff follows:
+          $(cat pr.diff)" > out.jsonl 2> codex.err
+          echo "codex exit=$?"
+          jq -rs '[.. | objects | (.text? // .message?.content? // .delta? // empty)] | map(select(type==\"string\" and . != \"\")) | last // \"\"' out.jsonl > review.md 2>/dev/null
+          if [ ! -s review.md ]; then
+            echo "_Codex was unavailable for this review (auth/window/tooling — advisory, non-blocking). See the run log._" > review.md
+          fi
+          {
+            echo "🔎 **Codex cross-family review** (advisory — the Fable reviewers own the gate)"
+            echo
+            cat review.md
+          } > comment.md
+          gh pr comment "$PR" --repo "$REPO" --body-file comment.md || true
+
+      - name: Report 5-hour window cost
+        continue-on-error: true
+        run: |
+          echo "### model / token / window cost of this review"
+          jq -c '.. | objects | select(has("rate_limits") or has("used_percent") or has("primary_used_percent") or has("usage") or has("token_count"))' out.jsonl 2>/dev/null | tail -5 || echo "n/a"
+
+      # Persist the freshly-rotated auth for the next run — this is what keeps it
+      # alive without weekly re-seeding.
+      - name: Save refreshed Codex auth (rolling cache)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.codex/auth.json
+          key: codex-auth-${{ github.run_id }}
+
+      - name: Mark codex-reviewed (fail-open, never gates)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: gh pr edit "$PR" --repo "$REPO" --add-label codex-reviewed || true
