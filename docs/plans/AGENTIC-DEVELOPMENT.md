@@ -387,6 +387,7 @@ do is invisible. Beyond the issue→PR spine:
 | routing & gates | **Labels** (`.github/labels.yml`, as code) | triager / security-reviewer |
 | grouping | **Milestones** = waves | `planner` opens + assigns; `surveyor` fills the current one; `release-manager` closes |
 | every change | **PRs** linked to issues, agent-reviewed | builder |
+| review diversity | **Copilot code review** (advisory) + **Codex** (contributor / advisory reviewer) — cross-family second opinions | `reviewer` / `security-reviewer` weigh |
 | spec protection | **CODEOWNERS** + branch **ruleset** | (owner) |
 | dependency updates | **Dependabot** (`.github/dependabot.yml`) — bumps as maintenance | dependency-manager |
 | code scanning | **DevSkim** (`.github/workflows/devskim.yml`, SARIF → Security tab) + **CodeQL** (Rust) + `cargo audit`/`cargo deny` in CI | security-reviewer |
@@ -400,6 +401,28 @@ toolset but are reachable from `gh` / `gh api graphql` inside Actions — so the
 agents (which run in Actions) drive them. Code scanning, secret scanning, and
 push protection are **repo settings** the owner enables once; the agents then
 triage their alerts.
+
+### Cross-family review — extra eyes, not extra gates
+
+Anthropic agents reviewing Anthropic-built code share blind spots. **Copilot**
+(GitHub) and **Codex** (OpenAI) have *different* ones, so they are wired in for
+review *diversity* — the strongest use of a foreign model in a system that already
+prizes "a different model than the builder."
+
+- **Copilot code review** — enabled as a repo setting so it auto-reviews each PR.
+  Its comments are **advisory**: `reviewer`/`security-reviewer` read and weigh them,
+  but Copilot never sets a gate label.
+- **Codex** — two depths, owner's choice: as a **contributor**, Codex opens PRs
+  (from its ChatGPT cloud agent connected to the repo) that ride the *existing*
+  gate — reviewed, labeled, squash-merged like any PR, no new workflow; and/or as
+  an **advisory reviewer** in CI, which first needs its subscription-auth mechanics
+  proven the way p35 proved Claude's (a `needs:prototype`), since a metered OpenAI
+  API key is off the table.
+
+**Deliberately advisory, never gating.** External tools stay *out* of the
+`merge-gate`'s critical path: our own reviewers own the verdict labels, so a
+Copilot or Codex outage can never deadlock a merge, and no external service becomes
+load-bearing for landing code. They enrich the judgment; they don't hold the key.
 
 Two owner-added workflows already sit on `main` and the plan wraps around them
 rather than replacing them:
