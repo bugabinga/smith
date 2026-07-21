@@ -51,12 +51,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-        # smith is Rust + the ADW's own Actions workflows. No Python — GitHub's
-        # auto-detect added it in error. Add 'javascript-typescript' when the
-        # Astro site lands under site/.
+        # Only `actions` for now — it is the only code that exists (the ADW's own
+        # workflows). `rust` is dropped until production Rust lands: with the
+        # workspace absent and prototypes excluded, a rust scan finds nothing,
+        # FAILS, and (with code-scanning merge protection on) blocks every PR.
+        # Re-add `- language: rust` (and `javascript-typescript` for the site)
+        # when there is source for them to analyze.
         - language: actions
-          build-mode: none
-        - language: rust
           build-mode: none
         # CodeQL supports the following values keywords for 'language': 'actions', 'c-cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby', 'rust', 'swift'
         # Use `c-cpp` to analyze code written in C, C++ or both
