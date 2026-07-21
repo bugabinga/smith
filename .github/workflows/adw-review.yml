@@ -61,7 +61,16 @@ jobs:
             `changes-requested` (this wakes builder to revise) and remove
             `reviewed`. Leave your findings as comments either way.
             You are a mission-critical gate — ultrathink.
-          claude_args: --model claude-fable-5
+          # Scoped write access so the reviewer can actually cast its verdict.
+          # Without this, automation mode denies every gh call and the agent
+          # reviews but can post no label/comment (the merge-gate then never turns
+          # green). Read + verdict only — NOT `gh pr merge`, `gh api`, or `gh:*`,
+          # so a review agent can neither merge nor act outside its lane. This is
+          # the interim grant; the deterministic-verdict step (issue #19) removes
+          # the LLM's label-write entirely.
+          claude_args: >-
+            --model claude-fable-5
+            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr edit:*),Bash(gh pr comment:*),Bash(gh issue view:*)"
 
   security-reviewer:
     needs: reset
@@ -86,4 +95,13 @@ jobs:
             add `security-cleared`; on a high finding, add `risk:high` and ensure
             `security-cleared` is absent, holding the merge for the owner.
             You are a mission-critical gate — ultrathink.
-          claude_args: --model claude-fable-5
+          # Scoped write access so the reviewer can actually cast its verdict.
+          # Without this, automation mode denies every gh call and the agent
+          # reviews but can post no label/comment (the merge-gate then never turns
+          # green). Read + verdict only — NOT `gh pr merge`, `gh api`, or `gh:*`,
+          # so a review agent can neither merge nor act outside its lane. This is
+          # the interim grant; the deterministic-verdict step (issue #19) removes
+          # the LLM's label-write entirely.
+          claude_args: >-
+            --model claude-fable-5
+            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr edit:*),Bash(gh pr comment:*),Bash(gh issue view:*)"
