@@ -11,11 +11,19 @@
 #
 name: "CodeQL Advanced"
 
+# Incremental scans run only when code or a workflow changes — a docs/config/
+# markdown PR has nothing for CodeQL to analyze. The weekly schedule is the
+# full-tree backstop. (Safe: CodeQL is not a required merge check; only
+# `merge-gate` is, so a path-skipped run can't wedge a PR.)
 on:
   push:
     branches: [ "main" ]
+    paths: &scan
+      - '**/*.rs'
+      - '.github/workflows/**'
   pull_request:
     branches: [ "main" ]
+    paths: *scan
   schedule:
     - cron: '27 23 * * 6'
 
@@ -43,11 +51,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+        # Only `actions` for now — it is the only code that exists (the ADW's own
+        # workflows). `rust` is dropped until production Rust lands: with the
+        # workspace absent and prototypes excluded, a rust scan finds nothing,
+        # FAILS, and (with code-scanning merge protection on) blocks every PR.
+        # Re-add `- language: rust` (and `javascript-typescript` for the site)
+        # when there is source for them to analyze.
         - language: actions
-          build-mode: none
-        - language: python
-          build-mode: none
-        - language: rust
           build-mode: none
         # CodeQL supports the following values keywords for 'language': 'actions', 'c-cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby', 'rust', 'swift'
         # Use `c-cpp` to analyze code written in C, C++ or both
@@ -73,6 +83,11 @@ jobs:
       with:
         languages: ${{ matrix.language }}
         build-mode: ${{ matrix.build-mode }}
+        # prototypes/ is disposable spec-validation code (SPEC §18) — keep it out
+        # of the scan so findings track only production source.
+        config: |
+          paths-ignore:
+            - 'prototypes/**'
         # If you wish to specify custom queries, you can do so here or in a config file.
         # By default, queries listed here will override any specified in a config file.
         # Prefix the list here with "+" to use these queries and those in the config file.
