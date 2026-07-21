@@ -69,6 +69,9 @@
   description: "Escalated to the owner — never auto-merges"
 
 # — housekeeping —
+- name: "pipeline-jammed"
+  color: "9b1c1c"
+  description: "A required check is failing across ≥2 PRs — merges are wedged; jam-detector opened this"
 - name: "blocked"
   color: "b5179e"
   description: "Waiting on another issue — usually a needs:spec escalation"

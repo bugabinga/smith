@@ -1,0 +1,159 @@
+# ADW jam detector — the pipeline's dead-man's switch. Every ADW gate is
+# fail-closed by design: a broken required check holds `merge-gate` red, which is
+# correct for ONE bad PR but catastrophic when the break is systemic (a green-
+# tree CodeQL that finds no code and fails on every PR, an action that got
+# yanked). Then nothing merges and no single PR is "wrong" — the jam is invisible
+# from any one PR's vantage. This job watches the whole board and rings a bell.
+#
+# Deterministic, no LLM: a shell/jq scan tallies, per required-check name, how
+# many distinct open non-draft PRs it is FAILING on. Same check red on >= 2 PRs =
+# a systemic jam, not one bad branch. The LLM (adw-doctor) is dispatched only
+# AFTER a jam is confirmed, and only on the transition into jam — never on a
+# steady-state re-scan, so it can't spam.
+#
+# Escalation lands as an ISSUE, not a PR — issues have no merge gate, so the
+# alert reaches the owner even when every merge lane is wedged. The issue is
+# idempotent (one open `pipeline-jammed` issue at a time) and auto-closes the
+# instant a scan comes back clean.
+#
+# Triggers: failure-completions of the gating workflows and check-suites give a
+# fast edge (seconds after the break), and a 30-minute schedule is the
+# deterministic floor — GitHub suppresses some self-triggered check events, so
+# the cron is what guarantees the jam is caught even if every edge is missed.
+name: adw-jam-detector
+
+on:
+  workflow_run:
+    workflows: ["adw-review", "adw-gate", "adw-build", "CodeQL Advanced", "DevSkim"]
+    types: [completed]
+  check_suite:
+    types: [completed]
+  schedule:
+    - cron: "*/30 * * * *"      # deterministic floor — the edge triggers are best-effort
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  actions: write               # dispatch adw-doctor on a confirmed jam
+
+concurrency:
+  group: adw-jam-detector
+  cancel-in-progress: false    # let a running scan finish; don't drop the alert
+
+jobs:
+  detect:
+    # A green check can never jam the pipeline — only look when something failed
+    # (or on the schedule / a manual poke). This keeps the scan off the hot path
+    # of every successful run.
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure') ||
+      (github.event_name == 'check_suite' && github.event.check_suite.conclusion == 'failure')
+    runs-on: ubuntu-latest
+    steps:
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - id: scan
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+          THRESHOLD: "2"        # a check red on this many PRs = systemic jam
+        run: |
+          set -euo pipefail
+
+          # Open, non-draft PRs — drafts are works-in-progress and can't jam the
+          # merge lane.
+          prs=$(gh pr list --repo "$REPO" --state open --json number,isDraft \
+                  --jq '.[] | select(.isDraft==false) | .number')
+
+          # (PR, failing-check) pairs, one line each, tab-separated. Dedup per PR
+          # so a check counts once per PR no matter how many contexts it reports.
+          : > fails.tsv
+          for n in $prs; do
+            gh pr view "$n" --repo "$REPO" --json statusCheckRollup --jq '
+              .statusCheckRollup[]
+              | ((.conclusion // .state)) as $c
+              | select($c=="FAILURE" or $c=="ERROR" or $c=="TIMED_OUT"
+                       or $c=="STARTUP_FAILURE" or $c=="CANCELLED")
+              | (.name // .context)' 2>/dev/null | sort -u \
+            | while IFS= read -r chk; do printf '%s\t%s\n' "$n" "$chk"; done >> fails.tsv || true
+          done
+
+          # Most-failing check and the distinct-PR count behind it. Each check
+          # appears at most once per PR in fails.tsv, so occurrences == #PRs.
+          top=$(cut -f2 fails.tsv | sort | uniq -c | sort -rn | head -1 || true)
+          count=$(printf '%s' "$top" | awk '{print $1+0}')
+          name=$(printf '%s'  "$top" | sed -E 's/^[[:space:]]*[0-9]+[[:space:]]+//')
+
+          jammed=false
+          affected=""
+          if [ "${count:-0}" -ge "$THRESHOLD" ]; then
+            jammed=true
+            affected=$(awk -F'\t' -v c="$name" '$2==c {print $1}' fails.tsv | sort -un | sed 's/^/#/' | paste -sd',' - | sed 's/,/, /g')
+          fi
+
+          echo "jammed=$jammed"            >> "$GITHUB_OUTPUT"
+          echo "culprit=$name"             >> "$GITHUB_OUTPUT"
+          echo "count=${count:-0}"         >> "$GITHUB_OUTPUT"
+          echo "affected=$affected"        >> "$GITHUB_OUTPUT"
+          echo "Scan: jammed=$jammed culprit='$name' count=${count:-0} affected='$affected'"
+
+      - id: escalate
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+          JAMMED: ${{ steps.scan.outputs.jammed }}
+          CULPRIT: ${{ steps.scan.outputs.culprit }}
+          COUNT: ${{ steps.scan.outputs.count }}
+          AFFECTED: ${{ steps.scan.outputs.affected }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # At most one open jam issue — the idempotency key.
+          existing=$(gh issue list --repo "$REPO" --label pipeline-jammed --state open \
+                       --json number --jq '.[0].number // empty')
+
+          if [ "$JAMMED" = "true" ]; then
+            body=$(cat <<EOF
+          The pipeline is jammed: the required check **\`$CULPRIT\`** is failing on
+          **$COUNT** open PRs, so \`merge-gate\` stays red and nothing merges.
+
+          Affected PRs: $AFFECTED
+
+          This is a *systemic* failure — the same check is red across multiple
+          unrelated PRs, so it is the check (or its config), not any one branch.
+          Detector run: $RUN_URL
+
+          The adw-doctor has been dispatched to diagnose. This issue auto-closes
+          when a scan finds the jam cleared.
+          EOF
+          )
+            if [ -n "$existing" ]; then
+              # Already alerting — refresh the state, do NOT re-dispatch the doctor.
+              gh issue comment "$existing" --repo "$REPO" --body "Still jammed on \`$CULPRIT\` ($COUNT PRs: $AFFECTED). $RUN_URL"
+              echo "Updated existing jam issue #$existing (no re-dispatch)."
+            else
+              # Transition into jam — open the alert and wake the doctor once.
+              gh issue create --repo "$REPO" \
+                --title "Pipeline jammed: \`$CULPRIT\` failing across $COUNT PRs" \
+                --label pipeline-jammed --body "$body"
+              gh workflow run adw-doctor.yml -R "$REPO" || echo "doctor dispatch failed (non-fatal)"
+              echo "Opened jam issue and dispatched adw-doctor."
+            fi
+          else
+            if [ -n "$existing" ]; then
+              gh issue close "$existing" --repo "$REPO" \
+                --comment "Scan is clean — no required check is failing across multiple PRs. Jam resolved. $RUN_URL"
+              echo "Closed stale jam issue #$existing."
+            else
+              echo "No jam, nothing open. Quiet."
+            fi
+          fi
