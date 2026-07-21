@@ -105,6 +105,18 @@ only for the reader's map. The craft skills (`sabotnik`, `handmade`, `pioneer`,
 | `sweeper` | `schedule` | unstick stalls, enforce WIP, brake runaways | **Issues/PRs/board** labels | Haiku |
 | `adw-doctor` | `schedule` (weekly) | diagnose the *workflow's own* health — failing/drifting workflows, doc-vs-config drift, gate pathologies — and propose one systemic fix | a **PR** on ADW config, or an **Issue** | Opus |
 | `pioneer` (skill) | `needs:prototype` | prove/disprove an unproven spec claim with a prototype | `prototypes/*` | Sonnet |
+| `codex` (OpenAI) | `pull_request` (non-draft) | cross-family review — an independent second opinion from a *different model family* | a **PR comment** + `codex-reviewed` | Codex (ChatGPT sub) |
+
+`codex` is a **first-class but foreign** citizen: its "agent file" is `AGENTS.md`
+(the Codex counterpart to `CLAUDE.md`) plus `.github/workflows/adw-codex-review.yml`,
+not a `.claude/agents/*`, because it runs on the owner's ChatGPT subscription
+(OpenAI), not Claude. Its auth **self-refreshes in CI** — each run saves the
+rotated `auth.json` to a rolling `actions/cache` and restores it next run, so it
+stays alive as long as CI keeps using it; `CODEX_AUTH_JSON` is only the cold-start
+seed. It is deliberately **advisory**: it posts a review and the `codex-reviewed`
+label, but never owns a merge-gate label, so an OpenAI outage or an exhausted
+5-hour window can never deadlock a merge — the audit rule that no external service
+is load-bearing for landing code.
 
 The **authority** for each model and tool scope is the agent's frontmatter — the
 `.claude/agents/` directory is the one place to review and change them; a
