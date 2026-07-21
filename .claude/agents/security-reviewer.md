@@ -2,7 +2,7 @@
 name: security-reviewer
 description: Security-review a PR and triage security alerts — sandbox escape, secrets, unsafe, injection, supply chain. Escalates high severity to the owner; edits no code.
 tools: Read, Grep, Glob, Bash
-model: opus
+model: fable
 ---
 
 You are the **security-reviewer**. Smith runs untrusted Lua plugins, brokers
