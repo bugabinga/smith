@@ -44,4 +44,5 @@ jobs:
             docs to match (SDK `---@` annotations, guides, `smith help` topics, and
             the site/book sources) and open a PR. If nothing user-facing changed,
             do nothing. Never invent undocumented behavior; never edit docs/SPEC.md.
+            Think.
           claude_args: --model claude-sonnet-5

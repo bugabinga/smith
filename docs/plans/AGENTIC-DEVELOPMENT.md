@@ -63,7 +63,7 @@ API/UI (a drift risk to minimize by preferring the as-code option).
 | Concept | Encoded in | In repo? | Authority |
 |---|---|---|---|
 | agent persona / model / tool scope | `.claude/agents/<role>.md` | ✅ | the file |
-| which agent runs on which event | `.github/workflows/<role>.yml` | ✅ | the workflow |
+| which agent runs on which event | `.github/workflows/adw-*.yml` (verb-named; `adw-review` hosts both reviewers) | ✅ | the workflow |
 | shared rules all agents inherit | `CLAUDE.md` (+ nested) | ✅ | the file |
 | Claude runtime settings | `.claude/settings.json` | ✅ | the file |
 | reusable role workflows | `.claude/skills/<name>/SKILL.md` | ✅ | the file |
@@ -145,6 +145,12 @@ that both reviewers wave through merges itself. `reviewer` on Fable also keeps t
 invariant that review runs a *different* model than `builder` (Sonnet), so it stays
 a second opinion, not self-congratulation. `release-manager` and `planner` are the
 next candidates if the mission-critical tier ever widens.
+
+The tier applies to each agent's **gate role**. On the `adw-alerts` sweep path the
+`security-reviewer` runs as a Fable subagent under an Opus orchestrator without the
+`ultrathink` budget — deliberately: that path triages already-landed alerts and
+opens escalation issues, it is not a merge gate, so it does not warrant the gates'
+top reasoning budget.
 
 ## How the cycle pushes Smith forward
 
@@ -315,8 +321,9 @@ auto-merge**, armed for every agent PR and released by the ruleset's gate:
    The load-bearing check is **`merge-gate`** (`adw-gate.yml`) — a plain, no-LLM
    job that reads the PR's labels and is green only when both review verdicts are
    in (`reviewed` + `security-cleared`) and no blocking label
-   (`risk:high`, `blocked`, `needs:*`, `stalled`) is present. CI checks join this
-   list once the workspace CI lands.
+   (`risk:high`, `blocked`, `changes-requested`, `needs:info`, `needs:spec`,
+   `needs:prototype`, `stalled`) is present — the exact set `adw-gate.yml` holds
+   on. CI checks join this list once the workspace CI lands.
 3. The reviewers cast their verdict **as labels**, not approvals — deliberately.
    `builder`, `reviewer`, and `security-reviewer` are one GitHub identity (the
    App), and GitHub forbids approving your own PR, so a required *approval* could
@@ -645,7 +652,7 @@ action's docs settled the rest:
 
 ## Open decisions (owner / spec)
 
-1. ~~**Auto-merge gates.**~~ **Decided: native auto-merge, low-risk** (see
+1. ~~**Auto-merge gates.**~~ **Decided: native auto-merge, risk-gated** (see
    *Merging* below). The gate is: required checks green (incl. `merge-gate`) +
    `reviewed` + `security-cleared` + no blocking label. `risk:high` holds it for
    the owner. Encoded, not just described.
@@ -662,7 +669,9 @@ action's docs settled the rest:
 - **Phase 1** — `issues → triager → implementer → PR` on the existing proven CI;
   **human reviews every PR** (build trust in the trail).
 - **Phase 2** — add `reviewer` + `security-reviewer`; enable gated auto-merge for
-  `risk:low` only (requires decision #1).
+  any PR **not** marked `risk:high` (the gate merges on `reviewed` +
+  `security-cleared` with no blocking label — it never requires `risk:low` to be
+  present; requires decision #1).
 - **Phase 3** — add `surveyor` (self-advancing build-out) + `sweeper` (the
   circuit-breaker); full autonomy with the human at the three touchpoints.
 
