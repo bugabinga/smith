@@ -1,0 +1,76 @@
+# p37 — prove Codex can run in CI on the ChatGPT *subscription* (no metered
+# OpenAI API key), the way p35 proved Claude's runner. Disposable evidence
+# (SPEC §18): push-triggered on this branch, path-scoped, every step
+# continue-on-error so the run always completes and the logs ARE the evidence —
+# a wrong flag or a missing-auth error is the finding, exactly like p35.
+name: p37-codex-harness
+
+on:
+  push:
+    branches: ["claude/**"]
+    paths:
+      - "prototypes/p37-codex-review/**"
+      - ".github/workflows/p37-codex-harness.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Codex CLI
+        continue-on-error: true
+        run: |
+          npm install -g @openai/codex
+          codex --version || echo "::warning::codex --version failed"
+
+      # Subscription auth: restore the ChatGPT-login auth.json from a secret.
+      # NB it goes stale ~every 8 days, so production would refresh + persist it.
+      - name: Restore ChatGPT subscription auth
+        continue-on-error: true
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          mkdir -p "$HOME/.codex"
+          if [ -n "$CODEX_AUTH_JSON" ]; then
+            printf '%s' "$CODEX_AUTH_JSON" > "$HOME/.codex/auth.json"
+            echo "auth.json restored ($(wc -c < "$HOME/.codex/auth.json") bytes)"
+          else
+            echo "::warning::CODEX_AUTH_JSON secret absent — the exec below reveals the auth requirement (that IS the evidence)"
+          fi
+
+      - name: Codex exec — capture the JSONL stream
+        continue-on-error: true
+        run: |
+          set +e
+          codex exec --json --ephemeral "Reply with exactly: CODEX-HARNESS-OK" \
+            > codex.jsonl 2> codex.err
+          echo "codex exec exit=$?"
+          echo "::group::raw JSONL (last 80 lines)"; tail -80 codex.jsonl 2>/dev/null; echo "::endgroup::"
+          echo "::group::stderr"; cat codex.err 2>/dev/null; echo "::endgroup::"
+
+      # The number that should drive the cadence: which model ran, how many tokens
+      # one review costs, and how much of the 5-hour window it burned. Schema-agnostic
+      # jq (recursive descent) so it survives Codex's exact event shape; a grep
+      # fallback surfaces anything jq misses.
+      - name: Report model, token cost, and 5-hour window usage
+        continue-on-error: true
+        run: |
+          echo "### resolved model"
+          jq -rs '[.. | objects | (.model? // empty)] | map(select(. != "")) | last // "not found in stream"' codex.jsonl 2>/dev/null || echo "n/a"
+          echo "### token usage (this one review)"
+          jq -c '.. | objects | select(has("usage") or has("input_tokens") or has("total_tokens") or has("token_count"))' codex.jsonl 2>/dev/null | tail -3 || echo "n/a"
+          echo "### rate limits / 5-hour window cost"
+          jq -c '.. | objects | select(has("rate_limits") or has("used_percent") or has("primary_used_percent") or has("resets_in_seconds") or has("window_minutes"))' codex.jsonl 2>/dev/null | tail -5 || echo "n/a"
+          echo "### keyword fallback (raw)"
+          grep -ioE '"[a-z_]*(rate_limit|used_percent|resets|window|remaining|quota|tokens?)[a-z_]*"[^,}]*' codex.jsonl codex.err 2>/dev/null | sort -u | head -40 || echo "(no quota/token keywords surfaced)"
+
+      - name: Official action — the production path
+        continue-on-error: true
+        uses: openai/codex-action@v1
+        with:
+          prompt: "Reply with exactly: CODEX-HARNESS-OK"
