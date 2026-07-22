@@ -62,8 +62,8 @@ jobs:
             pass is one line. Then apply your verdict as a label: on approve add
             `reviewed` and remove `changes-requested`; on request-changes add
             `changes-requested` and remove `reviewed`.
-            You are a mission-critical gate — ultrathink.
-          claude_args: --model claude-fable-5 --dangerously-skip-permissions
+            You are a mission-critical gate — think.
+          claude_args: --model claude-opus-4-8 --dangerously-skip-permissions
 
   security-reviewer:
     needs: reset
@@ -89,5 +89,5 @@ jobs:
             Then apply your verdict: if nothing high-severity add `security-cleared`;
             on a high finding add `risk:high` and ensure `security-cleared` is
             absent (holds the merge for the owner).
-            You are a mission-critical gate — ultrathink.
-          claude_args: --model claude-fable-5 --dangerously-skip-permissions
+            You are a mission-critical gate — think.
+          claude_args: --model claude-opus-4-8 --dangerously-skip-permissions

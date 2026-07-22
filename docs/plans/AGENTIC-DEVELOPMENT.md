@@ -97,8 +97,8 @@ only for the reader's map. The craft skills (`sabotnik`, `handmade`, `pioneer`,
 | `triager` | issue opened | triage a raw issue into a labeled, routed, spec-anchored work-order | the **Issue** + board card | Haiku |
 | `planner` | spec change lands on `main` | turn the spec diff into tracked work-orders + refresh the plan | **Issues** + `docs/plans/*` | Opus |
 | `builder` | issue labeled `ready` | build one slice per `WALKING-SKELETON`, hardened, tested | a **branch + PR** | Sonnet |
-| `reviewer` | `pull_request` | adversarial correctness review vs the spec — a *second* model | a **PR review** | Fable |
-| `security-reviewer` | PR on sensitive surface / `needs:security` / scanner alert | security review; escalate high severity | a **PR review** + `risk:*` | Fable |
+| `reviewer` | `pull_request` | adversarial correctness review vs the spec — a *second* model | a **PR review** | Opus |
+| `security-reviewer` | PR on sensitive surface / `needs:security` / scanner alert | security review; escalate high severity | a **PR review** + `risk:*` | Opus |
 | `docs-writer` | merged PR changes user-facing / SDK behavior | keep user + plugin-author docs and the site true to the product | doc sources + Pages, via **PR** | Sonnet |
 | `dependency-manager` | Dependabot bump PR | shepherd version bumps through the gates; escalate risky ones | **Dependabot PRs** | Sonnet |
 | `release-manager` | milestone green / `v*` tag | draft notes, verify the §14 matrix, publish the Release | a **GitHub Release** | Sonnet |
@@ -116,7 +116,7 @@ auth each run (re-seed when the ~8-day token lapses). As a **reviewer** it is
 advisory — a comment + `codex-reviewed`, never a merge-gate label, so an OpenAI
 outage can't deadlock a merge. As a **builder** it takes an issue labeled `codex`,
 implements one slice, and opens a PR that rides the same gate as any other — the
-Fable reviewers judge it, so Codex's build is trusted no more than any agent's.
+the reviewers judge it, so Codex's build is trusted no more than any agent's.
 
 The **authority** for each model and tool scope is the agent's frontmatter — the
 `.claude/agents/` directory is the one place to review and change them; a
@@ -136,21 +136,13 @@ they climb together only where the stakes justify it.
 | mechanical | Haiku | minimal | `triager`, `sweeper` | label/route/sweep — pattern work, not judgment |
 | build | Sonnet | `think` | `builder`, `docs-writer`, `dependency-manager`, `release-manager` | implement and maintain — competent, bounded |
 | judgment | Opus | `think hard` | `surveyor`, `planner`, `adw-doctor` | plan the build and heal the machine — one wrong call ripples |
-| **mission-critical** | **Fable** | **`ultrathink`** | `reviewer`, `security-reviewer` | the two autonomous gates into `main`; a wrong approve merges a defect or a sandbox escape with no human in the loop |
+| **gates** | Opus | `think` | `reviewer`, `security-reviewer` | the two autonomous gates into `main`; a *different* model than the Sonnet builder so review stays a second opinion |
 
-**Fable is reserved for the gates** because their errors are the least reversible
-and the least supervised — everything else has a backstop (CI, the owner on
-`risk:high`, `sweeper`, the owner on protected paths), but a clean-looking bad PR
-that both reviewers wave through merges itself. `reviewer` on Fable also keeps the
-invariant that review runs a *different* model than `builder` (Sonnet), so it stays
-a second opinion, not self-congratulation. `release-manager` and `planner` are the
-next candidates if the mission-critical tier ever widens.
-
-The tier applies to each agent's **gate role**. On the `adw-alerts` sweep path the
-`security-reviewer` runs as a Fable subagent under an Opus orchestrator without the
-`ultrathink` budget — deliberately: that path triages already-landed alerts and
-opens escalation issues, it is not a merge gate, so it does not warrant the gates'
-top reasoning budget.
+**The reviewers run Opus + `think`, not Fable + `ultrathink`** — the top model at
+the top thinking budget, on every PR and every push, burned the subscription too
+fast. Opus is still a strong adversarial gate on a *different* model than the
+Sonnet `builder`, and Codex adds a cross-family read on top; dial back up only if a
+gate miss proves the budget was load-bearing.
 
 ## How the cycle pushes Smith forward
 
@@ -474,7 +466,7 @@ input and publishes where anyone can read it is an exfiltration shape. On a publ
 repo the leak can't be closed at the output — every channel is public — so the
 **trigger** is the control: **gate the credentialed run to a trusted trigger, and
 run it autonomously there.** Codex uses `author_association ∈ {OWNER, MEMBER,
-COLLABORATOR}` (external PRs never get a credentialed run; they still get the Fable
+COLLABORATOR}` (external PRs never get a credentialed run; they still get the
 reviewers) — no per-run approval, so autonomy is intact. This is the ADW analogue
 of **SPEC §6.7**. Residuals are accepted, not hidden: the token is a rotatable
 non-GitHub credential on advisory jobs, `@openai/codex` is unpinned, and a

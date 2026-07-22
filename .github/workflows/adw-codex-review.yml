@@ -46,7 +46,8 @@ jobs:
         run: |
           gh pr diff "$PR" --repo "$REPO" | head -c 100000 > pr.diff
           codex exec --sandbox read-only "Cross-family review of this PR diff (read AGENTS.md for repo rules). Be terse: real, file-anchored findings only, most severe first, one line each. No preamble, no praise, no restating the diff. If nothing material, reply exactly 'No blocking findings.' Diff:
-          $(cat pr.diff)" > review.md 2>&1 || true
+          $(cat pr.diff)" > review.md 2> codex.err || true
+          # codex prints its banner/progress to stderr; keep it out of the comment.
           grep -q '[^[:space:]]' review.md || echo "_Codex unavailable (advisory)._" > review.md
           { echo "🔎 **Codex** (advisory cross-family review)"; echo;
             sed -E 's#(gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9._-]{20,})#***#g' review.md; } > c.md
