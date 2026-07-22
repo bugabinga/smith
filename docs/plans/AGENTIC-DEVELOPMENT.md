@@ -62,8 +62,8 @@ API/UI (a drift risk to minimize by preferring the as-code option).
 
 | Concept | Encoded in | In repo? | Authority |
 |---|---|---|---|
-| agent persona / model / tool scope / charter | `.claude/agents/<role>.md` | ✅ | the file |
-| which agent runs on which event | `.github/workflows/adw-*.yml` (verb-named; `adw-review` hosts both reviewers) | ✅ | the workflow |
+| agent charter (mission + boundaries) | `.claude/agents/<role>.md` | ✅ | the file |
+| which agent runs on which event, its model / effort / tool access | `.github/workflows/adw-*.yml` (verb-named; `adw-review` hosts both reviewers) | ✅ | the workflow |
 | shared rules all agents inherit | `CLAUDE.md` (+ nested) | ✅ | the file |
 | Claude runtime settings | `.claude/settings.json` | ✅ | the file |
 | reusable role workflows | `.claude/skills/<name>/SKILL.md` | ✅ | the file |
@@ -123,13 +123,13 @@ level below is a standing assignment.
 **Two builders, by domain.** The `triager` routes each `ready`-able issue by
 surface: **UI/UX → the Claude builder** (`opus`, `ready`), **backend → the Codex
 builder** (`terra`, `codex`). Two model families building different halves is
-diversity *and* specialization. The gate `reviewer` is `opus`, so a backend
-(`terra`) PR is gated cross-family — but a UI/UX PR is built *and* gated by `opus`;
-there the only cross-family read is the advisory, non-gating `sol` `codex-review`,
-and the gate is a higher-effort (`xhigh`) second pass rather than a different
-family. **Owner decision (open):** if a same-model UI gate reads too weak, move one
-gate reviewer onto a non-`opus` family, or make `codex-review` gating on
-`opus`-built PRs.
+diversity *and* specialization. Cross-family review is preserved by construction:
+a backend (`terra`) PR is **gated** cross-family by the `opus` `reviewer`, and a
+UI/UX (`opus`) PR — built and gated by `opus` — gets its cross-family read from the
+`sol` `codex-review` (advisory) plus a higher-effort (`xhigh`) `opus` second pass.
+Every PR is seen by both families; only which family *gates* flips with the
+builder. Promoting `codex-review` to gating on `opus`-built PRs would make the UI
+cross-family read gating too — a later tightening, not a blocker.
 
 **Codex is first-class, not foreign.** `sol`/`terra`/`luna` agents run on the
 owner's ChatGPT subscription (`CODEX_AUTH_JSON` seeds auth each run; re-seed when
@@ -142,9 +142,10 @@ project doc via `project_doc_fallback_filenames = ["CLAUDE.md"]`. `codex-review`
 stays advisory — a comment + `codex-reviewed`, never a merge-gate label, so an
 OpenAI outage can't deadlock a merge.
 
-The **authority** for each agent's mission and tool scope is its `.claude/agents/`
-charter; the **model and effort** are set in the workflow that runs it (this table
-is the map). `builder` and `reviewer` wield `/sabotnik` and `/handmade`; `pioneer`
+The **authority** for each agent's mission and boundaries is its `.claude/agents/`
+charter; **model, effort, and tool access** are set by the workflow that runs it
+(this table is the map). Every agent runs at full access — bounded by its charter
+prose, not a frontmatter tool allow-list. `builder` and `reviewer` wield `/sabotnik` and `/handmade`; `pioneer`
 and `smith` stay owner/skill-invoked, since the spec is touchpoint 1.
 
 ## How the cycle pushes Smith forward
@@ -398,9 +399,10 @@ follow it so `builder` always meets the same contract, whoever wrote the order.
 
 Deliberately **not** stacked; each does one job:
 
-- **`.claude/agents/*.md`** — the per-role control surface. Carries name,
-  description, **model**, **tool scope**, and the persona system prompt in one
-  file. This is where a role's identity lives.
+- **`.claude/agents/*.md`** — the per-role charter: name, description, and the
+  persona/mission system prompt. This is where a role's identity lives; its
+  **model, effort, and tool access are set by the workflow** that runs it (and a
+  Codex agent injects this charter's body into its prompt at runtime).
 - **`CLAUDE.md`** — shared project rules every agent inherits (commit voice,
   spec-before-code). Context, not persona.
 - **Output styles** — session-global, main-thread only; they **cannot set model

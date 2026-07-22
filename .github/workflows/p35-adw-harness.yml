@@ -60,10 +60,21 @@ jobs:
           GH_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           set -o pipefail
-          claude -p "Reply with exactly this line and nothing else: ADW-HARNESS-OK repo=${{ github.repository }}" \
-            --model claude-opus-4-8 --effort high --output-format text 2>&1 | tee cli-out.txt
-          echo "---"
-          grep -q "ADW-HARNESS-OK" cli-out.txt && echo "CLI_RUNNER=ok (--effort accepted)" || { echo "CLI_RUNNER=fail"; exit 1; }
+          fail=0
+          # Cover the model/effort combos the fleet actually uses: opus at high and
+          # xhigh, fable at xhigh. A rejected flag or bad model reddens the run.
+          for combo in "claude-opus-4-8 high" "claude-opus-4-8 xhigh" "claude-fable-5 xhigh"; do
+            set -- $combo
+            echo "== probing --model $1 --effort $2 =="
+            if claude -p "Reply with exactly this line and nothing else: ADW-HARNESS-OK" \
+                 --model "$1" --effort "$2" --output-format text 2>&1 | tee out.txt \
+               && grep -q "ADW-HARNESS-OK" out.txt; then
+              echo "ok: $1 $2"
+            else
+              echo "FAIL: $1 $2"; fail=1
+            fi
+          done
+          [ "$fail" = 0 ] && echo "CLI_RUNNER=ok (all model/effort combos accepted)" || { echo "CLI_RUNNER=fail"; exit 1; }
 
       - name: cli outcome
         run: |
