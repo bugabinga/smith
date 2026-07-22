@@ -39,4 +39,8 @@ jobs:
             in ${{ github.repository }}. Follow .claude/agents/triager.md exactly:
             classify, size, anchor to the spec, gate readiness, and route. Do not
             write code or open a PR.
-          claude_args: --model claude-haiku-4-5-20251001
+          # Scoped writes so the triager can actually label/route — without this
+          # automation mode denies every gh call and triage is inert.
+          claude_args: >-
+            --model claude-haiku-4-5-20251001
+            --allowedTools "Bash(gh issue view:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh issue list:*),Bash(gh search:*)"

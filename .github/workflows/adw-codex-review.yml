@@ -1,10 +1,10 @@
 # Codex cross-family review — a second opinion from a different model family,
 # advisory (never a gate label; a Codex outage can't wedge a merge).
 #
-# Runs autonomously on TRUSTED-author PRs only (owner/member/collaborator). That
-# is the whole security model: a credentialed agent must not read an untrusted
-# external diff, so we gate the trigger instead of approving every run. Fork PRs
-# get no secrets anyway. Simple by design.
+# Runs autonomously on every non-draft PR. The repo is members-only (issues and
+# PRs only from repository members), so there is no untrusted external author —
+# the credentialed-agent-over-untrusted-input problem is gone at the source, and
+# no author gate or approval is needed. Fork PRs get no secrets anyway.
 name: adw-codex-review
 
 on:
@@ -23,7 +23,7 @@ jobs:
   codex:
     if: >-
       github.event.pull_request.draft == false &&
-      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
+      github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

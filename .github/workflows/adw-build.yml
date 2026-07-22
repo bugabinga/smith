@@ -21,7 +21,11 @@ concurrency:
 
 jobs:
   build:
-    if: github.event.label.name == 'ready'
+    # `ready` routes to the Claude builder; `codex` routes to adw-codex-build.
+    # Guard against both landing on one issue — Codex wins, Claude stands down.
+    if: >-
+      github.event.label.name == 'ready' &&
+      !contains(github.event.issue.labels.*.name, 'codex')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
