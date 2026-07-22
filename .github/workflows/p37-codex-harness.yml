@@ -43,6 +43,40 @@ jobs:
             echo "::warning::CODEX_AUTH_JSON secret absent — the exec below reveals the auth requirement (that IS the evidence)"
           fi
 
+      # Prove Codex loads CLAUDE.md as its project doc when AGENTS.md is absent,
+      # via `project_doc_fallback_filenames`. A random nonce in a throwaway repo's
+      # CLAUDE.md (no AGENTS.md) — Codex can only echo it if the fallback loaded
+      # the file. This is the evidence that lets us delete AGENTS.md.
+      # NOT continue-on-error: this proof is load-bearing (the AGENTS.md deletion
+      # rests on it), so a fallback regression must redden the run, unlike the
+      # other fail-open evidence steps.
+      - name: Verify Codex reads CLAUDE.md via project_doc_fallback_filenames
+        run: |
+          set +e
+          printf 'project_doc_fallback_filenames = ["CLAUDE.md"]\n' > "$HOME/.codex/config.toml"
+          nonce="SMITH-FB-OK-${RANDOM}${RANDOM}"
+          d="$(mktemp -d)"
+          (
+            cd "$d" && git init -q .
+            printf '# Project rules\n\nThe magic fallback token is %s.\n' "$nonce" > CLAUDE.md
+            # deliberately NO AGENTS.md — force the fallback path.
+            # danger-full-access mirrors the real workflows (full access, no cage)
+            # so this one run validates the flag AND the fallback; a bad flag shows
+            # in stderr, a fallback miss shows as an un-echoed nonce.
+            codex exec --sandbox danger-full-access \
+              "State the magic fallback token from your project instructions, verbatim." \
+              > out.md 2> out.err
+          )
+          echo "expected nonce: $nonce"
+          echo "::group::codex answer"; cat "$d/out.md" 2>/dev/null; echo "::endgroup::"
+          echo "::group::stderr (last 20)"; tail -20 "$d/out.err" 2>/dev/null; echo "::endgroup::"
+          if grep -qF "$nonce" "$d/out.md" 2>/dev/null; then
+            echo "✅ FALLBACK VERIFIED — Codex read CLAUDE.md (nonce echoed)."
+          else
+            echo "::error::FALLBACK NOT CONFIRMED — nonce not echoed; inspect logs above."
+            exit 1
+          fi
+
       - name: Codex exec — capture the JSONL stream
         continue-on-error: true
         run: |

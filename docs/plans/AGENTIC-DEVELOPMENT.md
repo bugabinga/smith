@@ -108,10 +108,12 @@ only for the reader's map. The craft skills (`sabotnik`, `handmade`, `pioneer`,
 | `codex` (OpenAI) | `pull_request` **reviews**; issue labeled `codex` **builds** | cross-family second opinion, and a foreign-model builder | a **PR comment** (review) or a **branch + PR** (build) | Codex (ChatGPT sub) |
 
 `codex` is a **first-class but foreign** citizen — it both **reviews and builds**,
-mix-and-match with Claude's agents per the owner's call. Its "agent file" is
-`AGENTS.md` (the Codex counterpart to `CLAUDE.md`) plus
-`.github/workflows/adw-codex-{review,build}.yml`, not a `.claude/agents/*`, because
-it runs on the owner's ChatGPT subscription (OpenAI). `CODEX_AUTH_JSON` seeds its
+mix-and-match with Claude's agents per the owner's call. It has no separate agent
+file: the Codex workflows set `project_doc_fallback_filenames = ["CLAUDE.md"]`, so
+Codex loads the same `CLAUDE.md` every Claude agent reads (the fallback fires
+because there is no `AGENTS.md`) — one source of truth, no drifting second copy.
+Its config lives in `.github/workflows/adw-codex-{review,build}.yml`, not a
+`.claude/agents/*`, because it runs on the owner's ChatGPT subscription (OpenAI). `CODEX_AUTH_JSON` seeds its
 auth each run (re-seed when the ~8-day token lapses). As a **reviewer** it is
 advisory — a comment + `codex-reviewed`, never a merge-gate label, so an OpenAI
 outage can't deadlock a merge. As a **builder** it takes an issue labeled `codex`,
