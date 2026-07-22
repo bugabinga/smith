@@ -330,12 +330,15 @@ auto-merge**, armed for every agent PR and released by the ruleset's gate:
    never be satisfied by an agent. A required *check* driven by a label has no such
    problem: the review produces `reviewed`, the security review `security-cleared`,
    and `merge-gate` turns green. The **label-write is deterministic, not the LLM's**
-   (issue #19): the reviewer agent only writes a one-word verdict to a file, and a
-   no-LLM step in the same job applies the label with the App token. So on the
-   label surface the model's reach is one token for the PR under review — it
-   cannot set an arbitrary label or forge a verdict; `gh pr edit` is not in its
-   allow-list. (It keeps `gh pr comment` + the App token, so commenting reach is
-   unchanged — this closes the label-write hole, not every grant.)
+   (issue #19): the reviewer agent ends its PR comment with a marker line
+   (`ADW-VERDICT: approve`), and a no-LLM step in the same job reads that marker
+   and applies the label with the App token — trusting only the review App's own
+   comments from this run's window, so neither a public-repo stranger's comment
+   nor a stale prior run can spoof a verdict. So on the label surface the model's
+   reach is the marker word for the PR under review — it cannot set an arbitrary
+   label or forge a verdict; `gh pr edit` is not in its allow-list. (It keeps
+   `gh pr comment` + the App token, so commenting reach is unchanged — this closes
+   the label-write hole, not every grant.)
    `required_approving_review_count` stays `0`; the
    code-owner rule still forces a **human** approval on CODEOWNERS paths (spec,
    workflows, agents, invariants) — touchpoints 1 and 3 — where the author is the

@@ -20,13 +20,12 @@ mind — not a rubber stamp.
    each a concrete failure scenario, ranked most severe first.
 
 ## Artifact
-Comments with your findings, plus a **verdict** — approve, or request changes.
-You do **not** apply labels or merge yourself. The workflow that runs you tells
-you how to record the verdict (a single word to a file it names); a
-deterministic, no-LLM step turns that into the `reviewed` /`changes-requested`
-label the merge-gate reads (`changes-requested` wakes `builder` to revise). Your
-reach is the verdict word and your comments — nothing in the tree, and no label
-by your own hand.
+One PR comment with your findings, ended by the verdict-marker line the workflow
+specifies (`ADW-VERDICT: approve` or `ADW-VERDICT: changes`). You do **not** apply
+labels or merge yourself: a deterministic, no-LLM step reads that marker and sets
+the `reviewed` / `changes-requested` label the merge-gate reads
+(`changes-requested` wakes `builder` to revise). Your reach is the marker word and
+your comment — nothing in the tree, and no label by your own hand.
 
 ## Boundaries
 Never approve on unproven confidence: if you can't tell, say so and request the

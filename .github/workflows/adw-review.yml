@@ -4,18 +4,22 @@
 # purpose.
 #
 # Deterministic verdict (issue #19): the LLM does NOT apply labels. It reviews,
-# posts findings as comments, and records a one-word verdict to a file. A plain
-# no-LLM step then reads that file and applies the verdict label with the App
-# token. So on the label surface the model's reach is one token in one file — it
-# cannot set an arbitrary label or forge a verdict for a foreign identity; only
-# this workflow's own deterministic step writes `reviewed`/`security-cleared`. No
-# `gh pr edit` in the agent's allow-list — the label-write left the LLM's hands.
-# (The agent still holds `gh pr comment` + the App token, so commenting reach is
-# unchanged; this design closes the label-write hole, not every token grant.)
+# posts ONE PR comment, and ends it with a marker line (`ADW-VERDICT: approve`
+# etc.). A plain no-LLM step then reads that marker and applies the label with
+# the App token. `gh pr edit` is not in the agent's allow-list — the label-write
+# left the LLM's hands; its reach on the label surface is the marker word alone.
+# (Comment-marker, not a verdict file: claude-code-action's headless sandbox
+# blocks shell output-redirection to every path, so an agent cannot write a file
+# — but it can post a comment. Proven the hard way on this PR's own history.)
 #
-# The `reset` job strips stale verdict labels first, so a new push can never
-# inherit a prior review's `reviewed`/`security-cleared` and auto-merge unreviewed
-# code — the reviewers must re-earn them on the current head.
+# Two guards make the marker trustworthy: the apply step reads ONLY comments (a)
+# authored by the review App and (b) created within THIS run's window. (a) stops
+# a public-repo stranger from posting `ADW-VERDICT: approve` themselves; (b) stops
+# a prior run's marker from being re-applied to a newer head.
+#
+# The `reset` job strips stale verdict labels first, and the apply steps run
+# `if: ${{ !cancelled() }}` (never on a cancelled run) so a superseded run can
+# never stamp a verdict earned on an old head onto a newer one.
 name: adw-review
 
 on:
@@ -40,6 +44,9 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
+          # risk:high is deliberately NOT stripped: once security-reviewer
+          # escalates, only the owner de-escalates it (owner-only gate). reset
+          # clears just the re-earnable verdicts.
           for l in reviewed security-cleared changes-requested; do
             gh pr edit "$PR" --repo "$REPO" --remove-label "$l" 2>/dev/null || true
           done
@@ -54,6 +61,8 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - name: Mark verdict window start
+        run: echo "REVIEW_SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
       - uses: anthropics/claude-code-action@v1
         with:
           github_token: ${{ steps.token.outputs.token }}
@@ -62,31 +71,32 @@ jobs:
             Use the reviewer subagent to review PR
             #${{ github.event.pull_request.number }} in ${{ github.repository }}.
             Follow .claude/agents/reviewer.md: adversarial correctness review vs
-            the spec, craft lenses, a file-anchored verdict. Do not merge. Leave
-            your findings as PR comments.
-            You do NOT apply labels. Record your verdict by writing EXACTLY one
-            word — `approve` or `changes` — to the file ${{ runner.temp }}/verdict
-            as your final action (`echo approve > ${{ runner.temp }}/verdict`).
-            `approve` = correct and mergeable; `changes` = needs work. Nothing
-            else in that file. A deterministic step reads it and sets the label.
+            the spec, craft lenses, a file-anchored verdict. Do not merge.
+            Post your findings as ONE PR comment, and end that comment with a
+            final line that is EXACTLY one of these (nothing after it):
+              ADW-VERDICT: approve
+              ADW-VERDICT: changes
+            `approve` = correct and mergeable; `changes` = needs work. You do NOT
+            apply labels — a deterministic step reads that marker from your comment
+            and sets `reviewed` / `changes-requested`.
             You are a mission-critical gate — ultrathink.
-          # --add-dir runner.temp: Claude Code sandboxes writes to the checkout,
-          # so the verdict file must live in a dir explicitly added, or the agent
-          # cannot record its verdict and the gate falsely reds every run.
+          # Read + comment only. No `gh pr edit` (label-write is the deterministic
+          # step's), no `gh pr merge`, no `gh api`, no file-write primitives.
           claude_args: >-
             --model claude-fable-5
-            --add-dir ${{ runner.temp }}
-            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(echo:*),Bash(printf:*)"
+            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue view:*)"
       - name: Apply verdict label (deterministic — no LLM)
-        if: always()
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
-          VERDICT_FILE: ${{ runner.temp }}/verdict
         run: |
           set -euo pipefail
-          verdict="$(tr -d '[:space:]' < "$VERDICT_FILE" 2>/dev/null || true)"
+          # Only THIS App's comments, only from this run's window — see header.
+          verdict="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq '[.[] | select(.user.login=="agent-smith-bugabinga-adc[bot]" and .created_at >= env.REVIEW_SINCE) | .body] | .[]' \
+            | grep -oE 'ADW-VERDICT: (approve|changes)' | tail -1 | awk '{print $2}')"
           echo "reviewer verdict: '${verdict:-<none>}'"
           case "$verdict" in
             approve)
@@ -96,7 +106,7 @@ jobs:
               gh pr edit "$PR" --repo "$REPO" --add-label changes-requested
               gh pr edit "$PR" --repo "$REPO" --remove-label reviewed 2>/dev/null || true ;;
             *)
-              echo "::notice::no valid reviewer verdict recorded — labels unchanged, merge-gate stays red" ;;
+              echo "::notice::no valid reviewer verdict in this run's comments — labels unchanged, merge-gate stays red" ;;
           esac
 
   security-reviewer:
@@ -109,6 +119,8 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - name: Mark verdict window start
+        run: echo "REVIEW_SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
       - uses: anthropics/claude-code-action@v1
         with:
           github_token: ${{ steps.token.outputs.token }}
@@ -117,32 +129,30 @@ jobs:
             Use the security-reviewer subagent to review PR
             #${{ github.event.pull_request.number }} in ${{ github.repository }}.
             Follow .claude/agents/security-reviewer.md: sandbox, secrets, unsafe,
-            injection, supply chain. Leave your findings as PR comments.
-            You do NOT apply labels. Record your verdict by writing EXACTLY one
-            word — `cleared` or `risk-high` — to the file
-            ${{ runner.temp }}/verdict as your final action
-            (`echo cleared > ${{ runner.temp }}/verdict`). `cleared` = nothing
-            high-severity; `risk-high` = a high finding that must hold the merge
-            for the owner. Nothing else in that file. A deterministic step reads
-            it and sets the label.
+            injection, supply chain. Do not merge.
+            Post your findings as ONE PR comment, and end that comment with a
+            final line that is EXACTLY one of these (nothing after it):
+              ADW-SECURITY: cleared
+              ADW-SECURITY: risk-high
+            `cleared` = nothing high-severity; `risk-high` = a high finding that
+            must hold the merge for the owner. You do NOT apply labels — a
+            deterministic step reads that marker and sets
+            `security-cleared` / `risk:high`.
             You are a mission-critical gate — ultrathink.
-          # --add-dir runner.temp: the verdict file lives outside the checkout,
-          # which Claude Code sandboxes; without this the agent cannot record its
-          # verdict and the gate falsely reds every run.
           claude_args: >-
             --model claude-fable-5
-            --add-dir ${{ runner.temp }}
-            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(echo:*),Bash(printf:*)"
+            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue view:*)"
       - name: Apply verdict label (deterministic — no LLM)
-        if: always()
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
-          VERDICT_FILE: ${{ runner.temp }}/verdict
         run: |
           set -euo pipefail
-          verdict="$(tr -d '[:space:]' < "$VERDICT_FILE" 2>/dev/null || true)"
+          verdict="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq '[.[] | select(.user.login=="agent-smith-bugabinga-adc[bot]" and .created_at >= env.REVIEW_SINCE) | .body] | .[]' \
+            | grep -oE 'ADW-SECURITY: (cleared|risk-high)' | tail -1 | awk '{print $2}')"
           echo "security verdict: '${verdict:-<none>}'"
           case "$verdict" in
             cleared)
@@ -151,5 +161,5 @@ jobs:
               gh pr edit "$PR" --repo "$REPO" --add-label risk:high
               gh pr edit "$PR" --repo "$REPO" --remove-label security-cleared 2>/dev/null || true ;;
             *)
-              echo "::notice::no valid security verdict recorded — labels unchanged, merge-gate stays red" ;;
+              echo "::notice::no valid security verdict in this run's comments — labels unchanged, merge-gate stays red" ;;
           esac
