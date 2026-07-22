@@ -1,10 +1,13 @@
 # Codex cross-family review — a second opinion from a different model family,
 # advisory (never a gate label; a Codex outage can't wedge a merge).
 #
-# Runs autonomously on every non-draft PR. The repo is members-only (issues and
-# PRs only from repository members), so there is no untrusted external author —
-# the credentialed-agent-over-untrusted-input problem is gone at the source, and
-# no author gate or approval is needed. Fork PRs get no secrets anyway.
+# Runs autonomously on every non-draft PR. The repo is public and forkable, so
+# the enforced control is GitHub fork-secret isolation: this triggers on
+# `pull_request` (never `pull_request_target`), so a fork PR gets an empty
+# CODEX_AUTH_JSON and a read-only token — the credentialed path cannot run on
+# untrusted fork code. That control is permanent; no author gate is needed. See
+# AGENTIC-DEVELOPMENT.md "Credentialed agents over untrusted input" for the
+# same-repo residual (attacker-authored issue → adw-codex-build) and its gate.
 name: adw-codex-review
 
 on:

@@ -464,13 +464,22 @@ load-bearing for landing code. They enrich the judgment; they don't hold the key
 A credentialed agent (holds a reusable token) that reads attacker-controllable
 input and publishes where anyone can read it is an exfiltration shape — Codex
 review is the case: it reads the PR diff, must read its ChatGPT-sub `auth.json`,
-and posts a public comment. The **trigger** is the only real control, and here it
-is closed at the source: the repo is **members-only** (issues and PRs only from
-repository members), so there is no untrusted external author, and
-`adw-codex-review` runs autonomously on every non-draft PR without an author gate.
-This is the ADW analogue of **SPEC §6.7**. Residuals are accepted, not hidden: the
-token is a rotatable non-GitHub credential on advisory jobs, `@openai/codex` is
-unpinned, and a compromised member account is out of scope.
+and posts a public comment. The repo is **public and forkable**, so the enforced
+control is **GitHub's fork-secret isolation**: `adw-codex-review` triggers on
+`pull_request` (never `pull_request_target`), so a PR from a fork gets an empty
+`CODEX_AUTH_JSON` and a read-only token — the credentialed path simply cannot run
+on untrusted fork code. That control is permanent and GitHub-enforced; it does not
+depend on who opened the PR. Interaction limits ("contributors only" on issues and
+PRs) are defense-in-depth on top, not the load-bearing control — and they are
+*temporary* (GitHub expires them after at most six months), so nothing security-
+critical rests on them. The one live residual is same-repo: an attacker-authored
+**issue body/title** is interpolated into `adw-codex-build`'s prompt, and that bot
+PR is same-repo, so the credentialed review does run on it. The gate there is the
+`codex` **label** — applying it needs write access, so a member vets the issue
+before routing it, and that member is the human-in-the-loop. This is the ADW
+analogue of **SPEC §6.7**. Remaining residuals are accepted, not hidden: the token
+is a rotatable non-GitHub credential on advisory jobs, `@openai/codex` is unpinned,
+and a compromised member account is out of scope.
 
 Two owner-added workflows already sit on `main` and the plan wraps around them
 rather than replacing them:
