@@ -8,6 +8,13 @@
 # Auth refreshes itself in CI: the rotated auth.json is saved to a rolling cache
 # each run and restored next run, so it stays alive as long as CI keeps using it
 # (proven mechanics: p37). The CODEX_AUTH_JSON secret is the cold-start seed.
+#
+# Injection posture (a credentialed agent reads the untrusted PR diff and its
+# output is published): the codex-exec step runs with NO GitHub token in its env
+# and a read-only sandbox, and its output is token-redacted before posting — so a
+# prompt-injected diff cannot make Codex echo a live credential into a public
+# comment. Fetching the diff and posting the comment (which need the token) are
+# separate steps.
 name: adw-codex-review
 
 on:
@@ -31,6 +38,11 @@ jobs:
       github.event.pull_request.draft == false &&
       github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    env:
+      # Redact anything token-shaped before it reaches a public comment or the run
+      # log — defense in depth for the credential this job holds. Covers GitHub
+      # tokens/PATs, OpenAI keys, and JWT/OAuth access tokens (auth.json's).
+      REDACT: 's#(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9._-]{20,})#***REDACTED***#g'
     steps:
       - uses: actions/checkout@v4
 
@@ -39,10 +51,12 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.codex/auth.json
-          # Branch-scoped: OpenAI warns not to share one auth.json across
-          # concurrent jobs — two PRs rotating the same restored token races and
-          # can invalidate the refresh token. Each branch rolls its own; a new
-          # branch cold-starts from the secret.
+          # Branch-scoped by convention. (Actions cache is already isolated per
+          # ref — one PR can't restore another PR branch's cache — so this is not
+          # what prevents cross-PR races. The race that remains, untouched here:
+          # two fresh PR branches both cold-seed the same CODEX_AUTH_JSON and both
+          # rotate that one refresh token. Acceptable: the secret is the seed and
+          # re-seeding is cheap.)
           key: codex-auth-${{ github.head_ref }}-${{ github.run_id }}
           restore-keys: |
             codex-auth-${{ github.head_ref }}-
@@ -60,48 +74,65 @@ jobs:
             printf '%s' "$CODEX_AUTH_JSON" > "$CODEX_HOME/auth.json"
             echo "auth.json seeded from CODEX_AUTH_JSON secret"
           fi
-          # Codex refuses a group/world-readable auth.json, and the cache does not
-          # preserve mode — pin 600 every run or auth silently fails.
+          # Keep the credential private (0600), matching OpenAI's CI example.
           chmod 600 "$CODEX_HOME/auth.json"
 
       - name: Install Codex
+        # NOTE: unpinned — this binary holds the credential, so pin to a vetted
+        # version once one is chosen (tracked as hardening; advisory workflow).
         run: npm install -g @openai/codex
 
-      - name: Codex review (fail-open)
+      - name: Fetch PR diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: gh pr diff "$PR" --repo "$REPO" > pr.diff
+
+      - name: Codex review (fail-open; no GH token in env; read-only sandbox)
         id: review
         continue-on-error: true
+        run: |
+          set +e
+          export CODEX_HOME="$HOME/.codex"
+          # No --json: codex prints ONLY the final message to stdout (progress →
+          # stderr), so stdout IS the review — no fragile JSONL scrape (the old
+          # jq program was a compile error, so the fallback fired every run).
+          # --sandbox read-only (codex's default, pinned explicitly): the model's
+          # shell cannot write, nor reach the credential in $HOME outside the
+          # workspace. No GH_TOKEN in this env — see the header's injection note.
+          codex exec --sandbox read-only "You are smith's cross-family reviewer (read AGENTS.md). Give an independent, file-anchored review of this pull request diff — correctness, security (untrusted Lua plugins, secrets, injection), and fit against docs/SPEC.md — flagging what a same-family reviewer might rationalize away. Concise markdown. Diff follows:
+          $(cat pr.diff)" > review.md 2> codex.err
+          rc=$?; echo "codex exit=$rc"
+          if ! grep -q '[^[:space:]]' review.md; then
+            # Surface WHY (redacted), so "unavailable" is never a black box.
+            echo "::group::codex stderr (diagnostic, redacted)"
+            tail -40 codex.err 2>/dev/null | sed -E "$REDACT" || true
+            echo "::endgroup::"
+            echo "_Codex was unavailable for this review (auth/window/tooling — advisory, non-blocking). See the run log._" > review.md
+          fi
+
+      - name: Post Codex review (token-redacted)
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
-          set +e
-          export CODEX_HOME="$HOME/.codex"
-          gh pr diff "$PR" --repo "$REPO" > pr.diff
-          # `codex exec --json` is the exact non-interactive form OpenAI documents
-          # for CI — no `--ephemeral` (not a valid exec flag; it made codex error
-          # out and read as "unavailable"). auth is picked up from $CODEX_HOME.
-          codex exec --json "You are smith's cross-family reviewer (read AGENTS.md). Give an independent, file-anchored review of this pull request diff — correctness, security (untrusted Lua plugins, secrets, injection), and fit against docs/SPEC.md — flagging what a same-family reviewer might rationalize away. Concise markdown. Diff follows:
-          $(cat pr.diff)" > out.jsonl 2> codex.err
-          rc=$?; echo "codex exit=$rc"
-          jq -rs '[.. | objects | (.text? // .message?.content? // .delta? // empty)] | map(select(type==\"string\" and . != \"\")) | last // \"\"' out.jsonl > review.md 2>/dev/null
-          if [ ! -s review.md ]; then
-            # Surface why, so "unavailable" is never a black box again.
-            echo "::group::codex stderr (diagnostic)"; tail -40 codex.err 2>/dev/null || true; echo "::endgroup::"
-            echo "_Codex was unavailable for this review (auth/window/tooling — advisory, non-blocking). See the run log._" > review.md
-          fi
+          [ -f review.md ] || echo "_Codex review did not run._" > review.md
           {
             echo "🔎 **Codex cross-family review** (advisory — the Fable reviewers own the gate)"
             echo
-            cat review.md
+            sed -E "$REDACT" review.md
           } > comment.md
           gh pr comment "$PR" --repo "$REPO" --body-file comment.md || true
 
-      - name: Report 5-hour window cost
+      - name: Report window cost (redacted, best-effort)
         continue-on-error: true
         run: |
-          echo "### model / token / window cost of this review"
-          jq -c '.. | objects | select(has("rate_limits") or has("used_percent") or has("primary_used_percent") or has("usage") or has("token_count"))' out.jsonl 2>/dev/null | tail -5 || echo "n/a"
+          echo "### codex model / token / window usage (if reported)"
+          grep -iE 'token|rate.?limit|usage|remaining|[0-9]+%' codex.err 2>/dev/null \
+            | sed -E "$REDACT" | tail -8 || echo "n/a"
 
       # Persist the freshly-rotated auth for the next run — this is what keeps it
       # alive without weekly re-seeding.
