@@ -20,6 +20,7 @@ on:
     branches: [ "main" ]
     paths: &scan
       - '**/*.rs'
+      - '!prototypes/**'          # disposable (SPEC §18) — excluded from analysis anyway; don't even trigger
       - '.github/workflows/**'
   pull_request:
     branches: [ "main" ]
@@ -55,8 +56,20 @@ jobs:
         # workflows). `rust` is dropped until production Rust lands: with the
         # workspace absent and prototypes excluded, a rust scan finds nothing,
         # FAILS, and (with code-scanning merge protection on) blocks every PR.
-        # Re-add `- language: rust` (and `javascript-typescript` for the site)
-        # when there is source for them to analyze.
+        #
+        # RE-ADD CHECKLIST (as of 2026-07-22, no production Rust / no site/ yet):
+        #   - Production Rust lands → add `- language: rust` with `build-mode:
+        #     none` (CodeQL's Rust extractor is source-based; the workspace need
+        #     not compile). Confirm CodeQL Rust is GA — it has been in preview;
+        #     if still beta, coverage is thinner than the C/JS packs.
+        #   - `site/` (Astro) lands → add `- language: javascript-typescript`.
+        #     Note its extractor only partially parses `.astro` SFCs (embedded
+        #     JS, not the template DSL); DevSkim + npm-audit/Dependabot carry the
+        #     site's real coverage.
+        #   - Each language added changes the produced result-count. Keep code
+        #     scanning ALERTS-ONLY (never a required merge check — only
+        #     `merge-gate` is required) or every such change re-creates the
+        #     "expecting N results" merge deadlock. See #17.
         - language: actions
           build-mode: none
         # CodeQL supports the following values keywords for 'language': 'actions', 'c-cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby', 'rust', 'swift'

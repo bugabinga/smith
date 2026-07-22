@@ -12,6 +12,10 @@ name: DevSkim
 on:
   push:
     branches: [ "main" ]
+    # Extension list is intentionally ahead of the code: it covers everything
+    # smith will hold — Rust (product), Lua (plugins), JS/TS/Astro (site), shell.
+    # None but prototypes exist yet; a positive match on a future extension is a
+    # no-op until that source lands. (2026-07-22.)
     paths: &code
       - '**/*.rs'
       - '**/*.lua'
@@ -20,6 +24,7 @@ on:
       - '**/*.tsx'
       - '**/*.astro'
       - '**/*.sh'
+      - '!prototypes/**'          # disposable (SPEC §18); also ignore-globbed below — don't even trigger
   pull_request:
     branches: [ "main" ]
     paths: *code
@@ -40,6 +45,13 @@ jobs:
 
       - name: Run DevSkim scanner
         uses: microsoft/DevSkim-Action@v1
+        with:
+          # Keep the action's defaults (`**/.git/**,**/bin/**`) and add
+          # prototypes/: disposable spec-validation code (SPEC §18). CodeQL
+          # already excludes it via paths-ignore; without this the Security tab
+          # fills with findings from the ~75 committed throwaway sources. target/
+          # is gitignored (never checked out) but listed defensively.
+          ignore-globs: "**/.git/**,**/bin/**,**/target/**,**/prototypes/**"
 
       - name: Upload DevSkim scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v3
