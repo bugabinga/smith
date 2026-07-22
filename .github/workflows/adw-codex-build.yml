@@ -1,12 +1,15 @@
 # Codex as a first-class BUILDER — not just a reviewer. Route an issue to Codex
 # by adding the `codex` label; it implements the slice on a branch and opens a PR
-# that rides the normal gate (Fable review + merge-gate), exactly like a
-# builder-authored PR. Mix-and-match: some issues to Claude's builder, some to
-# Codex, owner's call per issue.
+# that rides the normal gate (Opus review + merge-gate), exactly like a
+# builder-authored PR. Mix-and-match: the triager routes each issue to Claude's
+# builder or Codex.
 #
-# Trust: applying a label needs repo write, so only a collaborator/owner routes
-# work here — the trigger is privileged, not open. The PR opens via the App token
-# so the reviewers actually run on it.
+# Trust: the triager auto-applies `codex` on issues anyone can open, so this is
+# NOT human-gated — the same shape as Claude's builder on `ready`. Attacker issue
+# text can reach this credentialed build; that residual is accepted symmetrically
+# across both builders (see AGENTIC-DEVELOPMENT.md "Credentialed agents over
+# untrusted input"), not closed by a per-workflow author gate. The PR opens via
+# the App token so the reviewers actually run on it.
 name: adw-codex-build
 
 on:
