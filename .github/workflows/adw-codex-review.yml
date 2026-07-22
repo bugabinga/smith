@@ -39,20 +39,30 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.codex/auth.json
-          key: codex-auth-${{ github.run_id }}
+          # Branch-scoped: OpenAI warns not to share one auth.json across
+          # concurrent jobs — two PRs rotating the same restored token races and
+          # can invalidate the refresh token. Each branch rolls its own; a new
+          # branch cold-starts from the secret.
+          key: codex-auth-${{ github.head_ref }}-${{ github.run_id }}
           restore-keys: |
-            codex-auth-
-      - name: Seed auth from secret if cache cold
+            codex-auth-${{ github.head_ref }}-
+      - name: Prepare Codex auth (seed only if cache cold)
         env:
           CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
         run: |
-          mkdir -p "$HOME/.codex"
-          if [ -s "$HOME/.codex/auth.json" ]; then
+          export CODEX_HOME="$HOME/.codex"
+          mkdir -p "$CODEX_HOME"; chmod 700 "$CODEX_HOME"
+          # Seed ONLY if missing — overwriting the restored file discards the
+          # tokens Codex rotated last run (OpenAI CI guidance), breaking refresh.
+          if [ -s "$CODEX_HOME/auth.json" ]; then
             echo "auth.json restored from cache"
           else
-            printf '%s' "$CODEX_AUTH_JSON" > "$HOME/.codex/auth.json"
+            printf '%s' "$CODEX_AUTH_JSON" > "$CODEX_HOME/auth.json"
             echo "auth.json seeded from CODEX_AUTH_JSON secret"
           fi
+          # Codex refuses a group/world-readable auth.json, and the cache does not
+          # preserve mode — pin 600 every run or auth silently fails.
+          chmod 600 "$CODEX_HOME/auth.json"
 
       - name: Install Codex
         run: npm install -g @openai/codex
@@ -66,12 +76,18 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set +e
+          export CODEX_HOME="$HOME/.codex"
           gh pr diff "$PR" --repo "$REPO" > pr.diff
-          codex exec --json --ephemeral "You are smith's cross-family reviewer (read AGENTS.md). Give an independent, file-anchored review of this pull request diff — correctness, security (untrusted Lua plugins, secrets, injection), and fit against docs/SPEC.md — flagging what a same-family reviewer might rationalize away. Concise markdown. Diff follows:
+          # `codex exec --json` is the exact non-interactive form OpenAI documents
+          # for CI — no `--ephemeral` (not a valid exec flag; it made codex error
+          # out and read as "unavailable"). auth is picked up from $CODEX_HOME.
+          codex exec --json "You are smith's cross-family reviewer (read AGENTS.md). Give an independent, file-anchored review of this pull request diff — correctness, security (untrusted Lua plugins, secrets, injection), and fit against docs/SPEC.md — flagging what a same-family reviewer might rationalize away. Concise markdown. Diff follows:
           $(cat pr.diff)" > out.jsonl 2> codex.err
-          echo "codex exit=$?"
+          rc=$?; echo "codex exit=$rc"
           jq -rs '[.. | objects | (.text? // .message?.content? // .delta? // empty)] | map(select(type==\"string\" and . != \"\")) | last // \"\"' out.jsonl > review.md 2>/dev/null
           if [ ! -s review.md ]; then
+            # Surface why, so "unavailable" is never a black box again.
+            echo "::group::codex stderr (diagnostic)"; tail -40 codex.err 2>/dev/null || true; echo "::endgroup::"
             echo "_Codex was unavailable for this review (auth/window/tooling — advisory, non-blocking). See the run log._" > review.md
           fi
           {
@@ -94,7 +110,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/.codex/auth.json
-          key: codex-auth-${{ github.run_id }}
+          key: codex-auth-${{ github.head_ref }}-${{ github.run_id }}
 
       - name: Mark codex-reviewed (fail-open, never gates)
         if: always()
