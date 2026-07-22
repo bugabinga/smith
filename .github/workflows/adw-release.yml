@@ -1,8 +1,8 @@
-# ADW release — on a `v*` tag (the owner's one release touchpoint), release-manager
-# drafts notes from merged PRs, verifies the §14 target matrix, and publishes a
-# GitHub Release. The action can't serve `push` (p35), so a tag push is relayed to
-# a workflow_dispatch — the automation event the action does serve — exactly like
-# adw-plan.
+# ADW release — on a `v*` tag (the owner's one release touchpoint), the
+# release-manager drafts notes from merged PRs, verifies the §14 target matrix,
+# and publishes a GitHub Release. Runs on Codex (gpt-5.6-terra, medium effort),
+# authenticated as the App; charter injected from .claude/agents/release-manager.md.
+# A tag push can't run the agent directly, so it relays to a workflow_dispatch.
 name: adw-release
 
 on:
@@ -18,7 +18,7 @@ permissions:
   contents: write
 
 jobs:
-  # push can't run the action, so it just hands off to the automation event.
+  # push just hands off to the automation event.
   dispatch:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -44,15 +44,21 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-      - uses: anthropics/claude-code-action@v1
-        with:
-          github_token: ${{ steps.token.outputs.token }}
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: |
-            Use the release-manager subagent on ${{ github.repository }} for tag
-            ${{ github.event.inputs.tag }}. Follow .claude/agents/release-manager.md:
-            draft notes from the PRs merged since the previous tag, verify the SPEC
-            §14 target matrix still cross-builds, and publish a GitHub Release for
-            the tag. Releases, not Packages. Do not move the tag or edit the spec.
-            Think.
-          claude_args: --model claude-sonnet-5 --dangerously-skip-permissions
+      - name: Codex auth + config
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          mkdir -p ~/.codex
+          printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
+          chmod 600 ~/.codex/auth.json
+          printf 'project_doc_fallback_filenames = ["CLAUDE.md"]\n' > ~/.codex/config.toml
+      - run: npm install -g @openai/codex
+      - name: release-manager cuts the release
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event.inputs.tag }}
+        run: |
+          codex exec -m gpt-5.6-terra -c model_reasoning_effort="medium" --sandbox danger-full-access "$(cat .claude/agents/release-manager.md)
+
+          You are release-manager running headless in CI for ${REPO} (the gh CLI is configured via GH_TOKEN) for tag ${TAG}. Follow the charter above. Draft notes from the PRs merged since the previous tag, verify the SPEC §14 target matrix still cross-builds, and publish a GitHub Release for the tag with gh release create. Releases, not Packages. Do not move the tag or edit the spec."

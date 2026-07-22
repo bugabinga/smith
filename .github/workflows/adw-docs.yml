@@ -1,7 +1,9 @@
-# ADW docs — when a merged PR touches product code, wake docs-writer to keep the
-# user docs, SDK annotations, and site true to it. paths-ignore skips doc-only,
-# site-only, prototype, and config merges — which also breaks the loop: a
-# docs-writer PR that only edits docs/ merges without re-triggering this workflow.
+# ADW docs — when a merged PR touches product code, the docs-writer keeps the user
+# docs, SDK annotations, and site true to it. Runs on Codex (gpt-5.6-terra, medium
+# effort — text generation), authenticated as the App; charter injected from
+# .claude/agents/docs-writer.md. paths-ignore skips doc-only/site-only/prototype/
+# config merges — which also breaks the loop: a docs-only PR merges without
+# re-triggering this workflow.
 name: adw-docs
 
 on:
@@ -32,17 +34,23 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-      - uses: anthropics/claude-code-action@v1
-        with:
-          github_token: ${{ steps.token.outputs.token }}
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          use_commit_signing: true
-          prompt: |
-            Use the docs-writer subagent on ${{ github.repository }}. Merged PR
-            #${{ github.event.pull_request.number }} changed product code. Read its
-            diff: if it changed user-facing behavior or the Lua SDK, update the
-            docs to match (SDK `---@` annotations, guides, `smith help` topics, and
-            the site/book sources) and open a PR. If nothing user-facing changed,
-            do nothing. Never invent undocumented behavior; never edit docs/SPEC.md.
-            Think.
-          claude_args: --model claude-sonnet-5 --dangerously-skip-permissions
+      - name: Codex auth + config
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          mkdir -p ~/.codex
+          printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
+          chmod 600 ~/.codex/auth.json
+          printf 'project_doc_fallback_filenames = ["CLAUDE.md"]\n' > ~/.codex/config.toml
+      - run: npm install -g @openai/codex
+      - name: docs-writer updates the docs
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          git config user.name "agent-smith-bugabinga-adc[bot]"
+          git config user.email "agent-smith-bugabinga-adc[bot]@users.noreply.github.com"
+          codex exec -m gpt-5.6-terra -c model_reasoning_effort="medium" --sandbox danger-full-access "$(cat .claude/agents/docs-writer.md)
+
+          You are docs-writer running headless in CI for ${REPO} (the gh CLI is configured via GH_TOKEN). Follow the charter above. Merged PR #${PR} changed product code. Read its diff (gh pr diff ${PR}); if it changed user-facing behavior or the Lua SDK, update the docs to match — SDK ---@ annotations, guides, smith help topics, and the site/book sources. If nothing user-facing changed, do nothing and stop. When you do change docs: make them on a new branch (docs/pr-${PR}), commit, push, and open a PR with gh pr create against main. Never invent undocumented behavior; never edit docs/SPEC.md; never merge."

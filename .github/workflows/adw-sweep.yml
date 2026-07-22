@@ -1,7 +1,7 @@
-# ADW sweep — sweeper unsticks stalls and brakes runaways on a schedule.
-# schedule is an automation event the action serves directly (unlike push), so
-# no CLI: claude-code-action in automation mode with an explicit prompt.
-# Subscription auth (CLAUDE_CODE_OAUTH_TOKEN) — no metered API.
+# ADW sweep — the sweeper unsticks stalls and brakes runaways on a schedule.
+# Runs on Codex (gpt-5.6-luna, low effort — mechanical board work), authenticated
+# as the App. Its charter is .claude/agents/sweeper.md, injected into the prompt.
+# Subscription auth (CODEX_AUTH_JSON); re-seed when the ~8-day token lapses.
 name: adw-sweep
 
 on:
@@ -28,15 +28,20 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-      - uses: anthropics/claude-code-action@v1
-        with:
-          github_token: ${{ steps.token.outputs.token }}
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          prompt: |
-            Use the sweeper subagent (.claude/agents/sweeper.md) on
-            ${{ github.repository }}. Find stalls — PRs green but unmerged, red
-            with no fix, `ready` with no branch, merge-conflicted, reviews never
-            posted — re-kick the tractable ones and label the rest `stalled` with
-            why. Enforce WIP limits. Report a one-line board state; stay silent if
-            nothing changed. Never merge, never touch code.
-          claude_args: --model claude-haiku-4-5-20251001 --dangerously-skip-permissions
+      - name: Codex auth + config
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          mkdir -p ~/.codex
+          printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
+          chmod 600 ~/.codex/auth.json
+          printf 'project_doc_fallback_filenames = ["CLAUDE.md"]\n' > ~/.codex/config.toml
+      - run: npm install -g @openai/codex
+      - name: sweeper sweeps the board
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          codex exec -m gpt-5.6-luna -c model_reasoning_effort="low" --sandbox danger-full-access "$(cat .claude/agents/sweeper.md)
+
+          You are the sweeper running headless in CI for ${REPO} (the gh CLI is configured via GH_TOKEN). Follow the charter above. Find stalls — PRs green but unmerged, red with no fix, ready with no branch, merge-conflicted, reviews never posted — re-kick the tractable ones and label the rest stalled with why. Enforce WIP limits. Report a one-line board state; stay silent if nothing changed. Never merge, never touch code."

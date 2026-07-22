@@ -51,5 +51,5 @@ jobs:
             label to acknowledge. Then read the review comments and the linked
             issue, address every finding on the SAME branch (never open a new PR),
             keep `cargo run -p xtask -- check` green, and push. The reviewers
-            re-run automatically on your push; do not merge. Think.
-          claude_args: --model claude-sonnet-5 --dangerously-skip-permissions
+            re-run automatically on your push; do not merge.
+          claude_args: --model claude-opus-4-8 --effort high --dangerously-skip-permissions
