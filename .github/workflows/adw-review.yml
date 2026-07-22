@@ -6,10 +6,12 @@
 # Deterministic verdict (issue #19): the LLM does NOT apply labels. It reviews,
 # posts findings as comments, and records a one-word verdict to a file. A plain
 # no-LLM step then reads that file and applies the verdict label with the App
-# token. So the model's reach is one token in one file — it can neither set an
-# arbitrary label, touch another PR, nor forge a verdict for a foreign identity;
-# only this workflow's own deterministic step writes `reviewed`/`security-cleared`.
-# No `gh pr edit` in the agent's allow-list — the label-write left the LLM's hands.
+# token. So on the label surface the model's reach is one token in one file — it
+# cannot set an arbitrary label or forge a verdict for a foreign identity; only
+# this workflow's own deterministic step writes `reviewed`/`security-cleared`. No
+# `gh pr edit` in the agent's allow-list — the label-write left the LLM's hands.
+# (The agent still holds `gh pr comment` + the App token, so commenting reach is
+# unchanged; this design closes the label-write hole, not every token grant.)
 #
 # The `reset` job strips stale verdict labels first, so a new push can never
 # inherit a prior review's `reviewed`/`security-cleared` and auto-merge unreviewed
@@ -68,8 +70,12 @@ jobs:
             `approve` = correct and mergeable; `changes` = needs work. Nothing
             else in that file. A deterministic step reads it and sets the label.
             You are a mission-critical gate — ultrathink.
+          # --add-dir runner.temp: Claude Code sandboxes writes to the checkout,
+          # so the verdict file must live in a dir explicitly added, or the agent
+          # cannot record its verdict and the gate falsely reds every run.
           claude_args: >-
             --model claude-fable-5
+            --add-dir ${{ runner.temp }}
             --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(echo:*),Bash(printf:*)"
       - name: Apply verdict label (deterministic — no LLM)
         if: always()
@@ -120,8 +126,12 @@ jobs:
             for the owner. Nothing else in that file. A deterministic step reads
             it and sets the label.
             You are a mission-critical gate — ultrathink.
+          # --add-dir runner.temp: the verdict file lives outside the checkout,
+          # which Claude Code sandboxes; without this the agent cannot record its
+          # verdict and the gate falsely reds every run.
           claude_args: >-
             --model claude-fable-5
+            --add-dir ${{ runner.temp }}
             --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(echo:*),Bash(printf:*)"
       - name: Apply verdict label (deterministic — no LLM)
         if: always()

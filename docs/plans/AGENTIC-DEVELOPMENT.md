@@ -331,10 +331,12 @@ auto-merge**, armed for every agent PR and released by the ruleset's gate:
    problem: the review produces `reviewed`, the security review `security-cleared`,
    and `merge-gate` turns green. The **label-write is deterministic, not the LLM's**
    (issue #19): the reviewer agent only writes a one-word verdict to a file, and a
-   no-LLM step in the same job applies the label with the App token. So the model
-   can influence exactly one token for the PR under review — it cannot set an
-   arbitrary label, reach another PR, or forge a verdict; `gh pr edit` is not in
-   its allow-list. `required_approving_review_count` stays `0`; the
+   no-LLM step in the same job applies the label with the App token. So on the
+   label surface the model's reach is one token for the PR under review — it
+   cannot set an arbitrary label or forge a verdict; `gh pr edit` is not in its
+   allow-list. (It keeps `gh pr comment` + the App token, so commenting reach is
+   unchanged — this closes the label-write hole, not every grant.)
+   `required_approving_review_count` stays `0`; the
    code-owner rule still forces a **human** approval on CODEOWNERS paths (spec,
    workflows, agents, invariants) — touchpoints 1 and 3 — where the author is the
    App, not the owner, so there is no self-approval there either.
@@ -342,8 +344,8 @@ auto-merge**, armed for every agent PR and released by the ruleset's gate:
    waits for the owner. Same for a changes-requested review: `reviewed` is absent,
    the gate stays red, and the PR waits for the revision that adds it back.
 
-Net: the merge is native and deterministic; the LLMs only move labels, and a
-label can't fake a green check. Two owner enable-steps make it live — **Allow
+Net: the merge is native and deterministic; the LLMs only emit a one-word
+verdict and a no-LLM step moves the label, so a model can't fake a green check. Two owner enable-steps make it live — **Allow
 auto-merge** (repo setting) and importing the ruleset with `merge-gate` required
 (issue #14).
 
