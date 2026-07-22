@@ -12,11 +12,13 @@
 #
 # Codex runs with full access (`--sandbox danger-full-access`), same as every
 # Claude agent's `--dangerously-skip-permissions` — bounded by its charter, not a
-# cage. The real control is credential isolation: `codex exec` never sees a GitHub
-# token (the diff is fetched and the comment posted in separate token-holding
-# steps), so a prompt-injected review has no GitHub credential to abuse. Codex
-# loads its repo rules from `CLAUDE.md` via `project_doc_fallback_filenames` — the
-# same file every Claude agent reads.
+# cage. The App token is kept out of Codex's own step: the diff is fetched and the
+# comment posted in separate token-holding steps. Under full access in one job
+# that reduces exposure but is not a hard wall (a planted PATH shim could target
+# the post step), and the on-disk Codex `auth.json` stays reachable — the accepted
+# residual, symmetric with the Claude reviewer. Codex loads its repo rules from
+# `CLAUDE.md` via `project_doc_fallback_filenames` — the same file every Claude
+# agent reads.
 name: adw-codex-review
 
 on:

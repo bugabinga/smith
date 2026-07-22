@@ -11,11 +11,13 @@
 # untrusted input"), not closed by a per-workflow author gate.
 #
 # Codex runs at full access (`--sandbox danger-full-access`) like every Claude
-# agent, but never in the same step as the App token: the checkout persists no
-# credential, the issue body is fetched to a file in a token-holding step, and the
-# commit/push/PR runs in another — so a prompt-injected issue body has no GitHub
-# credential to abuse. (The on-disk Codex `auth.json` remains reachable under full
-# access — the accepted residual, symmetric with Claude's builder.)
+# agent, and never in the same step as the App token: the checkout persists no
+# credential and the token lives only in the fetch and commit/push/PR steps. That
+# keeps the token out of Codex's own step, but under full access in one job it is
+# not a hard wall — Codex could plant a hook or PATH shim aimed at the later
+# token-holding step. That, and the on-disk Codex `auth.json`, are the accepted
+# same-repo residual, symmetric with Claude's builder (which holds the token
+# throughout); see AGENTIC-DEVELOPMENT.md.
 name: adw-codex-build
 
 on:
@@ -59,7 +61,9 @@ jobs:
           ISSUE: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
         run: |
-          gh issue view "$ISSUE" --repo "$REPO" --json body -q .body > issue-body.txt
+          # Outside the checkout: writing it into the worktree would make
+          # `git add -A` stage it every run, killing the "no changes" path.
+          gh issue view "$ISSUE" --repo "$REPO" --json body -q .body > "$RUNNER_TEMP/issue-body.txt"
           git checkout -b "codex/issue-${ISSUE}"
       - name: Build the slice (full access, NO GitHub token in this step)
         env:
@@ -73,7 +77,7 @@ jobs:
           # GitHub token to abuse. Terse — it's building, not narrating.
           codex exec --sandbox danger-full-access "Implement issue #${ISSUE} of ${REPO}. Your repo rules load automatically from the project instructions; read docs/SPEC.md; build ONE focused, tested slice per the walking-skeleton discipline; no unrequested extras. Do not merge or edit the spec. Issue title: ${TITLE}
           Issue body:
-          $(cat issue-body.txt)" 2>&1 | tail -30 || true
+          $(cat "$RUNNER_TEMP/issue-body.txt")" 2>&1 | tail -30 || true
       - name: Commit, push, and open the PR (holds the token; Codex is done)
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
