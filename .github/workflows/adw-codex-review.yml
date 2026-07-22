@@ -6,15 +6,21 @@
 # Every step is fail-open for the same reason.
 #
 # Auth refreshes itself in CI: the rotated auth.json is saved to a rolling cache
-# each run and restored next run, so it stays alive as long as CI keeps using it
-# (proven mechanics: p37). The CODEX_AUTH_JSON secret is the cold-start seed.
+# each run and restored next run (proven mechanics: p37). CODEX_AUTH_JSON is the
+# cold-start seed.
 #
-# Injection posture (a credentialed agent reads the untrusted PR diff and its
-# output is published): the codex-exec step runs with NO GitHub token in its env
-# and a read-only sandbox, and its output is token-redacted before posting — so a
-# prompt-injected diff cannot make Codex echo a live credential into a public
-# comment. Fetching the diff and posting the comment (which need the token) are
-# separate steps.
+# Injection posture — READ THIS before loosening anything. A credentialed agent
+# reads the untrusted PR diff and its output is auto-published: a fundamentally
+# hard channel that config REDUCES but cannot fully close (codex must read
+# auth.json to run, so a determined injection could still encode that token past
+# any output filter). Layers here: checkout persists no git credential
+# (`persist-credentials: false`); Codex is installed BEFORE any credential
+# exists; the codex-exec step holds no GitHub token and runs `--sandbox
+# read-only`; and the published output is checked against the *actual* credential
+# values (+ their base64) and fails CLOSED, then shape-redacted. Residual risk is
+# accepted because the credential is a rotatable ChatGPT-sub token and the whole
+# job is advisory/fail-open. The credential-isolation rule itself belongs in the
+# spec — see the accompanying needs:spec.
 name: adw-codex-review
 
 on:
@@ -39,24 +45,35 @@ jobs:
       github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     env:
-      # Redact anything token-shaped before it reaches a public comment or the run
-      # log — defense in depth for the credential this job holds. Covers GitHub
-      # tokens/PATs, OpenAI keys, and JWT/OAuth access tokens (auth.json's).
+      # Last-resort shape redactor for token-like strings (GitHub tokens/PATs,
+      # OpenAI keys, JWT/OAuth). Defense in depth only — the fail-closed content
+      # check below, against the real secret values, is the load-bearing control.
       REDACT: 's#(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9._-]{20,})#***REDACTED***#g'
     steps:
+      # persist-credentials: false — do NOT leave the job's GITHUB_TOKEN in
+      # .git/config (a base64 basic-auth header the codex agent could read and the
+      # shape-redactor would miss). This job never pushes.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      # Restore the rolling, self-refreshing auth; seed from the secret if cold.
+      # Install BEFORE any credential exists on disk, so a poisoned npm release
+      # cannot read auth.json at install time.
+      - name: Install Codex
+        # NOTE: unpinned — this binary holds the credential at run time. Pin to a
+        # vetted version (ideally with provenance) as a follow-up hardening.
+        run: npm install -g @openai/codex
+
       - name: Restore Codex auth (rolling cache)
         uses: actions/cache/restore@v4
         with:
           path: ~/.codex/auth.json
-          # Branch-scoped by convention. (Actions cache is already isolated per
-          # ref — one PR can't restore another PR branch's cache — so this is not
-          # what prevents cross-PR races. The race that remains, untouched here:
-          # two fresh PR branches both cold-seed the same CODEX_AUTH_JSON and both
-          # rotate that one refresh token. Acceptable: the secret is the seed and
-          # re-seeding is cheap.)
+          # Branch-scoped by convention. Actions cache is already ref-isolated
+          # (one PR cannot restore another PR branch's cache), so this is not what
+          # prevents cross-PR races. Residual, untouched: two fresh branches both
+          # cold-seed CODEX_AUTH_JSON and both rotate that one refresh token, which
+          # can invalidate the seed and force a manual re-seed. Accepted for an
+          # advisory job.
           key: codex-auth-${{ github.head_ref }}-${{ github.run_id }}
           restore-keys: |
             codex-auth-${{ github.head_ref }}-
@@ -77,17 +94,16 @@ jobs:
           # Keep the credential private (0600), matching OpenAI's CI example.
           chmod 600 "$CODEX_HOME/auth.json"
 
-      - name: Install Codex
-        # NOTE: unpinned — this binary holds the credential, so pin to a vetted
-        # version once one is chosen (tracked as hardening; advisory workflow).
-        run: npm install -g @openai/codex
-
       - name: Fetch PR diff
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
-        run: gh pr diff "$PR" --repo "$REPO" > pr.diff
+        run: |
+          # Cap at 100 KiB so the whole diff fits in one argv entry (Linux
+          # MAX_ARG_STRLEN ~128 KiB); a bigger diff would otherwise E2BIG and
+          # silently trip the fail-open placeholder.
+          gh pr diff "$PR" --repo "$REPO" | head -c 100000 > pr.diff
 
       - name: Codex review (fail-open; no GH token in env; read-only sandbox)
         id: review
@@ -95,31 +111,49 @@ jobs:
         run: |
           set +e
           export CODEX_HOME="$HOME/.codex"
-          # No --json: codex prints ONLY the final message to stdout (progress →
-          # stderr), so stdout IS the review — no fragile JSONL scrape (the old
-          # jq program was a compile error, so the fallback fired every run).
-          # --sandbox read-only (codex's default, pinned explicitly): the model's
-          # shell cannot write, nor reach the credential in $HOME outside the
-          # workspace. No GH_TOKEN in this env — see the header's injection note.
+          # No --json: codex prints ONLY the final message to stdout, so stdout IS
+          # the review — no JSONL scrape (the old jq program was a compile error,
+          # so the fallback fired every run). --sandbox read-only (also the
+          # default) blocks writes/network but NOT reads — codex still reads
+          # auth.json to run, which is why publish-side content redaction below is
+          # the real control, not this sandbox. No GH_TOKEN in this env.
           codex exec --sandbox read-only "You are smith's cross-family reviewer (read AGENTS.md). Give an independent, file-anchored review of this pull request diff — correctness, security (untrusted Lua plugins, secrets, injection), and fit against docs/SPEC.md — flagging what a same-family reviewer might rationalize away. Concise markdown. Diff follows:
           $(cat pr.diff)" > review.md 2> codex.err
           rc=$?; echo "codex exit=$rc"
           if ! grep -q '[^[:space:]]' review.md; then
-            # Surface WHY (redacted), so "unavailable" is never a black box.
             echo "::group::codex stderr (diagnostic, redacted)"
             tail -40 codex.err 2>/dev/null | sed -E "$REDACT" || true
             echo "::endgroup::"
             echo "_Codex was unavailable for this review (auth/window/tooling — advisory, non-blocking). See the run log._" > review.md
           fi
 
-      - name: Post Codex review (token-redacted)
+      - name: Post Codex review (fail-closed on credential material)
         if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
+          set +e
           [ -f review.md ] || echo "_Codex review did not run._" > review.md
+          # FAIL CLOSED: the workflow knows the real secret values, so check the
+          # output against them (raw and base64) and withhold entirely if any
+          # appears — catching an encoded exfil the shape regex cannot. Not
+          # bulletproof (arbitrary encodings exist), but it closes the naive path.
+          auth="$HOME/.codex/auth.json"
+          withhold=0
+          if [ -f "$auth" ]; then
+            while IFS= read -r v; do
+              [ -z "$v" ] && continue
+              b64=$(printf '%s' "$v" | base64 -w0 2>/dev/null)
+              if grep -qF -- "$v" review.md 2>/dev/null || { [ -n "$b64" ] && grep -qF -- "$b64" review.md 2>/dev/null; }; then
+                withhold=1; break
+              fi
+            done < <(jq -r '[.. | strings] | .[]' "$auth" 2>/dev/null | awk 'length >= 20')
+          fi
+          if [ "$withhold" = 1 ]; then
+            echo "⚠️ Codex review withheld: output contained credential material (fail-closed)." > review.md
+          fi
           {
             echo "🔎 **Codex cross-family review** (advisory — the Fable reviewers own the gate)"
             echo
@@ -134,8 +168,7 @@ jobs:
           grep -iE 'token|rate.?limit|usage|remaining|[0-9]+%' codex.err 2>/dev/null \
             | sed -E "$REDACT" | tail -8 || echo "n/a"
 
-      # Persist the freshly-rotated auth for the next run — this is what keeps it
-      # alive without weekly re-seeding.
+      # Persist the freshly-rotated auth for the next run.
       - name: Save refreshed Codex auth (rolling cache)
         if: always()
         uses: actions/cache/save@v4
