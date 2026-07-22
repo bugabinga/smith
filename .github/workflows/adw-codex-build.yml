@@ -1,8 +1,8 @@
 # Codex as a first-class BUILDER — not just a reviewer. Route an issue to Codex
 # by adding the `codex` label; it implements the slice on a branch and opens a PR
-# that rides the normal gate (Fable review + merge-gate), exactly like a
-# builder-authored PR. Mix-and-match: some issues to Claude's builder, some to
-# Codex, owner's call per issue.
+# that rides the normal gate (Opus review + merge-gate), exactly like a
+# builder-authored PR. Mix-and-match: the triager routes each issue to Claude's
+# builder or Codex.
 #
 # Trust: applying a label needs repo write, so only a collaborator/owner routes
 # work here — the trigger is privileged, not open. The PR opens via the App token

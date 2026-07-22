@@ -62,7 +62,7 @@ API/UI (a drift risk to minimize by preferring the as-code option).
 
 | Concept | Encoded in | In repo? | Authority |
 |---|---|---|---|
-| agent persona / model / tool scope | `.claude/agents/<role>.md` | ✅ | the file |
+| agent persona / model / charter | `.claude/agents/<role>.md` | ✅ | the file |
 | which agent runs on which event | `.github/workflows/adw-*.yml` (verb-named; `adw-review` hosts both reviewers) | ✅ | the workflow |
 | shared rules all agents inherit | `CLAUDE.md` (+ nested) | ✅ | the file |
 | Claude runtime settings | `.claude/settings.json` | ✅ | the file |
@@ -105,7 +105,7 @@ only for the reader's map. The craft skills (`sabotnik`, `handmade`, `pioneer`,
 | `sweeper` | `schedule` | unstick stalls, enforce WIP, brake runaways | **Issues/PRs/board** labels | Haiku |
 | `adw-doctor` | `schedule` (weekly) | diagnose the *workflow's own* health — failing/drifting workflows, doc-vs-config drift, gate pathologies — and propose one systemic fix | a **PR** on ADW config, or an **Issue** | Opus |
 | `pioneer` (skill) | `needs:prototype` | prove/disprove an unproven spec claim with a prototype | `prototypes/*` | Sonnet |
-| `codex` (OpenAI) | `pull_request` (trusted author) **reviews**; issue labeled `codex` **builds** | cross-family second opinion, and a foreign-model builder | a **PR comment** (review) or a **branch + PR** (build) | Codex (ChatGPT sub) |
+| `codex` (OpenAI) | `pull_request` **reviews**; issue labeled `codex` **builds** | cross-family second opinion, and a foreign-model builder | a **PR comment** (review) or a **branch + PR** (build) | Codex (ChatGPT sub) |
 
 `codex` is a **first-class but foreign** citizen — it both **reviews and builds**,
 mix-and-match with Claude's agents per the owner's call. Its "agent file" is
@@ -351,7 +351,7 @@ events, each carrying a loop-guard so agents never react to themselves:
 | `adw-revise` | review = *changes requested* on a bot PR | `builder` addresses findings on the same branch; re-review fires on the push | a push emits `synchronize`, not a review — never self-triggers; `sweeper` brakes an endless loop |
 | `adw-docs` | merged PR touching **product code** (not docs/site/prototypes/config) | `docs-writer` updates docs + site to match, or no-ops | doc-only PRs are `paths-ignore`d, so `docs-writer`'s own PR can't re-trigger it |
 | `adw-release` | `v*` tag (the owner's release touchpoint) | `release-manager` drafts notes, verifies §14, publishes a Release | tag push is owner-made; relayed via dispatch (the action can't serve `push`) |
-| `adw-comment` | **owner** writes `@smith …` on an issue/PR | routes the instruction to the fitting agent, or answers | locked to `author_association == OWNER` — a public-repo stranger's comment does nothing; agents' own comments aren't the owner |
+| `adw-comment` | **owner** writes `@smith …` on an issue/PR | routes the instruction to the fitting agent, or answers | locked to `author_association == OWNER` — a non-owner's comment does nothing; agents' own comments aren't the owner |
 | `adw-alerts` | Dependabot / code-scanning alert (or daily) | `security-reviewer` sweeps open alerts, escalates real high-severity, ignores prototype-only ones | alert events relay to dispatch (action can't serve them); a schedule backstops missed events |
 | *CI self-heal* | — | folded into `sweeper` (hourly), not a per-event trigger | avoids the fiddly `check_suite`→PR mapping and its loop risk; fits the predictability dial |
 
@@ -422,7 +422,7 @@ do is invisible. Beyond the issue→PR spine:
 | routing & gates | **Labels** (`.github/labels.yml`, as code) | triager / security-reviewer |
 | grouping | **Milestones** = waves | `planner` opens + assigns; `surveyor` fills the current one; `release-manager` closes |
 | every change | **PRs** linked to issues, agent-reviewed | builder |
-| review diversity | **Copilot code review** (advisory) + **Codex** (contributor / advisory reviewer) — cross-family second opinions | `reviewer` / `security-reviewer` weigh |
+| review diversity | **Copilot code review** (advisory) + **Codex** (cross-family builder + advisory reviewer) | `reviewer` / `security-reviewer` weigh |
 | spec protection | **CODEOWNERS** + branch **ruleset** | (owner) |
 | dependency updates | **Dependabot** (`.github/dependabot.yml`) — bumps as maintenance | dependency-manager |
 | code scanning | **DevSkim** (`.github/workflows/devskim.yml`, SARIF → Security tab) + **CodeQL** (Rust) + `cargo audit`/`cargo deny` in CI | security-reviewer |
@@ -447,12 +447,12 @@ prizes "a different model than the builder."
 - **Copilot code review** — enabled as a repo setting so it auto-reviews each PR.
   Its comments are **advisory**: `reviewer`/`security-reviewer` read and weigh them,
   but Copilot never sets a gate label.
-- **Codex** — two depths, owner's choice: as a **contributor**, Codex opens PRs
-  (from its ChatGPT cloud agent connected to the repo) that ride the *existing*
-  gate — reviewed, labeled, squash-merged like any PR, no new workflow; and/or as
-  an **advisory reviewer** in CI, which first needs its subscription-auth mechanics
-  proven the way p35 proved Claude's (a `needs:prototype`), since a metered OpenAI
-  API key is off the table.
+- **Codex** is a first-class dual-role citizen — it both **builds** (route an issue
+  with the `codex` label → `adw-codex-build.yml` implements a slice and opens a PR
+  that rides the normal gate) and **reviews** (`adw-codex-review.yml` posts an
+  advisory cross-family read on every PR). Both are CI workflows on the owner's
+  ChatGPT subscription (`CODEX_AUTH_JSON`); the triager routes each build to Claude
+  or Codex. Advisory as a reviewer — it never sets a gate label.
 
 **Deliberately advisory, never gating.** External tools stay *out* of the
 `merge-gate`'s critical path: our own reviewers own the verdict labels, so a
@@ -462,15 +462,15 @@ load-bearing for landing code. They enrich the judgment; they don't hold the key
 ### Credentialed agents over untrusted input (the ADW's §6.7)
 
 A credentialed agent (holds a reusable token) that reads attacker-controllable
-input and publishes where anyone can read it is an exfiltration shape. On a public
-repo the leak can't be closed at the output — every channel is public — so the
-**trigger** is the control: **gate the credentialed run to a trusted trigger, and
-run it autonomously there.** Codex uses `author_association ∈ {OWNER, MEMBER,
-COLLABORATOR}` (external PRs never get a credentialed run; they still get the
-reviewers) — no per-run approval, so autonomy is intact. This is the ADW analogue
-of **SPEC §6.7**. Residuals are accepted, not hidden: the token is a rotatable
-non-GitHub credential on advisory jobs, `@openai/codex` is unpinned, and a
-compromised trusted account is out of scope (see #18).
+input and publishes where anyone can read it is an exfiltration shape — Codex
+review is the case: it reads the PR diff, must read its ChatGPT-sub `auth.json`,
+and posts a public comment. The **trigger** is the only real control, and here it
+is closed at the source: the repo is **members-only** (issues and PRs only from
+repository members), so there is no untrusted external author, and
+`adw-codex-review` runs autonomously on every non-draft PR without an author gate.
+This is the ADW analogue of **SPEC §6.7**. Residuals are accepted, not hidden: the
+token is a rotatable non-GitHub credential on advisory jobs, `@openai/codex` is
+unpinned, and a compromised member account is out of scope.
 
 Two owner-added workflows already sit on `main` and the plan wraps around them
 rather than replacing them:
