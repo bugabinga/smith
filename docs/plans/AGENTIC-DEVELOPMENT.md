@@ -328,8 +328,13 @@ auto-merge**, armed for every agent PR and released by the ruleset's gate:
    `builder`, `reviewer`, and `security-reviewer` are one GitHub identity (the
    App), and GitHub forbids approving your own PR, so a required *approval* could
    never be satisfied by an agent. A required *check* driven by a label has no such
-   problem: `reviewer` adds `reviewed`, `security-reviewer` adds `security-cleared`,
-   and `merge-gate` turns green. `required_approving_review_count` stays `0`; the
+   problem: the review produces `reviewed`, the security review `security-cleared`,
+   and `merge-gate` turns green. The **label-write is deterministic, not the LLM's**
+   (issue #19): the reviewer agent only writes a one-word verdict to a file, and a
+   no-LLM step in the same job applies the label with the App token. So the model
+   can influence exactly one token for the PR under review — it cannot set an
+   arbitrary label, reach another PR, or forge a verdict; `gh pr edit` is not in
+   its allow-list. `required_approving_review_count` stays `0`; the
    code-owner rule still forces a **human** approval on CODEOWNERS paths (spec,
    workflows, agents, invariants) — touchpoints 1 and 3 — where the author is the
    App, not the owner, so there is no self-approval there either.

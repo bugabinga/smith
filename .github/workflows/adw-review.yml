@@ -1,9 +1,15 @@
 # ADW review — reviewer (correctness) and security-reviewer (security) run on
 # every PR, in parallel. Both are issue/PR agents → claude-code-action. Verdicts
 # only; neither merges. reviewer runs on a different model than the builder on
-# purpose. Each posts its verdict as a label (`reviewed` / `security-cleared` /
-# `risk:high`) that the merge-gate reads. Needs secrets APP_ID, APP_PRIVATE_KEY,
-# CLAUDE_CODE_OAUTH_TOKEN.
+# purpose.
+#
+# Deterministic verdict (issue #19): the LLM does NOT apply labels. It reviews,
+# posts findings as comments, and records a one-word verdict to a file. A plain
+# no-LLM step then reads that file and applies the verdict label with the App
+# token. So the model's reach is one token in one file — it can neither set an
+# arbitrary label, touch another PR, nor forge a verdict for a foreign identity;
+# only this workflow's own deterministic step writes `reviewed`/`security-cleared`.
+# No `gh pr edit` in the agent's allow-list — the label-write left the LLM's hands.
 #
 # The `reset` job strips stale verdict labels first, so a new push can never
 # inherit a prior review's `reviewed`/`security-cleared` and auto-merge unreviewed
@@ -54,23 +60,38 @@ jobs:
             Use the reviewer subagent to review PR
             #${{ github.event.pull_request.number }} in ${{ github.repository }}.
             Follow .claude/agents/reviewer.md: adversarial correctness review vs
-            the spec, craft lenses, a file-anchored verdict. Do not merge.
-            Verdict as a label (you are the same identity as the author, so you
-            cannot submit a formal review — use labels + comments): on approve, add
-            `reviewed` and remove `changes-requested`; on request-changes, add
-            `changes-requested` (this wakes builder to revise) and remove
-            `reviewed`. Leave your findings as comments either way.
+            the spec, craft lenses, a file-anchored verdict. Do not merge. Leave
+            your findings as PR comments.
+            You do NOT apply labels. Record your verdict by writing EXACTLY one
+            word — `approve` or `changes` — to the file ${{ runner.temp }}/verdict
+            as your final action (`echo approve > ${{ runner.temp }}/verdict`).
+            `approve` = correct and mergeable; `changes` = needs work. Nothing
+            else in that file. A deterministic step reads it and sets the label.
             You are a mission-critical gate — ultrathink.
-          # Scoped write access so the reviewer can actually cast its verdict.
-          # Without this, automation mode denies every gh call and the agent
-          # reviews but can post no label/comment (the merge-gate then never turns
-          # green). Read + verdict only — NOT `gh pr merge`, `gh api`, or `gh:*`,
-          # so a review agent can neither merge nor act outside its lane. This is
-          # the interim grant; the deterministic-verdict step (issue #19) removes
-          # the LLM's label-write entirely.
           claude_args: >-
             --model claude-fable-5
-            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr edit:*),Bash(gh pr comment:*),Bash(gh issue view:*)"
+            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(echo:*),Bash(printf:*)"
+      - name: Apply verdict label (deterministic — no LLM)
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          VERDICT_FILE: ${{ runner.temp }}/verdict
+        run: |
+          set -euo pipefail
+          verdict="$(tr -d '[:space:]' < "$VERDICT_FILE" 2>/dev/null || true)"
+          echo "reviewer verdict: '${verdict:-<none>}'"
+          case "$verdict" in
+            approve)
+              gh pr edit "$PR" --repo "$REPO" --add-label reviewed
+              gh pr edit "$PR" --repo "$REPO" --remove-label changes-requested 2>/dev/null || true ;;
+            changes)
+              gh pr edit "$PR" --repo "$REPO" --add-label changes-requested
+              gh pr edit "$PR" --repo "$REPO" --remove-label reviewed 2>/dev/null || true ;;
+            *)
+              echo "::notice::no valid reviewer verdict recorded — labels unchanged, merge-gate stays red" ;;
+          esac
 
   security-reviewer:
     needs: reset
@@ -90,18 +111,35 @@ jobs:
             Use the security-reviewer subagent to review PR
             #${{ github.event.pull_request.number }} in ${{ github.repository }}.
             Follow .claude/agents/security-reviewer.md: sandbox, secrets, unsafe,
-            injection, supply chain; set risk:high and escalate on high severity.
-            Verdict as a label (the merge-gate reads it): if nothing high-severity,
-            add `security-cleared`; on a high finding, add `risk:high` and ensure
-            `security-cleared` is absent, holding the merge for the owner.
+            injection, supply chain. Leave your findings as PR comments.
+            You do NOT apply labels. Record your verdict by writing EXACTLY one
+            word — `cleared` or `risk-high` — to the file
+            ${{ runner.temp }}/verdict as your final action
+            (`echo cleared > ${{ runner.temp }}/verdict`). `cleared` = nothing
+            high-severity; `risk-high` = a high finding that must hold the merge
+            for the owner. Nothing else in that file. A deterministic step reads
+            it and sets the label.
             You are a mission-critical gate — ultrathink.
-          # Scoped write access so the reviewer can actually cast its verdict.
-          # Without this, automation mode denies every gh call and the agent
-          # reviews but can post no label/comment (the merge-gate then never turns
-          # green). Read + verdict only — NOT `gh pr merge`, `gh api`, or `gh:*`,
-          # so a review agent can neither merge nor act outside its lane. This is
-          # the interim grant; the deterministic-verdict step (issue #19) removes
-          # the LLM's label-write entirely.
           claude_args: >-
             --model claude-fable-5
-            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr edit:*),Bash(gh pr comment:*),Bash(gh issue view:*)"
+            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(echo:*),Bash(printf:*)"
+      - name: Apply verdict label (deterministic — no LLM)
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          VERDICT_FILE: ${{ runner.temp }}/verdict
+        run: |
+          set -euo pipefail
+          verdict="$(tr -d '[:space:]' < "$VERDICT_FILE" 2>/dev/null || true)"
+          echo "security verdict: '${verdict:-<none>}'"
+          case "$verdict" in
+            cleared)
+              gh pr edit "$PR" --repo "$REPO" --add-label security-cleared ;;
+            risk-high)
+              gh pr edit "$PR" --repo "$REPO" --add-label risk:high
+              gh pr edit "$PR" --repo "$REPO" --remove-label security-cleared 2>/dev/null || true ;;
+            *)
+              echo "::notice::no valid security verdict recorded — labels unchanged, merge-gate stays red" ;;
+          esac
