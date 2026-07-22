@@ -23,6 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - id: token
         uses: actions/create-github-app-token@v1
         with:
@@ -36,12 +38,12 @@ jobs:
           printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
           chmod 600 ~/.codex/auth.json
           printf 'project_doc_fallback_filenames = ["CLAUDE.md"]\n' > ~/.codex/config.toml
-      - run: npm install -g @openai/codex
+      - run: npm install -g @openai/codex@0.145.0
       - name: sweeper sweeps the board
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           REPO: ${{ github.repository }}
         run: |
-          codex exec -m gpt-5.6-luna -c model_reasoning_effort="low" --sandbox danger-full-access "$(cat .claude/agents/sweeper.md)
+          codex exec -m gpt-5.6-luna -c model_reasoning_effort="low" --sandbox danger-full-access "$(awk 'f>=2{print} /^---$/{f++}' .claude/agents/sweeper.md)
 
           You are the sweeper running headless in CI for ${REPO} (the gh CLI is configured via GH_TOKEN). Follow the charter above. Find stalls — PRs green but unmerged, red with no fix, ready with no branch, merge-conflicted, reviews never posted — re-kick the tractable ones and label the rest stalled with why. Enforce WIP limits. Report a one-line board state; stay silent if nothing changed. Never merge, never touch code."

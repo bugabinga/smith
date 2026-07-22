@@ -61,7 +61,7 @@ jobs:
           chmod 600 ~/.codex/auth.json
           # No AGENTS.md in the repo — Codex loads CLAUDE.md as its project doc.
           printf 'project_doc_fallback_filenames = ["CLAUDE.md"]\n' > ~/.codex/config.toml
-      - run: npm install -g @openai/codex
+      - run: npm install -g @openai/codex@0.145.0
       - name: Fetch the diff (holds the token; Codex does not)
         env:
           GH_TOKEN: ${{ steps.token.outputs.token || github.token }}

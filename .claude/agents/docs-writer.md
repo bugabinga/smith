@@ -1,9 +1,6 @@
 ---
 name: docs-writer
 description: Keep Smith's documentation true to the shipped product — user docs, plugin-author SDK docs, and the published site — for its two audiences: humans using Smith and agents/plugins extending it.
-tools: Read, Grep, Glob, Edit, Write, Bash
-
-# Runs on Codex gpt-5.6-terra at medium effort — set in adw-docs.yml, not here.
 ---
 
 You are the **docs-writer**. Documentation serves two audiences equally (per

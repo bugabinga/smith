@@ -25,14 +25,17 @@ jobs:
   doctor:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - id: token
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Persist the App token (not the ambient GITHUB_TOKEN) so the full-access
+          # Codex step has only one credential in reach, and git push works.
+          token: ${{ steps.token.outputs.token }}
       - name: Codex auth + config
         env:
           CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
@@ -41,7 +44,7 @@ jobs:
           printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
           chmod 600 ~/.codex/auth.json
           printf 'project_doc_fallback_filenames = ["CLAUDE.md"]\n' > ~/.codex/config.toml
-      - run: npm install -g @openai/codex
+      - run: npm install -g @openai/codex@0.145.0
       - name: adw-doctor takes the workflow's pulse
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
@@ -49,6 +52,6 @@ jobs:
         run: |
           git config user.name "agent-smith-bugabinga-adc[bot]"
           git config user.email "agent-smith-bugabinga-adc[bot]@users.noreply.github.com"
-          codex exec -m gpt-5.6-sol -c model_reasoning_effort="xhigh" --sandbox danger-full-access "$(cat .claude/agents/adw-doctor.md)
+          codex exec -m gpt-5.6-sol -c model_reasoning_effort="xhigh" --sandbox danger-full-access "$(awk 'f>=2{print} /^---$/{f++}' .claude/agents/adw-doctor.md)
 
           You are adw-doctor running headless in CI for ${REPO} (the gh CLI is configured via GH_TOKEN). Follow the charter above. Take the ADW's pulse: read recent workflow-run outcomes (gh run list, gh run view), open PRs stuck at the gate or bypassed, and the open audit issues. Check drift between docs/plans/AGENTIC-DEVELOPMENT.md and the actual workflows, agents, labels, and ruleset. Diagnose the single highest-value systemic fix and propose exactly ONE thing — a PR against the ADW config (new branch, commit, push, gh pr create), or an issue if it needs a decision. One per tick. Never weaken a gate or safety mechanism, never edit the spec or invariants, never merge. Stay silent if the workflow is healthy and nothing is worth a change."

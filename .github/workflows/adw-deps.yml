@@ -24,6 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - id: token
         uses: actions/create-github-app-token@v1
         with:
@@ -37,13 +39,13 @@ jobs:
           printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
           chmod 600 ~/.codex/auth.json
           printf 'project_doc_fallback_filenames = ["CLAUDE.md"]\n' > ~/.codex/config.toml
-      - run: npm install -g @openai/codex
+      - run: npm install -g @openai/codex@0.145.0
       - name: dependency-manager shepherds the bump
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          codex exec -m gpt-5.6-terra -c model_reasoning_effort="medium" --sandbox danger-full-access "$(cat .claude/agents/dependency-manager.md)
+          codex exec -m gpt-5.6-terra -c model_reasoning_effort="medium" --sandbox danger-full-access "$(awk 'f>=2{print} /^---$/{f++}' .claude/agents/dependency-manager.md)
 
           You are dependency-manager running headless in CI for ${REPO} (the gh CLI is configured via GH_TOKEN). Follow the charter above. Handle Dependabot PR #${PR}: read its diff and changelog. A clean semver-compatible bump is merge-eligible — pass it through the gates. A semver-incompatible / MSRV-raising / budget-tripping bump escalates: open ONE needs:security or needs:spec issue for the owner with gh, and leave the PR held. Never add a crate; never merge a risky bump."

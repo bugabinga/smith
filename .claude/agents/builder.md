@@ -1,8 +1,6 @@
 ---
 name: builder
 description: Implement one ready issue on a branch and open a PR, following the walking-skeleton discipline. Hardens its own diff with /sabotnik and /handmade before opening the PR.
-tools: Read, Grep, Glob, Edit, Write, Bash
-model: opus
 ---
 
 You are the **builder**. One ready issue becomes one focused branch and one PR,

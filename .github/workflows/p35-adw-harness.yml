@@ -7,7 +7,7 @@ name: p35-adw-harness
 
 on:
   push:
-    branches: ["claude/specs-progress-n5u27n"]
+    branches: ["claude/**"]
     paths:
       - ".github/workflows/p35-adw-harness.yml"
       - "prototypes/p35-adw-harness/**"
@@ -48,7 +48,11 @@ jobs:
       - name: install claude code CLI
         run: npm install -g @anthropic-ai/claude-code && claude --version
 
-      - name: run headless (event-agnostic runner)
+      # Verifies BOTH that the CLI launches AND that `--effort` is accepted — the
+      # flag the retiering puts on all 8 Anthropic agents. If the flag were
+      # rejected, claude would error, the grep would miss, and this step reddens
+      # (the fleet-outage the reviewer warned about, caught here before merge).
+      - name: run headless with --effort (event-agnostic runner)
         id: cli
         continue-on-error: true
         env:
@@ -57,9 +61,9 @@ jobs:
         run: |
           set -o pipefail
           claude -p "Reply with exactly this line and nothing else: ADW-HARNESS-OK repo=${{ github.repository }}" \
-            --model claude-haiku-4-5-20251001 --output-format text 2>&1 | tee cli-out.txt
+            --model claude-opus-4-8 --effort high --output-format text 2>&1 | tee cli-out.txt
           echo "---"
-          grep -q "ADW-HARNESS-OK" cli-out.txt && echo "CLI_RUNNER=ok" || { echo "CLI_RUNNER=fail"; exit 1; }
+          grep -q "ADW-HARNESS-OK" cli-out.txt && echo "CLI_RUNNER=ok (--effort accepted)" || { echo "CLI_RUNNER=fail"; exit 1; }
 
       - name: cli outcome
         run: |

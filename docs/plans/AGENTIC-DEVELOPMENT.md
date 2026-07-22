@@ -112,7 +112,7 @@ level below is a standing assignment.
 | `builder` (Claude) | issue labeled `ready` | build one **UI/UX** slice per `WALKING-SKELETON`, hardened, tested | a **branch + PR** | opus | high |
 | `builder` (Codex) | issue labeled `codex` | build one **backend** slice per `WALKING-SKELETON`, hardened, tested | a **branch + PR** | terra | high |
 | `codex-review` | `pull_request` | cross-family second opinion (advisory; never a gate label) | a **PR comment** | sol | high |
-| `adw-doctor` | `schedule` (weekly) | diagnose the *workflow's own* health — drift, gate pathologies — and propose one systemic fix | a **PR**/`Issue` on ADW config | sol | max |
+| `adw-doctor` | `schedule` (weekly) | diagnose the *workflow's own* health — drift, gate pathologies — and propose one systemic fix | a **PR**/`Issue` on ADW config | sol | xhigh |
 | `docs-writer` | merged PR changes user-facing / SDK behavior | keep user + plugin-author docs and the site true to the product | doc sources + Pages, via **PR** | terra | medium |
 | `dependency-manager` | Dependabot bump PR | shepherd version bumps through the gates; escalate risky ones | **Dependabot PRs** | terra | medium |
 | `release-manager` | `v*` tag | draft notes, verify the §14 matrix, publish the Release | a **GitHub Release** | terra | medium |
@@ -123,8 +123,13 @@ level below is a standing assignment.
 **Two builders, by domain.** The `triager` routes each `ready`-able issue by
 surface: **UI/UX → the Claude builder** (`opus`, `ready`), **backend → the Codex
 builder** (`terra`, `codex`). Two model families building different halves is
-diversity *and* specialization; whichever builds, the `opus`/`sol` gate reviews it
-cross-family (the reviewer always runs a different family than the builder).
+diversity *and* specialization. The gate `reviewer` is `opus`, so a backend
+(`terra`) PR is gated cross-family — but a UI/UX PR is built *and* gated by `opus`;
+there the only cross-family read is the advisory, non-gating `sol` `codex-review`,
+and the gate is a higher-effort (`xhigh`) second pass rather than a different
+family. **Owner decision (open):** if a same-model UI gate reads too weak, move one
+gate reviewer onto a non-`opus` family, or make `codex-review` gating on
+`opus`-built PRs.
 
 **Codex is first-class, not foreign.** `sol`/`terra`/`luna` agents run on the
 owner's ChatGPT subscription (`CODEX_AUTH_JSON` seeds auth each run; re-seed when
@@ -141,26 +146,6 @@ The **authority** for each agent's mission and tool scope is its `.claude/agents
 charter; the **model and effort** are set in the workflow that runs it (this table
 is the map). `builder` and `reviewer` wield `/sabotnik` and `/handmade`; `pioneer`
 and `smith` stay owner/skill-invoked, since the spec is touchpoint 1.
-
-### Model and thinking tiers
-
-Two dials per agent, both favouring **quality over speed**: which *model* runs it,
-and how hard it *thinks* (extended-reasoning budget, set by the `think` /
-`think hard` / `ultrathink` keyword in the workflow prompt). Cost tracks both, so
-they climb together only where the stakes justify it.
-
-| Tier | Model | Thinking | Agents | Why |
-|---|---|---|---|---|
-| mechanical | Haiku | minimal | `triager`, `sweeper` | label/route/sweep — pattern work, not judgment |
-| build | Sonnet | `think` | `builder`, `docs-writer`, `dependency-manager`, `release-manager` | implement and maintain — competent, bounded |
-| judgment | Opus | `think hard` | `surveyor`, `planner`, `adw-doctor` | plan the build and heal the machine — one wrong call ripples |
-| **gates** | Opus | `think` | `reviewer`, `security-reviewer` | the two autonomous gates into `main`; a *different* model than the Sonnet builder so review stays a second opinion |
-
-**The reviewers run Opus + `think`, not Fable + `ultrathink`** — the top model at
-the top thinking budget, on every PR and every push, burned the subscription too
-fast. Opus is still a strong adversarial gate on a *different* model than the
-Sonnet `builder`, and Codex adds a cross-family read on top; dial back up only if a
-gate miss proves the budget was load-bearing.
 
 ## How the cycle pushes Smith forward
 

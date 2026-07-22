@@ -39,6 +39,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - id: token
         uses: actions/create-github-app-token@v1
         with:
@@ -52,13 +53,13 @@ jobs:
           printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
           chmod 600 ~/.codex/auth.json
           printf 'project_doc_fallback_filenames = ["CLAUDE.md"]\n' > ~/.codex/config.toml
-      - run: npm install -g @openai/codex
+      - run: npm install -g @openai/codex@0.145.0
       - name: release-manager cuts the release
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           REPO: ${{ github.repository }}
           TAG: ${{ github.event.inputs.tag }}
         run: |
-          codex exec -m gpt-5.6-terra -c model_reasoning_effort="medium" --sandbox danger-full-access "$(cat .claude/agents/release-manager.md)
+          codex exec -m gpt-5.6-terra -c model_reasoning_effort="medium" --sandbox danger-full-access "$(awk 'f>=2{print} /^---$/{f++}' .claude/agents/release-manager.md)
 
           You are release-manager running headless in CI for ${REPO} (the gh CLI is configured via GH_TOKEN) for tag ${TAG}. Follow the charter above. Draft notes from the PRs merged since the previous tag, verify the SPEC §14 target matrix still cross-builds, and publish a GitHub Release for the tag with gh release create. Releases, not Packages. Do not move the tag or edit the spec."
