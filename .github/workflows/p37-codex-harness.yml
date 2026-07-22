@@ -47,8 +47,10 @@ jobs:
       # via `project_doc_fallback_filenames`. A random nonce in a throwaway repo's
       # CLAUDE.md (no AGENTS.md) — Codex can only echo it if the fallback loaded
       # the file. This is the evidence that lets us delete AGENTS.md.
+      # NOT continue-on-error: this proof is load-bearing (the AGENTS.md deletion
+      # rests on it), so a fallback regression must redden the run, unlike the
+      # other fail-open evidence steps.
       - name: Verify Codex reads CLAUDE.md via project_doc_fallback_filenames
-        continue-on-error: true
         run: |
           set +e
           printf 'project_doc_fallback_filenames = ["CLAUDE.md"]\n' > "$HOME/.codex/config.toml"
@@ -71,7 +73,8 @@ jobs:
           if grep -qF "$nonce" "$d/out.md" 2>/dev/null; then
             echo "✅ FALLBACK VERIFIED — Codex read CLAUDE.md (nonce echoed)."
           else
-            echo "::warning::FALLBACK NOT CONFIRMED — nonce not echoed; inspect logs above."
+            echo "::error::FALLBACK NOT CONFIRMED — nonce not echoed; inspect logs above."
+            exit 1
           fi
 
       - name: Codex exec — capture the JSONL stream

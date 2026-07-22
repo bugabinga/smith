@@ -42,6 +42,10 @@ jobs:
         with:
           persist-credentials: false
       - id: token
+        # Fork PRs have no access to APP_ID/APP_PRIVATE_KEY, so this fails there —
+        # fail-open, and the steps below fall back to github.token (read-only on a
+        # fork) so the advisory job never hard-errors on an outside PR.
+        continue-on-error: true
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.APP_ID }}
@@ -58,7 +62,7 @@ jobs:
       - run: npm install -g @openai/codex
       - name: Fetch the diff (holds the token; Codex does not)
         env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_TOKEN: ${{ steps.token.outputs.token || github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: gh pr diff "$PR" --repo "$REPO" | head -c 100000 > pr.diff
@@ -73,7 +77,7 @@ jobs:
             sed -E 's#(gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9._-]{20,})#***#g' review.md; } > c.md
       - name: Post the review as the App
         env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_TOKEN: ${{ steps.token.outputs.token || github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
