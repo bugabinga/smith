@@ -111,6 +111,11 @@ jobs:
         run: |
           set +e
           export CODEX_HOME="$HOME/.codex"
+          # Snapshot the credential values BEFORE the run — codex rotates the token
+          # mid-run, so checking only the post-run file would miss a pre-rotation
+          # token that leaked. Publish + log checks compare against this snapshot
+          # AND the post-run file (post step unions both).
+          jq -r '[.. | strings] | .[]' "$CODEX_HOME/auth.json" 2>/dev/null | awk 'length >= 20' | sort -u > "$RUNNER_TEMP/codex_secrets" || true
           # No --json: codex prints ONLY the final message to stdout, so stdout IS
           # the review — no JSONL scrape (the old jq program was a compile error,
           # so the fallback fired every run). --sandbox read-only (also the
@@ -122,7 +127,8 @@ jobs:
           rc=$?; echo "codex exit=$rc"
           if ! grep -q '[^[:space:]]' review.md; then
             echo "::group::codex stderr (diagnostic, redacted)"
-            tail -40 codex.err 2>/dev/null | sed -E "$REDACT" || true
+            # Drop any stderr line carrying a real secret value, then shape-redact.
+            { [ -s "$RUNNER_TEMP/codex_secrets" ] && grep -vFf "$RUNNER_TEMP/codex_secrets" codex.err || cat codex.err; } 2>/dev/null | tail -40 | sed -E "$REDACT" || true
             echo "::endgroup::"
             echo "_Codex was unavailable for this review (auth/window/tooling — advisory, non-blocking). See the run log._" > review.md
           fi
@@ -142,15 +148,16 @@ jobs:
           # bulletproof (arbitrary encodings exist), but it closes the naive path.
           auth="$HOME/.codex/auth.json"
           withhold=0
-          if [ -f "$auth" ]; then
-            while IFS= read -r v; do
-              [ -z "$v" ] && continue
-              b64=$(printf '%s' "$v" | base64 -w0 2>/dev/null)
-              if grep -qF -- "$v" review.md 2>/dev/null || { [ -n "$b64" ] && grep -qF -- "$b64" review.md 2>/dev/null; }; then
-                withhold=1; break
-              fi
-            done < <(jq -r '[.. | strings] | .[]' "$auth" 2>/dev/null | awk 'length >= 20')
-          fi
+          # Union of the pre-run snapshot and the post-run file — catches the token
+          # whether codex rotated it during the run or not.
+          { cat "$RUNNER_TEMP/codex_secrets" 2>/dev/null; [ -f "$auth" ] && jq -r '[.. | strings] | .[]' "$auth" 2>/dev/null | awk 'length >= 20'; } | sort -u > "$RUNNER_TEMP/codex_secrets_all"
+          while IFS= read -r v; do
+            [ -z "$v" ] && continue
+            b64=$(printf '%s' "$v" | base64 -w0 2>/dev/null)
+            if grep -qF -- "$v" review.md 2>/dev/null || { [ -n "$b64" ] && grep -qF -- "$b64" review.md 2>/dev/null; }; then
+              withhold=1; break
+            fi
+          done < "$RUNNER_TEMP/codex_secrets_all"
           if [ "$withhold" = 1 ]; then
             echo "⚠️ Codex review withheld: output contained credential material (fail-closed)." > review.md
           fi
@@ -165,8 +172,9 @@ jobs:
         continue-on-error: true
         run: |
           echo "### codex model / token / window usage (if reported)"
-          grep -iE 'token|rate.?limit|usage|remaining|[0-9]+%' codex.err 2>/dev/null \
-            | sed -E "$REDACT" | tail -8 || echo "n/a"
+          # Drop lines carrying a real secret value first, then shape-redact.
+          { [ -s "$RUNNER_TEMP/codex_secrets" ] && grep -vFf "$RUNNER_TEMP/codex_secrets" codex.err || cat codex.err; } 2>/dev/null \
+            | grep -iE 'token|rate.?limit|usage|remaining|[0-9]+%' | sed -E "$REDACT" | tail -8 || echo "n/a"
 
       # Persist the freshly-rotated auth for the next run.
       - name: Save refreshed Codex auth (rolling cache)
