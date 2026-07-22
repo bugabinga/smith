@@ -52,4 +52,4 @@ jobs:
             issue, address every finding on the SAME branch (never open a new PR),
             keep `cargo run -p xtask -- check` green, and push. The reviewers
             re-run automatically on your push; do not merge. Think.
-          claude_args: --model claude-sonnet-5
+          claude_args: --model claude-sonnet-5 --dangerously-skip-permissions

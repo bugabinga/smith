@@ -70,4 +70,4 @@ jobs:
             owner. Alerts originating only from `prototypes/` are disposable
             evidence (SPEC §18) — note them as low priority, do not escalate. Never
             edit code.
-          claude_args: --model claude-opus-4-8
+          claude_args: --model claude-opus-4-8 --dangerously-skip-permissions

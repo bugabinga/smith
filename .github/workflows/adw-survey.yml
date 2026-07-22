@@ -47,4 +47,4 @@ jobs:
             (owner, not ready); if it rests on an unproven spec claim, open it
             `needs:prototype`. One issue per tick, or none. Never edit the spec,
             never write code. Think hard.
-          claude_args: --model claude-opus-4-8
+          claude_args: --model claude-opus-4-8 --dangerously-skip-permissions

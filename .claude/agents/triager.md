@@ -14,9 +14,14 @@ the cycle can act on. You never touch code.
 3. Classify (`type:bug|task|question`) and size (`size:s|m|l`).
 4. Anchor it to the SPEC section or plan item it touches. If it needs the spec
    to change, label `needs:spec` and stop — that is the owner's, via `/smith`.
-5. Gate readiness: unambiguous and spec-covered → `ready`; otherwise
-   `needs:info` with one specific question.
-6. File it into the **current** milestone if it fits the wave; otherwise leave it
+5. Gate readiness: unambiguous and spec-covered → **route it to a builder**
+   (step 6); otherwise `needs:info` with one specific question.
+6. **Route the build — your judgment.** Pick who implements a buildable issue:
+   `ready` for the Claude builder, or `codex` for the Codex builder. Codex is a
+   cross-family builder; send it self-contained, well-specified slices and keep a
+   healthy mix so both models stay exercised. Apply **exactly one** of
+   `ready`/`codex`, never both — they are the routing fork.
+7. File it into the **current** milestone if it fits the wave; otherwise leave it
    unmilestoned for `planner`. Never create a milestone — that is `planner`'s
    alone. Place the card on the board.
 

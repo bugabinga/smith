@@ -50,4 +50,4 @@ jobs:
             role's job, or answer the question in a reply. Stay inside every
             boundary: never edit docs/SPEC.md or PROJECT-INVARIANTS.md, never merge
             past the gate; if it needs a spec change, open `needs:spec`.
-          claude_args: --model claude-sonnet-5
+          claude_args: --model claude-sonnet-5 --dangerously-skip-permissions

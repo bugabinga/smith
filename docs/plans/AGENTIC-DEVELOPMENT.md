@@ -97,26 +97,26 @@ only for the reader's map. The craft skills (`sabotnik`, `handmade`, `pioneer`,
 | `triager` | issue opened | triage a raw issue into a labeled, routed, spec-anchored work-order | the **Issue** + board card | Haiku |
 | `planner` | spec change lands on `main` | turn the spec diff into tracked work-orders + refresh the plan | **Issues** + `docs/plans/*` | Opus |
 | `builder` | issue labeled `ready` | build one slice per `WALKING-SKELETON`, hardened, tested | a **branch + PR** | Sonnet |
-| `reviewer` | `pull_request` | adversarial correctness review vs the spec — a *second* model | a **PR review** | Fable |
-| `security-reviewer` | PR on sensitive surface / `needs:security` / scanner alert | security review; escalate high severity | a **PR review** + `risk:*` | Fable |
+| `reviewer` | `pull_request` | adversarial correctness review vs the spec — a *second* model | a **PR review** | Opus |
+| `security-reviewer` | PR on sensitive surface / `needs:security` / scanner alert | security review; escalate high severity | a **PR review** + `risk:*` | Opus |
 | `docs-writer` | merged PR changes user-facing / SDK behavior | keep user + plugin-author docs and the site true to the product | doc sources + Pages, via **PR** | Sonnet |
 | `dependency-manager` | Dependabot bump PR | shepherd version bumps through the gates; escalate risky ones | **Dependabot PRs** | Sonnet |
 | `release-manager` | milestone green / `v*` tag | draft notes, verify the §14 matrix, publish the Release | a **GitHub Release** | Sonnet |
 | `sweeper` | `schedule` | unstick stalls, enforce WIP, brake runaways | **Issues/PRs/board** labels | Haiku |
 | `adw-doctor` | `schedule` (weekly) | diagnose the *workflow's own* health — failing/drifting workflows, doc-vs-config drift, gate pathologies — and propose one systemic fix | a **PR** on ADW config, or an **Issue** | Opus |
 | `pioneer` (skill) | `needs:prototype` | prove/disprove an unproven spec claim with a prototype | `prototypes/*` | Sonnet |
-| `codex` (OpenAI) | `pull_request` (non-draft) | cross-family review — an independent second opinion from a *different model family* | a **PR comment** + `codex-reviewed` | Codex (ChatGPT sub) |
+| `codex` (OpenAI) | `pull_request` (trusted author) **reviews**; issue labeled `codex` **builds** | cross-family second opinion, and a foreign-model builder | a **PR comment** (review) or a **branch + PR** (build) | Codex (ChatGPT sub) |
 
-`codex` is a **first-class but foreign** citizen: its "agent file" is `AGENTS.md`
-(the Codex counterpart to `CLAUDE.md`) plus `.github/workflows/adw-codex-review.yml`,
-not a `.claude/agents/*`, because it runs on the owner's ChatGPT subscription
-(OpenAI), not Claude. Its auth **self-refreshes in CI** — each run saves the
-rotated `auth.json` to a rolling `actions/cache` and restores it next run, so it
-stays alive as long as CI keeps using it; `CODEX_AUTH_JSON` is only the cold-start
-seed. It is deliberately **advisory**: it posts a review and the `codex-reviewed`
-label, but never owns a merge-gate label, so an OpenAI outage or an exhausted
-5-hour window can never deadlock a merge — the audit rule that no external service
-is load-bearing for landing code.
+`codex` is a **first-class but foreign** citizen — it both **reviews and builds**,
+mix-and-match with Claude's agents per the owner's call. Its "agent file" is
+`AGENTS.md` (the Codex counterpart to `CLAUDE.md`) plus
+`.github/workflows/adw-codex-{review,build}.yml`, not a `.claude/agents/*`, because
+it runs on the owner's ChatGPT subscription (OpenAI). `CODEX_AUTH_JSON` seeds its
+auth each run (re-seed when the ~8-day token lapses). As a **reviewer** it is
+advisory — a comment + `codex-reviewed`, never a merge-gate label, so an OpenAI
+outage can't deadlock a merge. As a **builder** it takes an issue labeled `codex`,
+implements one slice, and opens a PR that rides the same gate as any other — the
+the reviewers judge it, so Codex's build is trusted no more than any agent's.
 
 The **authority** for each model and tool scope is the agent's frontmatter — the
 `.claude/agents/` directory is the one place to review and change them; a
@@ -136,21 +136,13 @@ they climb together only where the stakes justify it.
 | mechanical | Haiku | minimal | `triager`, `sweeper` | label/route/sweep — pattern work, not judgment |
 | build | Sonnet | `think` | `builder`, `docs-writer`, `dependency-manager`, `release-manager` | implement and maintain — competent, bounded |
 | judgment | Opus | `think hard` | `surveyor`, `planner`, `adw-doctor` | plan the build and heal the machine — one wrong call ripples |
-| **mission-critical** | **Fable** | **`ultrathink`** | `reviewer`, `security-reviewer` | the two autonomous gates into `main`; a wrong approve merges a defect or a sandbox escape with no human in the loop |
+| **gates** | Opus | `think` | `reviewer`, `security-reviewer` | the two autonomous gates into `main`; a *different* model than the Sonnet builder so review stays a second opinion |
 
-**Fable is reserved for the gates** because their errors are the least reversible
-and the least supervised — everything else has a backstop (CI, the owner on
-`risk:high`, `sweeper`, the owner on protected paths), but a clean-looking bad PR
-that both reviewers wave through merges itself. `reviewer` on Fable also keeps the
-invariant that review runs a *different* model than `builder` (Sonnet), so it stays
-a second opinion, not self-congratulation. `release-manager` and `planner` are the
-next candidates if the mission-critical tier ever widens.
-
-The tier applies to each agent's **gate role**. On the `adw-alerts` sweep path the
-`security-reviewer` runs as a Fable subagent under an Opus orchestrator without the
-`ultrathink` budget — deliberately: that path triages already-landed alerts and
-opens escalation issues, it is not a merge gate, so it does not warrant the gates'
-top reasoning budget.
+**The reviewers run Opus + `think`, not Fable + `ultrathink`** — the top model at
+the top thinking budget, on every PR and every push, burned the subscription too
+fast. Opus is still a strong adversarial gate on a *different* model than the
+Sonnet `builder`, and Codex adds a cross-family read on top; dial back up only if a
+gate miss proves the budget was load-bearing.
 
 ## How the cycle pushes Smith forward
 
@@ -328,17 +320,12 @@ auto-merge**, armed for every agent PR and released by the ruleset's gate:
    `builder`, `reviewer`, and `security-reviewer` are one GitHub identity (the
    App), and GitHub forbids approving your own PR, so a required *approval* could
    never be satisfied by an agent. A required *check* driven by a label has no such
-   problem: the review produces `reviewed`, the security review `security-cleared`,
-   and `merge-gate` turns green. The **label-write is deterministic, not the LLM's**
-   (issue #19): the reviewer agent ends its PR comment with a marker line
-   (`ADW-VERDICT: approve`), and a no-LLM step in the same job reads that marker
-   and applies the label with the App token — trusting only the review App's own
-   comments from this run's window, so neither a public-repo stranger's comment
-   nor a stale prior run can spoof a verdict. So on the label surface the model's
-   reach is the marker word for the PR under review — it cannot set an arbitrary
-   label or forge a verdict; `gh pr edit` is not in its allow-list. (It keeps
-   `gh pr comment` + the App token, so commenting reach is unchanged — this closes
-   the label-write hole, not every grant.)
+   problem: the reviewer applies `reviewed`, the security-reviewer
+   `security-cleared`, and `merge-gate` turns green. The reviewers apply their own
+   verdict labels directly — they run with full tool access, bounded by their
+   `.claude/agents/*.md` charters (which forbid the builder from setting a verdict
+   on its own PR), not by a tool allow-list. On a members-only repo the trust is
+   in the instructions, not a permission gate.
    `required_approving_review_count` stays `0`; the
    code-owner rule still forces a **human** approval on CODEOWNERS paths (spec,
    workflows, agents, invariants) — touchpoints 1 and 3 — where the author is the
@@ -347,8 +334,10 @@ auto-merge**, armed for every agent PR and released by the ruleset's gate:
    waits for the owner. Same for a changes-requested review: `reviewed` is absent,
    the gate stays red, and the PR waits for the revision that adds it back.
 
-Net: the merge is native and deterministic; the LLMs only emit a one-word
-verdict and a no-LLM step moves the label, so a model can't fake a green check. Two owner enable-steps make it live — **Allow
+Net: the merge is native and deterministic; the reviewers move labels, the
+no-LLM `merge-gate` reads them, and a wrong verdict is caught by the review
+running a *different* model than the builder. Two owner enable-steps make it
+live — **Allow
 auto-merge** (repo setting) and importing the ruleset with `merge-gate` required
 (issue #14).
 
@@ -469,6 +458,19 @@ prizes "a different model than the builder."
 `merge-gate`'s critical path: our own reviewers own the verdict labels, so a
 Copilot or Codex outage can never deadlock a merge, and no external service becomes
 load-bearing for landing code. They enrich the judgment; they don't hold the key.
+
+### Credentialed agents over untrusted input (the ADW's §6.7)
+
+A credentialed agent (holds a reusable token) that reads attacker-controllable
+input and publishes where anyone can read it is an exfiltration shape. On a public
+repo the leak can't be closed at the output — every channel is public — so the
+**trigger** is the control: **gate the credentialed run to a trusted trigger, and
+run it autonomously there.** Codex uses `author_association ∈ {OWNER, MEMBER,
+COLLABORATOR}` (external PRs never get a credentialed run; they still get the
+reviewers) — no per-run approval, so autonomy is intact. This is the ADW analogue
+of **SPEC §6.7**. Residuals are accepted, not hidden: the token is a rotatable
+non-GitHub credential on advisory jobs, `@openai/codex` is unpinned, and a
+compromised trusted account is out of scope (see #18).
 
 Two owner-added workflows already sit on `main` and the plan wraps around them
 rather than replacing them:

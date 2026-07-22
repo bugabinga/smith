@@ -46,6 +46,11 @@
   color: "7a1fa2"
   description: "Force a security-reviewer review"
 
+# — build routing (triager decides; owner may override) —
+- name: "codex"
+  color: "10a37f"
+  description: "Route to the Codex builder instead of `ready` (Claude); one or the other, never both"
+
 # — verdict (reviewers set; the merge-gate reads these) —
 - name: "reviewed"
   color: "1f9d55"

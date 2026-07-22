@@ -59,4 +59,4 @@ jobs:
             each newly-specced or materially-changed surface with no tracking
             issue, open one work-order issue and refresh docs/plans/*. Do not edit
             the spec. Think hard.
-          claude_args: --model claude-opus-4-8
+          claude_args: --model claude-opus-4-8 --dangerously-skip-permissions
