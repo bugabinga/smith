@@ -89,7 +89,7 @@ by its **mission** and the single **artifact** it may touch. Triggers are *not*
 in the agent files — an agent doesn't need to know what woke it; the trigger is a
 property of the workflow that runs it (the encoding surface), and is listed here
 only for the reader's map. The craft skills (`sabotnik`, `handmade`, `pioneer`,
-`smith`) are *verbs the agents wield*, not agents.
+`smith`, `capture`) are *verbs the agents wield*, not agents.
 
 | Agent | Woken by (in the workflow) | Mission | Artifact it owns | Model |
 |-------|----------------------------|---------|------------------|-------|
