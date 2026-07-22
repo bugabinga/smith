@@ -13,14 +13,16 @@
 # reads the untrusted PR diff and its output is auto-published: a fundamentally
 # hard channel that config REDUCES but cannot fully close (codex must read
 # auth.json to run, so a determined injection could still encode that token past
-# any output filter). Layers here: checkout persists no git credential
-# (`persist-credentials: false`); Codex is installed BEFORE any credential
-# exists; the codex-exec step holds no GitHub token and runs `--sandbox
-# read-only`; and the published output is checked against the *actual* credential
-# values (+ their base64) and fails CLOSED, then shape-redacted. Residual risk is
-# accepted because the credential is a rotatable ChatGPT-sub token and the whole
-# job is advisory/fail-open. The credential-isolation rule itself belongs in the
-# spec — see the accompanying needs:spec.
+# any output filter). The BOUNDARY is therefore the trigger, not the output: the
+# `environment: codex-review` gate (below) holds the job for owner approval so a
+# credentialed run only happens on an owner-eyed PR. The rest are depth: checkout
+# persists no git credential (`persist-credentials: false`); Codex is installed
+# BEFORE any credential exists; the codex-exec step holds no GitHub token and runs
+# `--sandbox read-only`; and the published output + logs are checked against the
+# *actual* credential values (+ base64, snapshotted before rotation) and fail
+# CLOSED, then shape-redacted. Residual (an owner-approved run could still be
+# injection-exfil'd) is accepted: rotatable ChatGPT-sub token, advisory/fail-open
+# job. Rule pinned in AGENTIC-DEVELOPMENT.md → "Credentialed agents" (issue #45).
 name: adw-codex-review
 
 on:
@@ -43,6 +45,14 @@ jobs:
     if: >-
       github.event.pull_request.draft == false &&
       github.event.pull_request.user.login != 'dependabot[bot]'
+    # Credential boundary (#45): this job is a credentialed agent reading the
+    # untrusted PR diff whose output is public, which config can only narrow. The
+    # environment gates it — with a required-reviewer rule on the `codex-review`
+    # environment (owner setup), the job PAUSES for the owner's approval before it
+    # runs or can read CODEX_AUTH_JSON, so a credentialed run only ever happens on
+    # a PR the owner has eyed. Until that rule is added the environment is inert
+    # (auto-created, no gate); the required-reviewer rule is what turns B on.
+    environment: codex-review
     runs-on: ubuntu-latest
     env:
       # Last-resort shape redactor for token-like strings (GitHub tokens/PATs,

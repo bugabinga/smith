@@ -470,6 +470,33 @@ prizes "a different model than the builder."
 Copilot or Codex outage can never deadlock a merge, and no external service becomes
 load-bearing for landing code. They enrich the judgment; they don't hold the key.
 
+### Credentialed agents over untrusted input (the ADW's §6.7)
+
+Some agents read attacker-controllable input (a PR diff on a public repo) while
+holding a reusable credential, and publish their output where anyone can read it —
+`adw-codex-review` is the case: Codex must read its ChatGPT-sub `auth.json`, the
+diff is untrusted, and the comment is public. On a public repo every channel
+(comments, Actions logs, artifacts) is public, so the leak cannot be closed at the
+output; a determined prompt-injection can encode the credential past any filter.
+
+**Rule.** An ADW agent that reads untrusted input *and* auto-publishes its output
+*and* holds a reusable credential must not run credentialed on an untrusted
+trigger. The credentialed run is **gated to a trusted trigger** — an approved
+GitHub **Environment** (owner approves each run) or, lighter, `author_association
+∈ {OWNER, MEMBER, COLLABORATOR}` — and its published output and logs are
+**fail-closed** against the exact credential it holds (raw + base64, snapshotted
+before any in-run rotation). This is the ADW analogue of **SPEC §6.7** (secrets
+never reach logs / sessions / provider requests / errors).
+
+`adw-codex-review` implements it with `environment: codex-review` (a
+required-reviewer rule holds the job for the owner) plus the fail-closed content
+checks. **Accepted residuals**, stated not hidden: an owner-approved run could
+still be injection-exfil'd (mitigated by it being a rotatable non-GitHub token on
+an advisory, fail-open job); the token lives in the Actions cache (p37); and
+`@openai/codex` is unpinned (the binary reads the token at run time — pin a vetted
+version). Owner enablement is a one-time step (create the `codex-review`
+environment with a required reviewer, move `CODEX_AUTH_JSON` into it).
+
 Two owner-added workflows already sit on `main` and the plan wraps around them
 rather than replacing them:
 
