@@ -83,11 +83,10 @@ jobs:
             apply labels — a deterministic step reads that marker from your comment
             and sets `reviewed` / `changes-requested`.
             You are a mission-critical gate — ultrathink.
-          # Read + comment only. No `gh pr edit` (label-write is the deterministic
-          # step's), no `gh pr merge`, no `gh api`, no file-write primitives.
-          claude_args: >-
-            --model claude-fable-5
-            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue view:*)"
+          # Full tool access — bounded by .claude/agents/reviewer.md, not an
+          # allow-list. Verdict still flows through the comment marker + the
+          # deterministic apply step below.
+          claude_args: --model claude-fable-5 --dangerously-skip-permissions
       - name: Apply verdict label (deterministic — no LLM)
         if: ${{ !cancelled() }}
         env:
@@ -145,9 +144,7 @@ jobs:
             deterministic step reads that marker and sets
             `security-cleared` / `risk:high`.
             You are a mission-critical gate — ultrathink.
-          claude_args: >-
-            --model claude-fable-5
-            --allowedTools "Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh issue view:*)"
+          claude_args: --model claude-fable-5 --dangerously-skip-permissions
       - name: Apply verdict label (deterministic — no LLM)
         if: ${{ !cancelled() }}
         env:

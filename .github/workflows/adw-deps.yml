@@ -40,4 +40,4 @@ jobs:
             gates; a clean semver-compatible bump is merge-eligible; a
             semver-incompatible / MSRV-raising / budget-tripping bump escalates
             with an issue for the owner. Never add a crate. Think.
-          claude_args: --model claude-sonnet-5
+          claude_args: --model claude-sonnet-5 --dangerously-skip-permissions

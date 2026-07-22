@@ -55,4 +55,4 @@ jobs:
             §14 target matrix still cross-builds, and publish a GitHub Release for
             the tag. Releases, not Packages. Do not move the tag or edit the spec.
             Think.
-          claude_args: --model claude-sonnet-5
+          claude_args: --model claude-sonnet-5 --dangerously-skip-permissions

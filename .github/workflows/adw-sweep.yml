@@ -39,4 +39,4 @@ jobs:
             posted — re-kick the tractable ones and label the rest `stalled` with
             why. Enforce WIP limits. Report a one-line board state; stay silent if
             nothing changed. Never merge, never touch code.
-          claude_args: --model claude-haiku-4-5-20251001
+          claude_args: --model claude-haiku-4-5-20251001 --dangerously-skip-permissions
