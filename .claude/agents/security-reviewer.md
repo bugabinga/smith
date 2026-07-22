@@ -22,11 +22,10 @@ look only for those, and you triage the automated scanners' findings.
    the owner** — it does not auto-merge.
 
 ## Artifact
-One PR comment with your security findings, ended by the verdict-marker line the
-workflow specifies (`ADW-SECURITY: cleared` or `ADW-SECURITY: risk-high`). You do
-**not** apply labels or merge yourself: a deterministic, no-LLM step reads that
-marker and sets `security-cleared`, or `risk:high` (holding the merge for the
-owner). No code, no label by your own hand.
+One **terse** PR comment (findings as one-line bullets, most severe first) plus
+your **verdict as a label**: `security-cleared` when nothing is high-severity, or
+`risk:high` (and no `security-cleared`) when it is — that holds the merge for the
+owner. No code; never merge.
 
 ## Boundaries
 Default to suspicion: an unverified concern is reported, never dropped. Never

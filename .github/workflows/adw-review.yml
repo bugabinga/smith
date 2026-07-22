@@ -1,25 +1,13 @@
-# ADW review — reviewer (correctness) and security-reviewer (security) run on
-# every PR, in parallel. Both are issue/PR agents → claude-code-action. Verdicts
-# only; neither merges. reviewer runs on a different model than the builder on
-# purpose.
+# ADW review — reviewer (correctness) + security-reviewer (security) run on every
+# PR in parallel. Verdicts only; neither merges. reviewer runs a different model
+# than the builder on purpose. Each posts a terse comment and applies its verdict
+# directly as a label the merge-gate reads (`reviewed` / `changes-requested`,
+# `security-cleared` / `risk:high`). Full tool access — bounded by the agent
+# charters (.claude/agents/*.md), not an allow-list.
 #
-# Deterministic verdict (issue #19): the LLM does NOT apply labels. It reviews,
-# posts ONE PR comment, and ends it with a marker line (`ADW-VERDICT: approve`
-# etc.). A plain no-LLM step then reads that marker and applies the label with
-# the App token. `gh pr edit` is not in the agent's allow-list — the label-write
-# left the LLM's hands; its reach on the label surface is the marker word alone.
-# (Comment-marker, not a verdict file: claude-code-action's headless sandbox
-# blocks shell output-redirection to every path, so an agent cannot write a file
-# — but it can post a comment. Proven the hard way on this PR's own history.)
-#
-# Two guards make the marker trustworthy: the apply step reads ONLY comments (a)
-# authored by the review App and (b) created within THIS run's window. (a) stops
-# a public-repo stranger from posting `ADW-VERDICT: approve` themselves; (b) stops
-# a prior run's marker from being re-applied to a newer head.
-#
-# The `reset` job strips stale verdict labels first, and the apply steps run
-# `if: ${{ !cancelled() }}` (never on a cancelled run) so a superseded run can
-# never stamp a verdict earned on an old head onto a newer one.
+# The reset job strips stale verdict labels first (except sticky `risk:high`), so
+# a new push can't inherit a prior review's pass — the reviewers re-earn it on the
+# current head.
 name: adw-review
 
 on:
@@ -45,8 +33,7 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           # risk:high is deliberately NOT stripped: once security-reviewer
-          # escalates, only the owner de-escalates it (owner-only gate). reset
-          # clears just the re-earnable verdicts.
+          # escalates, only the owner de-escalates it.
           for l in reviewed security-cleared changes-requested; do
             gh pr edit "$PR" --repo "$REPO" --remove-label "$l" 2>/dev/null || true
           done
@@ -61,8 +48,6 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-      - name: Mark verdict window start
-        run: echo "REVIEW_SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
       - uses: anthropics/claude-code-action@v1
         with:
           github_token: ${{ steps.token.outputs.token }}
@@ -71,45 +56,14 @@ jobs:
             Use the reviewer subagent to review PR
             #${{ github.event.pull_request.number }} in ${{ github.repository }}.
             Follow .claude/agents/reviewer.md: adversarial correctness review vs
-            the spec, craft lenses, a file-anchored verdict. Do not merge.
+            the spec, craft lenses. Do not merge.
             Post ONE terse PR comment: findings as one-line bullets (file:line —
-            the defect), most severe first, nothing that doesn't change the
-            verdict — no preamble, no praise, no restating the diff. A clean pass
-            is one line. End the comment with a
-            final line that is EXACTLY one of these (nothing after it):
-              ADW-VERDICT: approve
-              ADW-VERDICT: changes
-            `approve` = correct and mergeable; `changes` = needs work. You do NOT
-            apply labels — a deterministic step reads that marker from your comment
-            and sets `reviewed` / `changes-requested`.
+            the defect), most severe first, no preamble/praise/restating; a clean
+            pass is one line. Then apply your verdict as a label: on approve add
+            `reviewed` and remove `changes-requested`; on request-changes add
+            `changes-requested` and remove `reviewed`.
             You are a mission-critical gate — ultrathink.
-          # Full tool access — bounded by .claude/agents/reviewer.md, not an
-          # allow-list. Verdict still flows through the comment marker + the
-          # deterministic apply step below.
           claude_args: --model claude-fable-5 --dangerously-skip-permissions
-      - name: Apply verdict label (deterministic — no LLM)
-        if: ${{ !cancelled() }}
-        env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-          PR: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          # Only THIS App's comments, only from this run's window — see header.
-          verdict="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            --jq '[.[] | select(.user.login=="agent-smith-bugabinga-adc[bot]" and .created_at >= env.REVIEW_SINCE) | .body] | .[]' \
-            | grep -oE 'ADW-VERDICT: (approve|changes)' | tail -1 | awk '{print $2}')"
-          echo "reviewer verdict: '${verdict:-<none>}'"
-          case "$verdict" in
-            approve)
-              gh pr edit "$PR" --repo "$REPO" --add-label reviewed
-              gh pr edit "$PR" --repo "$REPO" --remove-label changes-requested 2>/dev/null || true ;;
-            changes)
-              gh pr edit "$PR" --repo "$REPO" --add-label changes-requested
-              gh pr edit "$PR" --repo "$REPO" --remove-label reviewed 2>/dev/null || true ;;
-            *)
-              echo "::notice::no valid reviewer verdict in this run's comments — labels unchanged, merge-gate stays red" ;;
-          esac
 
   security-reviewer:
     needs: reset
@@ -121,8 +75,6 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-      - name: Mark verdict window start
-        run: echo "REVIEW_SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
       - uses: anthropics/claude-code-action@v1
         with:
           github_token: ${{ steps.token.outputs.token }}
@@ -133,36 +85,9 @@ jobs:
             Follow .claude/agents/security-reviewer.md: sandbox, secrets, unsafe,
             injection, supply chain. Do not merge.
             Post ONE terse PR comment: only real findings as one-line bullets
-            (file:line — the risk), most severe first. No preamble, no
-            "checked and clean" tours, no restating the diff. A clean pass is one
-            line. End the comment with a
-            final line that is EXACTLY one of these (nothing after it):
-              ADW-SECURITY: cleared
-              ADW-SECURITY: risk-high
-            `cleared` = nothing high-severity; `risk-high` = a high finding that
-            must hold the merge for the owner. You do NOT apply labels — a
-            deterministic step reads that marker and sets
-            `security-cleared` / `risk:high`.
+            (file:line — the risk), most severe first; a clean pass is one line.
+            Then apply your verdict: if nothing high-severity add `security-cleared`;
+            on a high finding add `risk:high` and ensure `security-cleared` is
+            absent (holds the merge for the owner).
             You are a mission-critical gate — ultrathink.
           claude_args: --model claude-fable-5 --dangerously-skip-permissions
-      - name: Apply verdict label (deterministic — no LLM)
-        if: ${{ !cancelled() }}
-        env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-          PR: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          verdict="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            --jq '[.[] | select(.user.login=="agent-smith-bugabinga-adc[bot]" and .created_at >= env.REVIEW_SINCE) | .body] | .[]' \
-            | grep -oE 'ADW-SECURITY: (cleared|risk-high)' | tail -1 | awk '{print $2}')"
-          echo "security verdict: '${verdict:-<none>}'"
-          case "$verdict" in
-            cleared)
-              gh pr edit "$PR" --repo "$REPO" --add-label security-cleared ;;
-            risk-high)
-              gh pr edit "$PR" --repo "$REPO" --add-label risk:high
-              gh pr edit "$PR" --repo "$REPO" --remove-label security-cleared 2>/dev/null || true ;;
-            *)
-              echo "::notice::no valid security verdict in this run's comments — labels unchanged, merge-gate stays red" ;;
-          esac
