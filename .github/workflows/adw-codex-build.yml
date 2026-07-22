@@ -1,0 +1,72 @@
+# Codex as a first-class BUILDER — not just a reviewer. Route an issue to Codex
+# by adding the `codex` label; it implements the slice on a branch and opens a PR
+# that rides the normal gate (Fable review + merge-gate), exactly like a
+# builder-authored PR. Mix-and-match: some issues to Claude's builder, some to
+# Codex, owner's call per issue.
+#
+# Trust: applying a label needs repo write, so only a collaborator/owner routes
+# work here — the trigger is privileged, not open. The PR opens via the App token
+# so the reviewers actually run on it.
+name: adw-codex-build
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: adw-codex-build-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.event.label.name == 'codex'
+    runs-on: ubuntu-latest
+    steps:
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ steps.token.outputs.token }}
+      - name: Codex auth
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          mkdir -p ~/.codex
+          printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
+          chmod 600 ~/.codex/auth.json
+      - run: npm install -g @openai/codex
+      - name: Build the slice and open a PR
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          ISSUE: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          TITLE: ${{ github.event.issue.title }}
+        run: |
+          set -e
+          branch="codex/issue-${ISSUE}"
+          git config user.name "agent-smith-bugabinga-adc[bot]"
+          git config user.email "agent-smith-bugabinga-adc[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          body="$(gh issue view "$ISSUE" --repo "$REPO" --json body -q .body)"
+          # workspace-write: Codex may edit the checkout; still no network beyond
+          # its own API. Terse — it's building, not narrating.
+          codex exec --sandbox workspace-write "Implement issue #${ISSUE} of ${REPO}. Read AGENTS.md and docs/SPEC.md; build ONE focused, tested slice per the walking-skeleton discipline; no unrequested extras. Do not merge or edit the spec. Issue title: ${TITLE}
+          Issue body:
+          ${body}" 2>&1 | tail -30 || true
+          git add -A
+          if git diff --cached --quiet; then
+            gh issue comment "$ISSUE" --repo "$REPO" --body "Codex produced no changes — needs a clearer spec anchor or is not yet buildable."
+            exit 0
+          fi
+          git commit -m "Implement #${ISSUE}"
+          git push -u origin "$branch"
+          gh pr create --repo "$REPO" --head "$branch" --base main \
+            --title "$TITLE" \
+            --body "Implements #${ISSUE}. Built by Codex (cross-family builder); rides the normal review + merge-gate." || true

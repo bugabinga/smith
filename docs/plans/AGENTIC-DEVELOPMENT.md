@@ -105,18 +105,18 @@ only for the reader's map. The craft skills (`sabotnik`, `handmade`, `pioneer`,
 | `sweeper` | `schedule` | unstick stalls, enforce WIP, brake runaways | **Issues/PRs/board** labels | Haiku |
 | `adw-doctor` | `schedule` (weekly) | diagnose the *workflow's own* health — failing/drifting workflows, doc-vs-config drift, gate pathologies — and propose one systemic fix | a **PR** on ADW config, or an **Issue** | Opus |
 | `pioneer` (skill) | `needs:prototype` | prove/disprove an unproven spec claim with a prototype | `prototypes/*` | Sonnet |
-| `codex` (OpenAI) | `pull_request` (non-draft) | cross-family review — an independent second opinion from a *different model family* | a **PR comment** + `codex-reviewed` | Codex (ChatGPT sub) |
+| `codex` (OpenAI) | `pull_request` (trusted author) **reviews**; issue labeled `codex` **builds** | cross-family second opinion, and a foreign-model builder | a **PR comment** (review) or a **branch + PR** (build) | Codex (ChatGPT sub) |
 
-`codex` is a **first-class but foreign** citizen: its "agent file" is `AGENTS.md`
-(the Codex counterpart to `CLAUDE.md`) plus `.github/workflows/adw-codex-review.yml`,
-not a `.claude/agents/*`, because it runs on the owner's ChatGPT subscription
-(OpenAI), not Claude. Its auth **self-refreshes in CI** — each run saves the
-rotated `auth.json` to a rolling `actions/cache` and restores it next run, so it
-stays alive as long as CI keeps using it; `CODEX_AUTH_JSON` is only the cold-start
-seed. It is deliberately **advisory**: it posts a review and the `codex-reviewed`
-label, but never owns a merge-gate label, so an OpenAI outage or an exhausted
-5-hour window can never deadlock a merge — the audit rule that no external service
-is load-bearing for landing code.
+`codex` is a **first-class but foreign** citizen — it both **reviews and builds**,
+mix-and-match with Claude's agents per the owner's call. Its "agent file" is
+`AGENTS.md` (the Codex counterpart to `CLAUDE.md`) plus
+`.github/workflows/adw-codex-{review,build}.yml`, not a `.claude/agents/*`, because
+it runs on the owner's ChatGPT subscription (OpenAI). `CODEX_AUTH_JSON` seeds its
+auth each run (re-seed when the ~8-day token lapses). As a **reviewer** it is
+advisory — a comment + `codex-reviewed`, never a merge-gate label, so an OpenAI
+outage can't deadlock a merge. As a **builder** it takes an issue labeled `codex`,
+implements one slice, and opens a PR that rides the same gate as any other — the
+Fable reviewers judge it, so Codex's build is trusted no more than any agent's.
 
 The **authority** for each model and tool scope is the agent's frontmatter — the
 `.claude/agents/` directory is the one place to review and change them; a
@@ -472,30 +472,16 @@ load-bearing for landing code. They enrich the judgment; they don't hold the key
 
 ### Credentialed agents over untrusted input (the ADW's §6.7)
 
-Some agents read attacker-controllable input (a PR diff on a public repo) while
-holding a reusable credential, and publish their output where anyone can read it —
-`adw-codex-review` is the case: Codex must read its ChatGPT-sub `auth.json`, the
-diff is untrusted, and the comment is public. On a public repo every channel
-(comments, Actions logs, artifacts) is public, so the leak cannot be closed at the
-output; a determined prompt-injection can encode the credential past any filter.
-
-**Rule.** An ADW agent that reads untrusted input *and* auto-publishes its output
-*and* holds a reusable credential must not run credentialed on an untrusted
-trigger. The credentialed run is **gated to a trusted trigger** — an approved
-GitHub **Environment** (owner approves each run) or, lighter, `author_association
-∈ {OWNER, MEMBER, COLLABORATOR}` — and its published output and logs are
-**fail-closed** against the exact credential it holds (raw + base64, snapshotted
-before any in-run rotation). This is the ADW analogue of **SPEC §6.7** (secrets
-never reach logs / sessions / provider requests / errors).
-
-`adw-codex-review` implements it with `environment: codex-review` (a
-required-reviewer rule holds the job for the owner) plus the fail-closed content
-checks. **Accepted residuals**, stated not hidden: an owner-approved run could
-still be injection-exfil'd (mitigated by it being a rotatable non-GitHub token on
-an advisory, fail-open job); the token lives in the Actions cache (p37); and
-`@openai/codex` is unpinned (the binary reads the token at run time — pin a vetted
-version). Owner enablement is a one-time step (create the `codex-review`
-environment with a required reviewer, move `CODEX_AUTH_JSON` into it).
+A credentialed agent (holds a reusable token) that reads attacker-controllable
+input and publishes where anyone can read it is an exfiltration shape. On a public
+repo the leak can't be closed at the output — every channel is public — so the
+**trigger** is the control: **gate the credentialed run to a trusted trigger, and
+run it autonomously there.** Codex uses `author_association ∈ {OWNER, MEMBER,
+COLLABORATOR}` (external PRs never get a credentialed run; they still get the Fable
+reviewers) — no per-run approval, so autonomy is intact. This is the ADW analogue
+of **SPEC §6.7**. Residuals are accepted, not hidden: the token is a rotatable
+non-GitHub credential on advisory jobs, `@openai/codex` is unpinned, and a
+compromised trusted account is out of scope (see #18).
 
 Two owner-added workflows already sit on `main` and the plan wraps around them
 rather than replacing them:

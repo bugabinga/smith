@@ -1,28 +1,10 @@
-# ADW Codex review — the cross-family reviewer, first-class. Codex (OpenAI) runs
-# on the owner's ChatGPT subscription and posts an independent review with
-# different blind spots than the Anthropic agents. It is deliberately ADVISORY:
-# it posts a comment and a `codex-reviewed` label, but it does NOT own a
-# merge-gate label — an external service must never be able to deadlock a merge.
-# Every step is fail-open for the same reason.
+# Codex cross-family review — a second opinion from a different model family,
+# advisory (never a gate label; a Codex outage can't wedge a merge).
 #
-# Auth refreshes itself in CI: the rotated auth.json is saved to a rolling cache
-# each run and restored next run (proven mechanics: p37). CODEX_AUTH_JSON is the
-# cold-start seed.
-#
-# Injection posture — READ THIS before loosening anything. A credentialed agent
-# reads the untrusted PR diff and its output is auto-published: a fundamentally
-# hard channel that config REDUCES but cannot fully close (codex must read
-# auth.json to run, so a determined injection could still encode that token past
-# any output filter). The BOUNDARY is therefore the trigger, not the output: the
-# `environment: codex-review` gate (below) holds the job for owner approval so a
-# credentialed run only happens on an owner-eyed PR. The rest are depth: checkout
-# persists no git credential (`persist-credentials: false`); Codex is installed
-# BEFORE any credential exists; the codex-exec step holds no GitHub token and runs
-# `--sandbox read-only`; and the published output + logs are checked against the
-# *actual* credential values (+ base64, snapshotted before rotation) and fail
-# CLOSED, then shape-redacted. Residual (an owner-approved run could still be
-# injection-exfil'd) is accepted: rotatable ChatGPT-sub token, advisory/fail-open
-# job. Rule pinned in AGENTIC-DEVELOPMENT.md → "Credentialed agents" (issue #45).
+# Runs autonomously on TRUSTED-author PRs only (owner/member/collaborator). That
+# is the whole security model: a credentialed agent must not read an untrusted
+# external diff, so we gate the trigger instead of approving every run. Fork PRs
+# get no secrets anyway. Simple by design.
 name: adw-codex-review
 
 on:
@@ -39,165 +21,34 @@ concurrency:
 
 jobs:
   codex:
-    # first-class but frugal: skip drafts and Dependabot (dependency-manager owns
-    # those). The shared 5-hour window is protected by this filter; tighten to a
-    # `codex-review` label if p37's per-review cost turns out high.
     if: >-
       github.event.pull_request.draft == false &&
-      github.event.pull_request.user.login != 'dependabot[bot]'
-    # Credential boundary (#45): this job is a credentialed agent reading the
-    # untrusted PR diff whose output is public, which config can only narrow. The
-    # environment gates it — with a required-reviewer rule on the `codex-review`
-    # environment (owner setup), the job PAUSES for the owner's approval before it
-    # runs or can read CODEX_AUTH_JSON, so a credentialed run only ever happens on
-    # a PR the owner has eyed. Until that rule is added the environment is inert
-    # (auto-created, no gate); the required-reviewer rule is what turns B on.
-    environment: codex-review
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)
     runs-on: ubuntu-latest
-    env:
-      # Last-resort shape redactor for token-like strings (GitHub tokens/PATs,
-      # OpenAI keys, JWT/OAuth). Defense in depth only — the fail-closed content
-      # check below, against the real secret values, is the load-bearing control.
-      REDACT: 's#(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9._-]{20,})#***REDACTED***#g'
     steps:
-      # persist-credentials: false — do NOT leave the job's GITHUB_TOKEN in
-      # .git/config (a base64 basic-auth header the codex agent could read and the
-      # shape-redactor would miss). This job never pushes.
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-
-      # Install BEFORE any credential exists on disk, so a poisoned npm release
-      # cannot read auth.json at install time.
-      - name: Install Codex
-        # NOTE: unpinned — this binary holds the credential at run time. Pin to a
-        # vetted version (ideally with provenance) as a follow-up hardening.
-        run: npm install -g @openai/codex
-
-      - name: Restore Codex auth (rolling cache)
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.codex/auth.json
-          # Branch-scoped by convention. Actions cache is already ref-isolated
-          # (one PR cannot restore another PR branch's cache), so this is not what
-          # prevents cross-PR races. Residual, untouched: two fresh branches both
-          # cold-seed CODEX_AUTH_JSON and both rotate that one refresh token, which
-          # can invalidate the seed and force a manual re-seed. Accepted for an
-          # advisory job.
-          key: codex-auth-${{ github.head_ref }}-${{ github.run_id }}
-          restore-keys: |
-            codex-auth-${{ github.head_ref }}-
-      - name: Prepare Codex auth (seed only if cache cold)
+      - name: Codex auth
         env:
           CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
         run: |
-          export CODEX_HOME="$HOME/.codex"
-          mkdir -p "$CODEX_HOME"; chmod 700 "$CODEX_HOME"
-          # Seed ONLY if missing — overwriting the restored file discards the
-          # tokens Codex rotated last run (OpenAI CI guidance), breaking refresh.
-          if [ -s "$CODEX_HOME/auth.json" ]; then
-            echo "auth.json restored from cache"
-          else
-            printf '%s' "$CODEX_AUTH_JSON" > "$CODEX_HOME/auth.json"
-            echo "auth.json seeded from CODEX_AUTH_JSON secret"
-          fi
-          # Keep the credential private (0600), matching OpenAI's CI example.
-          chmod 600 "$CODEX_HOME/auth.json"
-
-      - name: Fetch PR diff
+          mkdir -p ~/.codex
+          printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
+          chmod 600 ~/.codex/auth.json
+      - run: npm install -g @openai/codex
+      - name: Review (advisory, fail-open)
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
-          # Cap at 100 KiB so the whole diff fits in one argv entry (Linux
-          # MAX_ARG_STRLEN ~128 KiB); a bigger diff would otherwise E2BIG and
-          # silently trip the fail-open placeholder.
           gh pr diff "$PR" --repo "$REPO" | head -c 100000 > pr.diff
-
-      - name: Codex review (fail-open; no GH token in env; read-only sandbox)
-        id: review
-        continue-on-error: true
-        run: |
-          set +e
-          export CODEX_HOME="$HOME/.codex"
-          # Snapshot the credential values BEFORE the run — codex rotates the token
-          # mid-run, so checking only the post-run file would miss a pre-rotation
-          # token that leaked. Publish + log checks compare against this snapshot
-          # AND the post-run file (post step unions both).
-          jq -r '[.. | strings] | .[]' "$CODEX_HOME/auth.json" 2>/dev/null | awk 'length >= 20' | sort -u > "$RUNNER_TEMP/codex_secrets" || true
-          # No --json: codex prints ONLY the final message to stdout, so stdout IS
-          # the review — no JSONL scrape (the old jq program was a compile error,
-          # so the fallback fired every run). --sandbox read-only (also the
-          # default) blocks writes/network but NOT reads — codex still reads
-          # auth.json to run, which is why publish-side content redaction below is
-          # the real control, not this sandbox. No GH_TOKEN in this env.
-          codex exec --sandbox read-only "You are smith's cross-family reviewer (read AGENTS.md). Give an independent, file-anchored review of this pull request diff — correctness, security (untrusted Lua plugins, secrets, injection), and fit against docs/SPEC.md — flagging what a same-family reviewer might rationalize away. Concise markdown. Diff follows:
-          $(cat pr.diff)" > review.md 2> codex.err
-          rc=$?; echo "codex exit=$rc"
-          if ! grep -q '[^[:space:]]' review.md; then
-            echo "::group::codex stderr (diagnostic, redacted)"
-            # Drop any stderr line carrying a real secret value, then shape-redact.
-            { [ -s "$RUNNER_TEMP/codex_secrets" ] && grep -vFf "$RUNNER_TEMP/codex_secrets" codex.err || cat codex.err; } 2>/dev/null | tail -40 | sed -E "$REDACT" || true
-            echo "::endgroup::"
-            echo "_Codex was unavailable for this review (auth/window/tooling — advisory, non-blocking). See the run log._" > review.md
-          fi
-
-      - name: Post Codex review (fail-closed on credential material)
-        if: ${{ !cancelled() }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-        run: |
-          set +e
-          [ -f review.md ] || echo "_Codex review did not run._" > review.md
-          # FAIL CLOSED: the workflow knows the real secret values, so check the
-          # output against them (raw and base64) and withhold entirely if any
-          # appears — catching an encoded exfil the shape regex cannot. Not
-          # bulletproof (arbitrary encodings exist), but it closes the naive path.
-          auth="$HOME/.codex/auth.json"
-          withhold=0
-          # Union of the pre-run snapshot and the post-run file — catches the token
-          # whether codex rotated it during the run or not.
-          { cat "$RUNNER_TEMP/codex_secrets" 2>/dev/null; [ -f "$auth" ] && jq -r '[.. | strings] | .[]' "$auth" 2>/dev/null | awk 'length >= 20'; } | sort -u > "$RUNNER_TEMP/codex_secrets_all"
-          while IFS= read -r v; do
-            [ -z "$v" ] && continue
-            b64=$(printf '%s' "$v" | base64 -w0 2>/dev/null)
-            if grep -qF -- "$v" review.md 2>/dev/null || { [ -n "$b64" ] && grep -qF -- "$b64" review.md 2>/dev/null; }; then
-              withhold=1; break
-            fi
-          done < "$RUNNER_TEMP/codex_secrets_all"
-          if [ "$withhold" = 1 ]; then
-            echo "⚠️ Codex review withheld: output contained credential material (fail-closed)." > review.md
-          fi
-          {
-            echo "🔎 **Codex cross-family review** (advisory — the Fable reviewers own the gate)"
-            echo
-            sed -E "$REDACT" review.md
-          } > comment.md
-          gh pr comment "$PR" --repo "$REPO" --body-file comment.md || true
-
-      - name: Report window cost (redacted, best-effort)
-        continue-on-error: true
-        run: |
-          echo "### codex model / token / window usage (if reported)"
-          # Drop lines carrying a real secret value first, then shape-redact.
-          { [ -s "$RUNNER_TEMP/codex_secrets" ] && grep -vFf "$RUNNER_TEMP/codex_secrets" codex.err || cat codex.err; } 2>/dev/null \
-            | grep -iE 'token|rate.?limit|usage|remaining|[0-9]+%' | sed -E "$REDACT" | tail -8 || echo "n/a"
-
-      # Persist the freshly-rotated auth for the next run.
-      - name: Save refreshed Codex auth (rolling cache)
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.codex/auth.json
-          key: codex-auth-${{ github.head_ref }}-${{ github.run_id }}
-
-      - name: Mark codex-reviewed (fail-open, never gates)
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-        run: gh pr edit "$PR" --repo "$REPO" --add-label codex-reviewed || true
+          codex exec --sandbox read-only "Cross-family review of this PR diff (read AGENTS.md for repo rules). Be terse: real, file-anchored findings only, most severe first, one line each. No preamble, no praise, no restating the diff. If nothing material, reply exactly 'No blocking findings.' Diff:
+          $(cat pr.diff)" > review.md 2>&1 || true
+          grep -q '[^[:space:]]' review.md || echo "_Codex unavailable (advisory)._" > review.md
+          { echo "🔎 **Codex** (advisory cross-family review)"; echo;
+            sed -E 's#(gh[pousr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9._-]{20,})#***#g' review.md; } > c.md
+          gh pr comment "$PR" --repo "$REPO" --body-file c.md || true
+          gh pr edit "$PR" --repo "$REPO" --add-label codex-reviewed || true

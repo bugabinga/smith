@@ -46,6 +46,11 @@
   color: "7a1fa2"
   description: "Force a security-reviewer review"
 
+# — routing to Codex (owner/collaborator applies) —
+- name: "codex"
+  color: "10a37f"
+  description: "Route this issue to Codex to build (opens a PR that rides the normal gate)"
+
 # — verdict (reviewers set; the merge-gate reads these) —
 - name: "reviewed"
   color: "1f9d55"
