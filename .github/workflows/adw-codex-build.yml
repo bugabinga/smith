@@ -44,6 +44,8 @@ jobs:
           mkdir -p ~/.codex
           printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
           chmod 600 ~/.codex/auth.json
+          # No AGENTS.md in the repo — Codex loads CLAUDE.md as its project doc.
+          printf 'project_doc_fallback_filenames = ["CLAUDE.md"]\n' > ~/.codex/config.toml
       - run: npm install -g @openai/codex
       - name: Build the slice and open a PR
         env:
@@ -60,7 +62,7 @@ jobs:
           body="$(gh issue view "$ISSUE" --repo "$REPO" --json body -q .body)"
           # workspace-write: Codex may edit the checkout; still no network beyond
           # its own API. Terse — it's building, not narrating.
-          codex exec --sandbox workspace-write "Implement issue #${ISSUE} of ${REPO}. Read AGENTS.md and docs/SPEC.md; build ONE focused, tested slice per the walking-skeleton discipline; no unrequested extras. Do not merge or edit the spec. Issue title: ${TITLE}
+          codex exec --sandbox workspace-write "Implement issue #${ISSUE} of ${REPO}. Your repo rules load automatically from the project instructions; read docs/SPEC.md; build ONE focused, tested slice per the walking-skeleton discipline; no unrequested extras. Do not merge or edit the spec. Issue title: ${TITLE}
           Issue body:
           ${body}" 2>&1 | tail -30 || true
           git add -A
