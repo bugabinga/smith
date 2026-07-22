@@ -62,7 +62,7 @@ API/UI (a drift risk to minimize by preferring the as-code option).
 
 | Concept | Encoded in | In repo? | Authority |
 |---|---|---|---|
-| agent persona / model / charter | `.claude/agents/<role>.md` | ✅ | the file |
+| agent persona / model / tool scope / charter | `.claude/agents/<role>.md` | ✅ | the file |
 | which agent runs on which event | `.github/workflows/adw-*.yml` (verb-named; `adw-review` hosts both reviewers) | ✅ | the workflow |
 | shared rules all agents inherit | `CLAUDE.md` (+ nested) | ✅ | the file |
 | Claude runtime settings | `.claude/settings.json` | ✅ | the file |
@@ -472,14 +472,18 @@ on untrusted fork code. That control is permanent and GitHub-enforced; it does n
 depend on who opened the PR. Interaction limits ("contributors only" on issues and
 PRs) are defense-in-depth on top, not the load-bearing control — and they are
 *temporary* (GitHub expires them after at most six months), so nothing security-
-critical rests on them. The one live residual is same-repo: an attacker-authored
-**issue body/title** is interpolated into `adw-codex-build`'s prompt, and that bot
-PR is same-repo, so the credentialed review does run on it. The gate there is the
-`codex` **label** — applying it needs write access, so a member vets the issue
-before routing it, and that member is the human-in-the-loop. This is the ADW
-analogue of **SPEC §6.7**. Remaining residuals are accepted, not hidden: the token
-is a rotatable non-GitHub credential on advisory jobs, `@openai/codex` is unpinned,
-and a compromised member account is out of scope.
+critical rests on them. The remaining same-repo residual is **symmetric across
+families**, not specific to Codex: the triager auto-routes an issue to a builder —
+Claude's on `ready` or Codex's on `codex` — so attacker-influenceable issue text
+reaches a credentialed builder whose same-repo PR then draws a credentialed review.
+Codex gets **no extra gate**, because Claude's builder has none either — same
+shape, same rules. The bound sits on the *input*, not the build: who can open an
+issue at all (repository access, with interaction limits as the temporary layer
+above), and the review jobs merge nothing and post only a redacted comment. It is
+an accepted residual, held equally for both families. This is the ADW analogue of
+**SPEC §6.7**. Other residuals are accepted, not hidden: the token is a rotatable
+non-GitHub credential on advisory jobs, `@openai/codex` is unpinned, and a
+compromised member account is out of scope.
 
 Two owner-added workflows already sit on `main` and the plan wraps around them
 rather than replacing them:
