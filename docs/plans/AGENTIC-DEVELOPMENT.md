@@ -324,8 +324,8 @@ auto-merge**, armed for every agent PR and released by the ruleset's gate:
    `security-cleared`, and `merge-gate` turns green. The reviewers apply their own
    verdict labels directly — they run with full tool access, bounded by their
    `.claude/agents/*.md` charters (which forbid the builder from setting a verdict
-   on its own PR), not by a tool allow-list. On a members-only repo the trust is
-   in the instructions, not a permission gate.
+   on its own PR), not by a tool allow-list. The trust is
+   in the charters, not a permission gate.
    `required_approving_review_count` stays `0`; the
    code-owner rule still forces a **human** approval on CODEOWNERS paths (spec,
    workflows, agents, invariants) — touchpoints 1 and 3 — where the author is the
