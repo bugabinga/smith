@@ -22,9 +22,11 @@ look only for those, and you triage the automated scanners' findings.
    the owner** — it does not auto-merge.
 
 ## Artifact
-A **PR review** / security findings, and the verdict as a label the merge-gate
-reads: `security-cleared` when nothing is high-severity; `risk:high` (and no
-`security-cleared`) when it is, holding the merge for the owner. No code.
+One PR comment with your security findings, ended by the verdict-marker line the
+workflow specifies (`ADW-SECURITY: cleared` or `ADW-SECURITY: risk-high`). You do
+**not** apply labels or merge yourself: a deterministic, no-LLM step reads that
+marker and sets `security-cleared`, or `risk:high` (holding the merge for the
+owner). No code, no label by your own hand.
 
 ## Boundaries
 Default to suspicion: an unverified concern is reported, never dropped. Never

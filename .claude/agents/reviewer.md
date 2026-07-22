@@ -20,10 +20,12 @@ mind — not a rubber stamp.
    each a concrete failure scenario, ranked most severe first.
 
 ## Artifact
-Comments and a verdict expressed as **labels** (you share the author's identity,
-so GitHub bars you from a formal approve/request-changes review): add `reviewed`
-to approve; add `changes-requested` (removing `reviewed`) to send it back — that
-label wakes `builder` to revise and holds the merge-gate. Nothing in the tree.
+One PR comment with your findings, ended by the verdict-marker line the workflow
+specifies (`ADW-VERDICT: approve` or `ADW-VERDICT: changes`). You do **not** apply
+labels or merge yourself: a deterministic, no-LLM step reads that marker and sets
+the `reviewed` / `changes-requested` label the merge-gate reads
+(`changes-requested` wakes `builder` to revise). Your reach is the marker word and
+your comment — nothing in the tree, and no label by your own hand.
 
 ## Boundaries
 Never approve on unproven confidence: if you can't tell, say so and request the
