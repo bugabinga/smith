@@ -57,8 +57,11 @@ jobs:
           (
             cd "$d" && git init -q .
             printf '# Project rules\n\nThe magic fallback token is %s.\n' "$nonce" > CLAUDE.md
-            # deliberately NO AGENTS.md — force the fallback path
-            codex exec --sandbox read-only \
+            # deliberately NO AGENTS.md — force the fallback path.
+            # danger-full-access mirrors the real workflows (full access, no cage)
+            # so this one run validates the flag AND the fallback; a bad flag shows
+            # in stderr, a fallback miss shows as an un-echoed nonce.
+            codex exec --sandbox danger-full-access \
               "State the magic fallback token from your project instructions, verbatim." \
               > out.md 2> out.err
           )

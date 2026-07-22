@@ -10,10 +10,13 @@
 # same-repo residual (attacker-authored issue → adw-codex-build) — accepted and
 # ungated, symmetric with Claude's builder, not closed by a per-workflow gate.
 #
-# `codex exec` never sees a GitHub token: the diff is fetched and the comment is
-# posted in separate steps that hold the App token, so a prompt-injected review
-# has no GitHub credential to abuse. Codex loads its repo rules from `CLAUDE.md`
-# via `project_doc_fallback_filenames` — the same file every Claude agent reads.
+# Codex runs with full access (`--sandbox danger-full-access`), same as every
+# Claude agent's `--dangerously-skip-permissions` — bounded by its charter, not a
+# cage. The real control is credential isolation: `codex exec` never sees a GitHub
+# token (the diff is fetched and the comment posted in separate token-holding
+# steps), so a prompt-injected review has no GitHub credential to abuse. Codex
+# loads its repo rules from `CLAUDE.md` via `project_doc_fallback_filenames` — the
+# same file every Claude agent reads.
 name: adw-codex-review
 
 on:
@@ -62,7 +65,7 @@ jobs:
       - name: Review (advisory, fail-open — no GitHub token in this step)
         continue-on-error: true
         run: |
-          codex exec --sandbox read-only "Cross-family review of this PR diff. Your repo rules load automatically from the project instructions. Be terse: real, file-anchored findings only, most severe first, one line each. No preamble, no praise, no restating the diff. If nothing material, reply exactly 'No blocking findings.' Diff:
+          codex exec --sandbox danger-full-access "Cross-family review of this PR diff. Your repo rules load automatically from the project instructions. Be terse: real, file-anchored findings only, most severe first, one line each. No preamble, no praise, no restating the diff. If nothing material, reply exactly 'No blocking findings.' Diff:
           $(cat pr.diff)" > review.md 2> codex.err || true
           # codex prints its banner/progress to stderr; keep it out of the comment.
           grep -q '[^[:space:]]' review.md || echo "_Codex unavailable (advisory)._" > review.md

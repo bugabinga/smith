@@ -60,9 +60,9 @@ jobs:
           git config user.email "agent-smith-bugabinga-adc[bot]@users.noreply.github.com"
           git checkout -b "$branch"
           body="$(gh issue view "$ISSUE" --repo "$REPO" --json body -q .body)"
-          # workspace-write: Codex may edit the checkout; still no network beyond
-          # its own API. Terse — it's building, not narrating.
-          codex exec --sandbox workspace-write "Implement issue #${ISSUE} of ${REPO}. Your repo rules load automatically from the project instructions; read docs/SPEC.md; build ONE focused, tested slice per the walking-skeleton discipline; no unrequested extras. Do not merge or edit the spec. Issue title: ${TITLE}
+          # Full access, same as every Claude agent — bounded by charter, not a
+          # cage. Terse — it's building, not narrating.
+          codex exec --sandbox danger-full-access "Implement issue #${ISSUE} of ${REPO}. Your repo rules load automatically from the project instructions; read docs/SPEC.md; build ONE focused, tested slice per the walking-skeleton discipline; no unrequested extras. Do not merge or edit the spec. Issue title: ${TITLE}
           Issue body:
           ${body}" 2>&1 | tail -30 || true
           git add -A
