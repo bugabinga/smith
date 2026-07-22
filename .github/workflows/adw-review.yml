@@ -72,7 +72,10 @@ jobs:
             #${{ github.event.pull_request.number }} in ${{ github.repository }}.
             Follow .claude/agents/reviewer.md: adversarial correctness review vs
             the spec, craft lenses, a file-anchored verdict. Do not merge.
-            Post your findings as ONE PR comment, and end that comment with a
+            Post ONE terse PR comment: findings as one-line bullets (file:line —
+            the defect), most severe first, nothing that doesn't change the
+            verdict — no preamble, no praise, no restating the diff. A clean pass
+            is one line. End the comment with a
             final line that is EXACTLY one of these (nothing after it):
               ADW-VERDICT: approve
               ADW-VERDICT: changes
@@ -130,7 +133,10 @@ jobs:
             #${{ github.event.pull_request.number }} in ${{ github.repository }}.
             Follow .claude/agents/security-reviewer.md: sandbox, secrets, unsafe,
             injection, supply chain. Do not merge.
-            Post your findings as ONE PR comment, and end that comment with a
+            Post ONE terse PR comment: only real findings as one-line bullets
+            (file:line — the risk), most severe first. No preamble, no
+            "checked and clean" tours, no restating the diff. A clean pass is one
+            line. End the comment with a
             final line that is EXACTLY one of these (nothing after it):
               ADW-SECURITY: cleared
               ADW-SECURITY: risk-high

@@ -99,3 +99,18 @@ motivation, the reasoning, and what was deliberately *not* done and why.
 
 PRs follow `.github/pull_request_template.md`: motivation-first, one line per
 section, the surface as an anchor range — the diff is the roster.
+
+## Agent output discipline
+
+Every ADW agent is **terse — essentials only**. What lands on GitHub (a review,
+a triage note, a comment) is:
+
+- **Findings/actions as one-line bullets, most severe first.** No preamble, no
+  praise, no "what holds up well" tour, no restating the diff or issue back.
+- **A clean result is one line** — "No blocking findings." — not an essay. Say
+  the fewest words that carry the decision and the one reason for it.
+- **No meta-narration** of what you're about to do or just did. Post the verdict
+  and the findings that change it; drop everything else.
+
+Thoroughness is in the *reasoning*, not the word count. A wall of text is a
+defect, not diligence.
