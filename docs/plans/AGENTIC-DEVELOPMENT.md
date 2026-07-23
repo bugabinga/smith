@@ -190,6 +190,7 @@ sequenceDiagram
     Owner->>Board: file an issue
     Board-->>Tri: issue opened
     Tri->>Board: classify · anchor · size · route · card→Ready
+    Note over Tri,Board: epic/meta issue → held unrouted+unmilestoned, no builder
 
     Board-->>Bld: labeled `ready` (card→In Progress)
     loop until gates green
@@ -381,7 +382,8 @@ lives, declaratively, in the workflow `on:` triggers and `if:` guards: each even
 maps to its agent with no LLM in the middle. An orchestrator would add cost,
 latency, a single point of failure, and — worst for the dial — a model *guessing*
 the route. The only per-item routing judgment belongs to `triager` (one issue →
-`ready` / `needs:spec` / `needs:prototype`), which is scoped triage, not global
+`ready`/`codex` by surface, `needs:spec`/`needs:info`, or held unrouted if it is an
+epic), which is scoped triage, not global
 control. If routing ever branches, the answer is a **deterministic dispatcher
 workflow** (plain `if:` logic), never an LLM conductor. Recorded here so it is a
 decision, not an omission someone later "fixes."
