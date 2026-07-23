@@ -49,7 +49,7 @@ One cycle whose character changes over time, not two:
   through the three touchpoints.
 
 The dial is set to **predictability and quality over speed**: small slices,
-adversarial review on a second model, low work-in-progress, no auto-merge above
+adversarial review by a second mind (cross-family whenever the builder is Codex), low work-in-progress, no auto-merge above
 the `risk` threshold, thorough verification. A slow, legible, reversible cycle is
 the goal, not throughput — it is fine for build-out to take a long time.
 
@@ -62,8 +62,8 @@ API/UI (a drift risk to minimize by preferring the as-code option).
 
 | Concept | Encoded in | In repo? | Authority |
 |---|---|---|---|
-| agent persona / model / tool scope / charter | `.claude/agents/<role>.md` | ✅ | the file |
-| which agent runs on which event | `.github/workflows/adw-*.yml` (verb-named; `adw-review` hosts both reviewers) | ✅ | the workflow |
+| agent charter (mission + boundaries) | `.claude/agents/<role>.md` | ✅ | the file |
+| which agent runs on which event, its model / effort / tool access | `.github/workflows/adw-*.yml` (verb-named; `adw-review` hosts both reviewers) | ✅ | the workflow |
 | shared rules all agents inherit | `CLAUDE.md` (+ nested) | ✅ | the file |
 | Claude runtime settings | `.claude/settings.json` | ✅ | the file |
 | reusable role workflows | `.claude/skills/<name>/SKILL.md` | ✅ | the file |
@@ -91,60 +91,65 @@ property of the workflow that runs it (the encoding surface), and is listed here
 only for the reader's map. The craft skills (`sabotnik`, `handmade`, `pioneer`,
 `smith`) are *verbs the agents wield*, not agents.
 
-| Agent | Woken by (in the workflow) | Mission | Artifact it owns | Model |
-|-------|----------------------------|---------|------------------|-------|
-| `surveyor` | `schedule` | measure the spec-vs-code gap and open the next unbuilt slice as a work-order — the engine of autonomous build-out | **one Issue** per tick | Opus |
-| `triager` | issue opened | triage a raw issue into a labeled, routed, spec-anchored work-order | the **Issue** + board card | Haiku |
-| `planner` | spec change lands on `main` | turn the spec diff into tracked work-orders + refresh the plan | **Issues** + `docs/plans/*` | Opus |
-| `builder` | issue labeled `ready` | build one slice per `WALKING-SKELETON`, hardened, tested | a **branch + PR** | Sonnet |
-| `reviewer` | `pull_request` | adversarial correctness review vs the spec — a *second* model | a **PR review** | Opus |
-| `security-reviewer` | PR on sensitive surface / `needs:security` / scanner alert | security review; escalate high severity | a **PR review** + `risk:*` | Opus |
-| `docs-writer` | merged PR changes user-facing / SDK behavior | keep user + plugin-author docs and the site true to the product | doc sources + Pages, via **PR** | Sonnet |
-| `dependency-manager` | Dependabot bump PR | shepherd version bumps through the gates; escalate risky ones | **Dependabot PRs** | Sonnet |
-| `release-manager` | milestone green / `v*` tag | draft notes, verify the §14 matrix, publish the Release | a **GitHub Release** | Sonnet |
-| `sweeper` | `schedule` | unstick stalls, enforce WIP, brake runaways | **Issues/PRs/board** labels | Haiku |
-| `adw-doctor` | `schedule` (weekly) | diagnose the *workflow's own* health — failing/drifting workflows, doc-vs-config drift, gate pathologies — and propose one systemic fix | a **PR** on ADW config, or an **Issue** | Opus |
-| `pioneer` (skill) | `needs:prototype` | prove/disprove an unproven spec claim with a prototype | `prototypes/*` | Sonnet |
-| `codex` (OpenAI) | `pull_request` **reviews**; issue labeled `codex` **builds** | cross-family second opinion, and a foreign-model builder | a **PR comment** (review) or a **branch + PR** (build) | Codex (ChatGPT sub) |
+Two axes set each agent: a **model** (intelligence) and a **reasoning effort**
+(how hard it thinks). Effort runs `off · low · medium · high · xhigh · max`, and
+it maps to work, not to importance: `max`/`xhigh` for the rare, strategic, or
+diagnostic; `high` for planning and gate-grade judgment; `medium` for coding and
+text generation; `low`/`off` for mechanical work whose context a smarter agent
+already prepared. The models, most to least capable: **`fable` · `sol` · `terra`
+· `opus` · `luna`**. `fable` and `opus` are Anthropic (run via `claude-code-action`,
+`--model … --effort …`); `sol`/`terra`/`luna` are the OpenAI `gpt-5.6-{sol,terra,
+luna}` family (run via `codex exec -m … -c model_reasoning_effort=…`; its ceiling
+is `xhigh`, which is `max` on this scale). There is **no manual escalation** — every
+level below is a standing assignment.
 
-`codex` is a **first-class but foreign** citizen — it both **reviews and builds**,
-mix-and-match with Claude's agents per the owner's call. It has no separate agent
-file: the Codex workflows set `project_doc_fallback_filenames = ["CLAUDE.md"]`, so
-Codex loads the same `CLAUDE.md` every Claude agent reads (the fallback fires
-because there is no `AGENTS.md`) — one source of truth, no drifting second copy.
-Its config lives in `.github/workflows/adw-codex-{review,build}.yml`, not a
-`.claude/agents/*`, because it runs on the owner's ChatGPT subscription (OpenAI). `CODEX_AUTH_JSON` seeds its
-auth each run (re-seed when the ~8-day token lapses). As a **reviewer** it is
-advisory — a comment + `codex-reviewed`, never a merge-gate label, so an OpenAI
-outage can't deadlock a merge. As a **builder** it takes an issue labeled `codex`,
-implements one slice, and opens a PR that rides the same gate as any other — the
-the reviewers judge it, so Codex's build is trusted no more than any agent's.
+| Agent | Woken by (in the workflow) | Mission | Artifact it owns | Model | Effort |
+|-------|----------------------------|---------|------------------|-------|--------|
+| `planner` | spec change lands on `main` | interpret the spec diff into tracked work-orders + refresh the plan | **Issues** + `docs/plans/*` | fable | xhigh |
+| `surveyor` | `schedule` | measure the spec-vs-code gap and open the next unbuilt slice as a work-order | **one Issue** per tick | fable | high |
+| `reviewer` | `pull_request` | adversarial correctness review vs the spec — a *second* model | a **PR review** | opus | xhigh |
+| `security-reviewer` | PR on sensitive surface / `needs:security` / scanner alert | security review; escalate high severity | a **PR review** + `risk:*` | opus | high |
+| `builder` (Claude) | issue labeled `ready` | build one **UI/UX** slice per `WALKING-SKELETON`, hardened, tested | a **branch + PR** | opus | high |
+| `builder` (Codex) | issue labeled `codex` | build one **backend** slice per `WALKING-SKELETON`, hardened, tested | a **branch + PR** | terra | high |
+| `codex-review` | `pull_request` | cross-family second opinion (advisory; never a gate label) | a **PR comment** | sol | high |
+| `adw-doctor` | `schedule` (weekly) | diagnose the *workflow's own* health — drift, gate pathologies — and propose one systemic fix | a **PR**/`Issue` on ADW config | sol | xhigh |
+| `docs-writer` | merged PR changes user-facing / SDK behavior | keep user + plugin-author docs and the site true to the product | doc sources + Pages, via **PR** | terra | medium |
+| `dependency-manager` | Dependabot bump PR | shepherd version bumps through the gates; escalate risky ones | **Dependabot PRs** | terra | medium |
+| `release-manager` | `v*` tag | draft notes, verify the §14 matrix, publish the Release | a **GitHub Release** | terra | medium |
+| `triager` | issue opened | triage a raw issue into a labeled, routed, spec-anchored work-order | the **Issue** + board card | luna | low |
+| `sweeper` | `schedule` | unstick stalls, enforce WIP, brake runaways | **Issues/PRs/board** labels | luna | low |
+| `pioneer` (skill) | `needs:prototype` | prove/disprove an unproven spec claim with a prototype | `prototypes/*` | — | — |
 
-The **authority** for each model and tool scope is the agent's frontmatter — the
-`.claude/agents/` directory is the one place to review and change them; a
-prospective `xtask agents` renders this table from it. `builder` and `reviewer`
-wield `/sabotnik` and `/handmade`; `pioneer` and `smith` stay
-owner/skill-invoked, since the spec is touchpoint 1.
+**Two builders, by domain.** The `triager` routes each `ready`-able issue by
+surface: **UI/UX → the Claude builder** (`opus`, `ready`), **backend → the Codex
+builder** (`terra`, `codex`). Two model families building different halves is
+diversity *and* specialization. Cross-family review is preserved by construction:
+a backend (`terra`) PR is **gated** cross-family by the `opus` `reviewer`, and a
+UI/UX (`opus`) PR — built and gated by `opus` — gets its cross-family read from the
+`sol` `codex-review` (advisory) plus a higher-effort (`xhigh`) `opus` second pass.
+Every PR is seen by both families; only which family *gates* flips with the
+builder. Promoting `codex-review` to gating on `opus`-built PRs would make the UI
+cross-family read gating too — a later tightening, not a blocker.
 
-### Model and thinking tiers
+**Codex is first-class, not foreign.** `sol`/`terra`/`luna` agents run on the
+owner's ChatGPT subscription (`CODEX_AUTH_JSON` seeds auth each run; re-seed when
+the ~8-day token lapses), but they are the same citizens as the Claude agents and
+obey the **same charters**: each Codex *agent* workflow (builder, docs-writer,
+dependency-manager, release-manager, triager, sweeper, adw-doctor) injects its
+`.claude/agents/<name>.md` charter body into the `codex exec` prompt at runtime —
+one source of truth, no `.codex/agents/*.toml` duplicate to drift (Codex's native
+agent files are TOML, an incompatible schema, so a symlink can't share the Markdown
+charter). They also load `CLAUDE.md` as their project doc via
+`project_doc_fallback_filenames = ["CLAUDE.md"]`. The exception is `codex-review`:
+it is not a roster agent and has no charter file — it runs a self-contained inline
+review prompt, and stays advisory (a comment + `codex-reviewed`, never a merge-gate
+label, so an OpenAI outage can't deadlock a merge).
 
-Two dials per agent, both favouring **quality over speed**: which *model* runs it,
-and how hard it *thinks* (extended-reasoning budget, set by the `think` /
-`think hard` / `ultrathink` keyword in the workflow prompt). Cost tracks both, so
-they climb together only where the stakes justify it.
-
-| Tier | Model | Thinking | Agents | Why |
-|---|---|---|---|---|
-| mechanical | Haiku | minimal | `triager`, `sweeper` | label/route/sweep — pattern work, not judgment |
-| build | Sonnet | `think` | `builder`, `docs-writer`, `dependency-manager`, `release-manager` | implement and maintain — competent, bounded |
-| judgment | Opus | `think hard` | `surveyor`, `planner`, `adw-doctor` | plan the build and heal the machine — one wrong call ripples |
-| **gates** | Opus | `think` | `reviewer`, `security-reviewer` | the two autonomous gates into `main`; a *different* model than the Sonnet builder so review stays a second opinion |
-
-**The reviewers run Opus + `think`, not Fable + `ultrathink`** — the top model at
-the top thinking budget, on every PR and every push, burned the subscription too
-fast. Opus is still a strong adversarial gate on a *different* model than the
-Sonnet `builder`, and Codex adds a cross-family read on top; dial back up only if a
-gate miss proves the budget was load-bearing.
+The **authority** for each agent's mission and boundaries is its `.claude/agents/`
+charter; **model, effort, and tool access** are set by the workflow that runs it
+(this table is the map). Every agent runs at full access — bounded by its charter
+prose, not a frontmatter tool allow-list. `builder` and `reviewer` wield `/sabotnik` and `/handmade`; `pioneer`
+and `smith` stay owner/skill-invoked, since the spec is touchpoint 1.
 
 ## How the cycle pushes Smith forward
 
@@ -337,8 +342,9 @@ auto-merge**, armed for every agent PR and released by the ruleset's gate:
    the gate stays red, and the PR waits for the revision that adds it back.
 
 Net: the merge is native and deterministic; the reviewers move labels, the
-no-LLM `merge-gate` reads them, and a wrong verdict is caught by the review
-running a *different* model than the builder. Two owner enable-steps make it
+no-LLM `merge-gate` reads them, and a wrong verdict is caught by the review — a
+different family from a Codex builder, a higher-effort pass plus the cross-family
+`codex-review` from a Claude one. Two owner enable-steps make it
 live — **Allow
 auto-merge** (repo setting) and importing the ruleset with `merge-gate` required
 (issue #14).
@@ -397,9 +403,10 @@ follow it so `builder` always meets the same contract, whoever wrote the order.
 
 Deliberately **not** stacked; each does one job:
 
-- **`.claude/agents/*.md`** — the per-role control surface. Carries name,
-  description, **model**, **tool scope**, and the persona system prompt in one
-  file. This is where a role's identity lives.
+- **`.claude/agents/*.md`** — the per-role charter: name, description, and the
+  persona/mission system prompt. This is where a role's identity lives; its
+  **model, effort, and tool access are set by the workflow** that runs it (and a
+  Codex agent injects this charter's body into its prompt at runtime).
 - **`CLAUDE.md`** — shared project rules every agent inherits (commit voice,
   spec-before-code). Context, not persona.
 - **Output styles** — session-global, main-thread only; they **cannot set model
@@ -444,7 +451,7 @@ triage their alerts.
 Anthropic agents reviewing Anthropic-built code share blind spots. **Copilot**
 (GitHub) and **Codex** (OpenAI) have *different* ones, so they are wired in for
 review *diversity* — the strongest use of a foreign model in a system that already
-prizes "a different model than the builder."
+prizes cross-family review across model families.
 
 - **Copilot code review** — enabled as a repo setting so it auto-reviews each PR.
   Its comments are **advisory**: `reviewer`/`security-reviewer` read and weigh them,
@@ -666,8 +673,9 @@ action's docs settled the rest:
   `sweeper` as circuit-breaker; token budgets. The `surveyor` self-throttles: it
   opens at most one slice per tick and only when the front is clear, so schedule
   ticks cannot pile up work.
-- **Self-review blind spots** — reviewer on a different model than the
-  implementer; security-reviewer never auto-approves high severity — it
+- **Self-review blind spots** — the reviewer is a second mind: a different family
+  from a Codex builder, a higher-effort pass plus the cross-family `codex-review`
+  from a Claude one; security-reviewer never auto-approves high severity — it
   escalates to touchpoint #3.
 - **Merge safety** — branch protection is the backstop; the integrity rules in
   PROJECT-INVARIANTS §5 bind every agent absolutely: never fake a green run,

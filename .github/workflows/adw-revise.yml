@@ -1,11 +1,12 @@
-# ADW revise — closes the review→revise loop. builder and reviewer are one App
-# identity, and GitHub forbids submitting a formal review on your own PR, so the
-# reviewer signals "changes wanted" with the `changes-requested` LABEL, not a
-# review. This wakes builder on that label (and also on the owner's formal
-# changes-requested review, since the owner is a different identity).
-# Loop-safe: builder removes the label to acknowledge, then pushes; a push emits
-# `synchronize` (re-runs adw-review), never a label/review event, so no self-loop.
-# A reviewer never satisfied is braked by the sweeper (`stalled`).
+# ADW revise — closes the review→revise loop. The reviewer signals "changes
+# wanted" with the `changes-requested` LABEL (builder and reviewer are one App
+# identity, and GitHub forbids reviewing your own PR). This wakes the builder that
+# MADE the PR, by branch: a Claude (UI/UX) PR — any non-`codex/` branch — is
+# revised by the Claude `opus` builder; a Codex (backend) PR — a `codex/*` branch —
+# by the Codex `terra` builder. Keeping the revision on the build's own family means
+# a revised backend PR still faces the `opus` gate cross-family. Loop-safe: the
+# builder removes the label to acknowledge, then pushes; a push emits `synchronize`,
+# never a label/review event. A reviewer never satisfied is braked by the sweeper.
 name: adw-revise
 
 on:
@@ -23,10 +24,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  revise:
+  # Claude (UI/UX) builder revises its own PRs — any branch that isn't `codex/*`.
+  revise-claude:
     if: >-
       github.event.pull_request.user.type == 'Bot' &&
       github.event.pull_request.user.login != 'dependabot[bot]' &&
+      !startsWith(github.event.pull_request.head.ref, 'codex/') &&
       (
         (github.event_name == 'pull_request' && github.event.label.name == 'changes-requested') ||
         (github.event_name == 'pull_request_review' && github.event.review.state == 'changes_requested')
@@ -45,11 +48,72 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           use_commit_signing: true
           prompt: |
-            Use the builder subagent to revise PR
-            #${{ github.event.pull_request.number }} in ${{ github.repository }}.
-            A reviewer requested changes. First remove the `changes-requested`
-            label to acknowledge. Then read the review comments and the linked
-            issue, address every finding on the SAME branch (never open a new PR),
-            keep `cargo run -p xtask -- check` green, and push. The reviewers
-            re-run automatically on your push; do not merge. Think.
-          claude_args: --model claude-sonnet-5 --dangerously-skip-permissions
+            Revise PR #${{ github.event.pull_request.number }} in
+            ${{ github.repository }} using the subagent that AUTHORED it — read the
+            PR to tell which: `builder` for a feature slice, `docs-writer` for a
+            `docs/*` branch, `adw-doctor` for an ADW-config PR. A reviewer requested
+            changes: address every finding on the SAME branch (never open a new PR),
+            keep `cargo run -p xtask -- check` green, and push. The push re-runs the
+            reviewers, which clear the stale `changes-requested` label themselves —
+            don't remove it yourself, and do not merge.
+          claude_args: --model claude-opus-4-8 --effort high --dangerously-skip-permissions
+
+  # Codex (backend) builder revises its own `codex/*` PRs, on the same family it
+  # built with, so the `opus` gate stays cross-family after the revision.
+  revise-codex:
+    if: >-
+      github.event.pull_request.user.type == 'Bot' &&
+      github.event.pull_request.user.login != 'dependabot[bot]' &&
+      startsWith(github.event.pull_request.head.ref, 'codex/') &&
+      (
+        (github.event_name == 'pull_request' && github.event.label.name == 'changes-requested') ||
+        (github.event_name == 'pull_request_review' && github.event.review.state == 'changes_requested')
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - id: token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          # App token persisted (not the ambient one) so the full-access Codex step
+          # has one credential in reach and git push works on the PR branch.
+          token: ${{ steps.token.outputs.token }}
+      - name: Codex auth + config
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          mkdir -p ~/.codex
+          printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
+          chmod 600 ~/.codex/auth.json
+          printf 'project_doc_fallback_filenames = ["CLAUDE.md"]\n' > ~/.codex/config.toml
+      - run: npm install -g @openai/codex@0.145.0
+      - name: builder revises the PR
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          git config user.name "agent-smith-bugabinga-adc[bot]"
+          git config user.email "agent-smith-bugabinga-adc[bot]@users.noreply.github.com"
+          codex exec -m gpt-5.6-terra -c model_reasoning_effort="high" --sandbox danger-full-access "$(awk 'f>=2{print} /^---$/{f++}' .claude/agents/builder.md)
+
+          You are the BACKEND builder revising your own PR #${PR} in ${REPO} (the gh CLI is configured via GH_TOKEN; you are checked out on the PR's branch). A reviewer requested changes. Read the full review — the PR conversation (gh pr view ${PR} --comments) AND the inline review-thread comments (gh api repos/${REPO}/pulls/${PR}/comments), plus the linked issue — and address every finding on THIS branch — never open a new PR, never merge. Keep the build green. Edit only source for the fix; leave the changes to be committed."
+          git add -A
+          if git diff --cached --quiet; then
+            # No revision produced: leave changes-requested ON so the sweeper sees the
+            # stall. Clearing it here would silence the PR with no wake-up event.
+            gh pr comment "$PR" --repo "$REPO" --body "Codex produced no revision for this change-request — the finding may need a clearer ask or be out of the builder's scope. Leaving the changes-requested label for the sweeper."
+            exit 0
+          fi
+          git commit -m "Revise #${PR} per review
+
+          Address the reviewer's findings on the same branch so the review gate
+          re-runs on the push. Surface: adw-revise (revise-codex)."
+          # The push emits synchronize; adw-review's reset strips changes-requested
+          # and the reviewers re-earn their verdict on the new head — no manual
+          # label removal, which would strand the PR if the revise had failed.
+          git push

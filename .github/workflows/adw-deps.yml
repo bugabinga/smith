@@ -1,8 +1,8 @@
-# ADW deps — dependency-manager shepherds Dependabot bump PRs through the gates.
-# A PR agent → claude-code-action, gated to Dependabot-authored PRs. A bump is
+# ADW deps — the dependency-manager shepherds Dependabot bump PRs through the
+# gates. Runs on Codex (gpt-5.6-terra, medium effort), authenticated as the App;
+# charter injected from .claude/agents/dependency-manager.md. A bump is
 # maintenance; a semver-incompatible / MSRV-raising / budget-tripping bump
 # escalates like a new dependency (PROJECT-INVARIANTS §5).
-# Needs secrets APP_ID, APP_PRIVATE_KEY, CLAUDE_CODE_OAUTH_TOKEN.
 name: adw-deps
 
 on:
@@ -12,6 +12,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  issues: write
 
 concurrency:
   group: adw-deps-${{ github.event.pull_request.number }}
@@ -23,21 +24,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - id: token
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-      - uses: anthropics/claude-code-action@v1
-        with:
-          github_token: ${{ steps.token.outputs.token }}
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          use_commit_signing: true
-          prompt: |
-            Use the dependency-manager subagent to handle Dependabot PR
-            #${{ github.event.pull_request.number }} in ${{ github.repository }}.
-            Follow .claude/agents/dependency-manager.md: pass it through the
-            gates; a clean semver-compatible bump is merge-eligible; a
-            semver-incompatible / MSRV-raising / budget-tripping bump escalates
-            with an issue for the owner. Never add a crate. Think.
-          claude_args: --model claude-sonnet-5 --dangerously-skip-permissions
+      - name: Codex auth + config
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          mkdir -p ~/.codex
+          printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
+          chmod 600 ~/.codex/auth.json
+          printf 'project_doc_fallback_filenames = ["CLAUDE.md"]\n' > ~/.codex/config.toml
+      - run: npm install -g @openai/codex@0.145.0
+      - name: dependency-manager shepherds the bump
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          codex exec -m gpt-5.6-terra -c model_reasoning_effort="medium" --sandbox danger-full-access "$(awk 'f>=2{print} /^---$/{f++}' .claude/agents/dependency-manager.md)
+
+          You are dependency-manager running headless in CI for ${REPO} (the gh CLI is configured via GH_TOKEN). Follow the charter above. Handle Dependabot PR #${PR}: read its diff and changelog. A clean semver-compatible bump is merge-eligible — pass it through the gates. A semver-incompatible / MSRV-raising / budget-tripping bump escalates: open ONE needs:security or needs:spec issue for the owner with gh, and leave the PR held. Never add a crate; never merge a risky bump."

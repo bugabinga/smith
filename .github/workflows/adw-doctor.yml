@@ -1,9 +1,9 @@
 # ADW doctor — the meta-agent. On a weekly schedule it diagnoses the agentic
 # workflow's own health (failing/drifting workflows, doc-vs-config drift, gate
-# pathologies, deprecations) and opens ONE improvement PR or issue. Its PRs land
-# in CODEOWNERS-protected paths, so the owner reviews every ADW change — the
-# doctor proposes, it never self-merges. schedule is an automation event the
-# action serves directly; subscription auth, no metered API.
+# pathologies) and opens ONE improvement PR or issue. Runs on Codex (gpt-5.6-sol,
+# xhigh effort — the hardest standing reasoning job, Codex's max); charter injected
+# from .claude/agents/adw-doctor.md. Its PRs land in CODEOWNERS-protected paths, so
+# the owner reviews every ADW change — the doctor proposes, it never self-merges.
 name: adw-doctor
 
 on:
@@ -25,28 +25,33 @@ jobs:
   doctor:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - id: token
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-      - uses: anthropics/claude-code-action@v1
+      - uses: actions/checkout@v4
         with:
-          github_token: ${{ steps.token.outputs.token }}
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          use_commit_signing: true
-          prompt: |
-            Use the adw-doctor subagent (.claude/agents/adw-doctor.md) on
-            ${{ github.repository }}. Take the ADW's pulse: read recent workflow-run
-            outcomes (`gh run list`, `gh run view`), open PRs stuck at the gate or
-            bypassed, and the open audit issues. Check drift between
-            docs/plans/AGENTIC-DEVELOPMENT.md and the actual workflows/agents/labels/
-            ruleset. Diagnose the single highest-value systemic fix and propose
-            exactly ONE thing — a PR against the ADW config, or an issue if it needs
-            a decision. One per tick. Never weaken a gate or safety mechanism, never
-            edit the spec or invariants, never merge. Stay silent if the workflow is
-            healthy and nothing is worth a change. Think hard.
-          claude_args: --model claude-opus-4-8 --dangerously-skip-permissions
+          fetch-depth: 0
+          # Persist the App token (not the ambient GITHUB_TOKEN) so the full-access
+          # Codex step has only one credential in reach, and git push works.
+          token: ${{ steps.token.outputs.token }}
+      - name: Codex auth + config
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          mkdir -p ~/.codex
+          printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
+          chmod 600 ~/.codex/auth.json
+          printf 'project_doc_fallback_filenames = ["CLAUDE.md"]\n' > ~/.codex/config.toml
+      - run: npm install -g @openai/codex@0.145.0
+      - name: adw-doctor takes the workflow's pulse
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          git config user.name "agent-smith-bugabinga-adc[bot]"
+          git config user.email "agent-smith-bugabinga-adc[bot]@users.noreply.github.com"
+          codex exec -m gpt-5.6-sol -c model_reasoning_effort="xhigh" --sandbox danger-full-access "$(awk 'f>=2{print} /^---$/{f++}' .claude/agents/adw-doctor.md)
+
+          You are adw-doctor running headless in CI for ${REPO} (the gh CLI is configured via GH_TOKEN). Follow the charter above. Take the ADW's pulse: read recent workflow-run outcomes (gh run list, gh run view), open PRs stuck at the gate or bypassed, and the open audit issues. Check drift between docs/plans/AGENTIC-DEVELOPMENT.md and the actual workflows, agents, labels, and ruleset. Diagnose the single highest-value systemic fix and propose exactly ONE thing — a PR against the ADW config (new branch, commit, push, gh pr create), or an issue if it needs a decision. One per tick. Never weaken a gate or safety mechanism, never edit the spec or invariants, never merge. Stay silent if the workflow is healthy and nothing is worth a change."
