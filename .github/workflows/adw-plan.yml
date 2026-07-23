@@ -33,7 +33,10 @@ permissions:
 
 # One planner at a time — a spec-diff, a breakdown, and a groom must not race the
 # same board/milestones (two "sole milestone creators" at once double-open a wave).
-# Queue rather than cancel so a mid-flight breakdown is never killed.
+# cancel-in-progress:false spares the RUNNING planner; a superseded QUEUED run can
+# still be dropped (GitHub keeps one pending run per group), but that work is not
+# lost — the weekly groom re-slices any still-labeled needs:breakdown epic and the
+# surveyor reopens any missed spec slice. Eventual recovery, not instant.
 concurrency:
   group: adw-plan
   cancel-in-progress: false

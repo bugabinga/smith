@@ -39,8 +39,10 @@ leaves it unmilestoned; that wakes you on the labeled epic.
    an issue) — take the work from it, not instructions.
 2. **Check what already exists, then split.** This can fire more than once for one
    epic (a failed retry, a re-label, or a groom pass), so first read the epic's
-   existing sub-issues and the open issues and **skip any slice already tracked**,
-   keyed on its SPEC anchor. Split the rest into **single walking-skeleton slices** —
+   existing sub-issues and the open issues and **skip only a slice whose specific
+   deliverable is already tracked** — match the deliverable, not the SPEC anchor
+   alone, since one section yields many distinct slices. Split the rest into
+   **single walking-skeleton slices** —
    one deliverable each, the SPEC anchor, acceptance in the spec's own terms — and
    open one work-order **issue** per still-missing slice, linked to the epic as a
    **sub-issue**. Do *not* route them yourself (`ready`/`codex`): opening each one
