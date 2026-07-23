@@ -45,8 +45,8 @@ One cycle whose character changes over time, not two:
 - **Maintenance (indefinite).** The same machinery keeps the product healthy with
   near-zero owner input — `dependency-manager` on bumps, `security-reviewer` on
   alerts, `docs-writer` on drift, `release-manager` on the next release, `triager`
-  on incoming bugs, `sweeper` keeping it moving. New work still enters only
-  through the three touchpoints.
+  on incoming bugs, `planner` grooming the backlog, `sweeper` keeping it moving.
+  New work still enters only through the three touchpoints.
 
 The dial is set to **predictability and quality over speed**: small slices,
 adversarial review by a second mind (cross-family whenever the builder is Codex), low work-in-progress, no auto-merge above
@@ -105,7 +105,7 @@ level below is a standing assignment.
 
 | Agent | Woken by (in the workflow) | Mission | Artifact it owns | Model | Effort |
 |-------|----------------------------|---------|------------------|-------|--------|
-| `planner` | spec change lands on `main` | interpret the spec diff into tracked work-orders + refresh the plan | **Issues** + `docs/plans/*` | fable | xhigh |
+| `planner` | spec change on `main`; a `needs:breakdown` epic; weekly `schedule` | interpret spec diffs into work-orders, slice epics into single work-orders, and groom the backlog + board | **Issues** + `docs/plans/*` | fable | xhigh |
 | `surveyor` | `schedule` | measure the spec-vs-code gap and open the next unbuilt slice as a work-order | **one Issue** per tick | fable | high |
 | `reviewer` | `pull_request` | adversarial correctness review vs the spec — a *second* model | a **PR review** | opus | xhigh |
 | `security-reviewer` | PR on sensitive surface / `needs:security` / scanner alert | security review; escalate high severity | a **PR review** + `risk:*` | opus | high |
@@ -116,7 +116,7 @@ level below is a standing assignment.
 | `docs-writer` | merged PR changes user-facing / SDK behavior | keep user + plugin-author docs and the site true to the product | doc sources + Pages, via **PR** | terra | medium |
 | `dependency-manager` | Dependabot bump PR | shepherd version bumps through the gates; escalate risky ones | **Dependabot PRs** | terra | medium |
 | `release-manager` | `v*` tag | draft notes, verify the §14 matrix, publish the Release | a **GitHub Release** | terra | medium |
-| `triager` | issue opened | triage a raw issue into a labeled, spec-anchored work-order — routed to a builder, or left unrouted+unmilestoned if it is an epic/meta issue | the **Issue** + board card | luna | medium |
+| `triager` | issue opened | triage a raw issue into a labeled, ranked, spec-anchored work-order related to the open backlog — routed to a builder, or `needs:breakdown` to the planner if it is an epic/meta issue | the **Issue** + board card | luna | medium |
 | `sweeper` | `schedule` | unstick stalls, enforce WIP, brake runaways | **Issues/PRs/board** labels | luna | low |
 | `pioneer` (skill) | `needs:prototype` | prove/disprove an unproven spec claim with a prototype | `prototypes/*` | — | — |
 
@@ -190,7 +190,7 @@ sequenceDiagram
     Owner->>Board: file an issue
     Board-->>Tri: issue opened
     Tri->>Board: classify · anchor · size · route · card→Ready
-    Note over Tri,Board: epic/meta issue → held unrouted+unmilestoned, no builder
+    Note over Tri,Board: epic/meta issue → needs:breakdown (planner slices it), no builder
 
     Board-->>Bld: labeled `ready` (card→In Progress)
     loop until gates green
@@ -382,8 +382,8 @@ lives, declaratively, in the workflow `on:` triggers and `if:` guards: each even
 maps to its agent with no LLM in the middle. An orchestrator would add cost,
 latency, a single point of failure, and — worst for the dial — a model *guessing*
 the route. The only per-item routing judgment belongs to `triager` (one issue →
-`ready`/`codex` by surface, `needs:spec`/`needs:info`, or held unrouted if it is an
-epic), which is scoped triage, not global
+`ready`/`codex` by surface, `needs:spec`/`needs:info`, or `needs:breakdown` to the
+planner if it is an epic), which is scoped triage, not global
 control. If routing ever branches, the answer is a **deterministic dispatcher
 workflow** (plain `if:` logic), never an LLM conductor. Recorded here so it is a
 decision, not an omission someone later "fixes."
@@ -430,7 +430,7 @@ do is invisible. Beyond the issue→PR spine:
 |---|---|---|
 | unit of work | **Issues** (+ sub-issues) | triager / planner / surveyor |
 | lifecycle state | **Project (v2)** board: Triage → Ready → In Progress → In Review → Security → Done; fields for risk / wave / owner | each agent moves its own card; `sweeper` reconciles drift |
-| routing & gates | **Labels** (`.github/labels.yml`, as code) | triager / security-reviewer |
+| routing & gates | **Labels** (`.github/labels.yml`, as code) | triager / planner / security-reviewer |
 | grouping | **Milestones** = waves | `planner` opens + assigns; `surveyor` fills the current one; `release-manager` closes |
 | every change | **PRs** linked to issues, agent-reviewed | builder |
 | review diversity | **Copilot code review** (advisory) + **Codex** (cross-family builder + advisory reviewer) | `reviewer` / `security-reviewer` weigh |
