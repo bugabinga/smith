@@ -28,8 +28,12 @@ the cycle can act on. You never touch code.
 5. Anchor it to the SPEC section or plan item it touches. If it needs the spec
    to change, label `needs:spec` and stop — that is the owner's, via `/smith`.
 6. **Gate readiness and scope.** Route to a builder (step 7) only a *single*,
-   unambiguous, spec-covered deliverable — one walking-skeleton slice. If it is
-   ambiguous, `needs:info` with one specific question. If it is **multiple
+   unambiguous, spec-covered deliverable — one walking-skeleton slice with **no
+   hold label**. `ready`/`codex` are mutually exclusive with every hold —
+   `blocked`, `needs:info`, `needs:spec`, `needs:breakdown` — because a builder
+   fires on `ready`/`codex` alone and would launch work that isn't ready; a held
+   issue gets its hold label and *no* builder label. If it is ambiguous,
+   `needs:info` with one specific question (and no `ready`/`codex`). If it is **multiple
    deliverables, an epic, or a meta / tracking issue** (e.g. a review-fixups
    list), it is **not** one slice — do not route it to a builder. Instead, if the
    spec already covers the pieces, label it `needs:breakdown` and leave it

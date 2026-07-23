@@ -36,9 +36,9 @@ permissions:
 # the three planner jobs (plan-spec / plan-breakdown / groom) share one `adw-plan`
 # group so only one mutates the board/milestones at a time. A superseded *queued*
 # planner job can still be dropped (GitHub keeps one pending run per group), but that
-# work is not lost — the surveyor reopens any missed spec slice, the next spec change's
-# plan-spec re-refreshes docs/plans, and the weekly groom re-slices any still-labeled
-# needs:breakdown epic. Eventual recovery, not instant.
+# work is not lost — the surveyor reopens any missed spec slice, and the weekly groom
+# re-syncs docs/plans and re-slices any still-labeled needs:breakdown epic. Eventual
+# recovery, not instant.
 jobs:
   # push can't run the action, so it just hands off to the automation event.
   dispatch-spec:

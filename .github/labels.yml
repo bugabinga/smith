@@ -41,7 +41,7 @@
   description: "Nice-to-have — yields to everything above it"
 - name: "urgent"
   color: "e03131"
-  description: "Time-critical (regression, security-adjacent, or blocking others) — jumps the queue regardless of priority"
+  description: "Time-critical (regression, security-adjacent, or blocking others) — the planner ranks it ahead of same/lower-priority work when ordering the backlog"
 
 # — state (drives routing) —
 - name: "ready"
