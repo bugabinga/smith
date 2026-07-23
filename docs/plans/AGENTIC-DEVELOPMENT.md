@@ -116,7 +116,7 @@ level below is a standing assignment.
 | `docs-writer` | merged PR changes user-facing / SDK behavior | keep user + plugin-author docs and the site true to the product | doc sources + Pages, via **PR** | terra | medium |
 | `dependency-manager` | Dependabot bump PR | shepherd version bumps through the gates; escalate risky ones | **Dependabot PRs** | terra | medium |
 | `release-manager` | `v*` tag | draft notes, verify the §14 matrix, publish the Release | a **GitHub Release** | terra | medium |
-| `triager` | issue opened | triage a raw issue into a labeled, routed, spec-anchored work-order | the **Issue** + board card | luna | medium |
+| `triager` | issue opened | triage a raw issue into a labeled, spec-anchored work-order — routed to a builder, or left unrouted+unmilestoned if it is an epic/meta issue | the **Issue** + board card | luna | medium |
 | `sweeper` | `schedule` | unstick stalls, enforce WIP, brake runaways | **Issues/PRs/board** labels | luna | low |
 | `pioneer` (skill) | `needs:prototype` | prove/disprove an unproven spec claim with a prototype | `prototypes/*` | — | — |
 
