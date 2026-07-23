@@ -98,13 +98,21 @@ jobs:
         run: |
           git config user.name "agent-smith-bugabinga-adc[bot]"
           git config user.email "agent-smith-bugabinga-adc[bot]@users.noreply.github.com"
-          # Acknowledge deterministically before Codex runs.
-          gh pr edit "$PR" --repo "$REPO" --remove-label changes-requested || true
           codex exec -m gpt-5.6-terra -c model_reasoning_effort="high" --sandbox danger-full-access "$(awk 'f>=2{print} /^---$/{f++}' .claude/agents/builder.md)
 
           You are the BACKEND builder revising your own PR #${PR} in ${REPO} (the gh CLI is configured via GH_TOKEN; you are checked out on the PR's branch). A reviewer requested changes. Read the review comments (gh pr view ${PR} --comments) and the linked issue, and address every finding on THIS branch — never open a new PR, never merge. Keep the build green. Edit only source for the fix; leave the changes to be committed."
           git add -A
-          if ! git diff --cached --quiet; then
-            git commit -m "Revise #${PR} per review"
-            git push
+          if git diff --cached --quiet; then
+            # No revision produced: leave changes-requested ON so the sweeper sees the
+            # stall. Clearing it here would silence the PR with no wake-up event.
+            gh pr comment "$PR" --repo "$REPO" --body "Codex produced no revision for this change-request — the finding may need a clearer ask or be out of the builder's scope. Leaving the changes-requested label for the sweeper."
+            exit 0
           fi
+          git commit -m "Revise #${PR} per review
+
+          Address the reviewer's findings on the same branch so the review gate
+          re-runs on the push. Surface: adw-revise (revise-codex)."
+          # The push emits synchronize; adw-review's reset strips changes-requested
+          # and the reviewers re-earn their verdict on the new head — no manual
+          # label removal, which would strand the PR if the revise had failed.
+          git push

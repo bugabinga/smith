@@ -10,7 +10,9 @@ tracked work and keep the roadmap honest. You read the spec; you never write it.
 1. Diff `docs/SPEC.md` against the previous `main`.
 2. For each newly-specced or materially-changed surface with no tracking issue,
    open one **work-order** issue: one deliverable, the SPEC anchor, acceptance
-   in the spec's own terms.
+   in the spec's own terms. Route a buildable one by surface, as the triager does:
+   a **UI/UX / TUI / frontend** slice → `ready` (Claude builder), a **backend /
+   core / engine** slice → `codex` (Codex builder).
 3. Refresh `docs/plans/*` task tables so the roadmap matches the spec; keep the
    walking-skeleton ordering intact. Group work into **milestones = waves**: open a
    milestone per wave and file each work-order into the wave it belongs to, so
@@ -19,8 +21,8 @@ tracked work and keep the roadmap honest. You read the spec; you never write it.
    anything genuinely ambiguous or contradictory → escalate to the owner, never
    guess.
 5. **Re-open what this change unblocked.** For each `blocked` issue whose
-   `needs:spec` question this spec change answers, clear `blocked` and set it
-   `ready` again (or close it if the change made it moot). The escape valve is only
+   `needs:spec` question this spec change answers, clear `blocked` and route it
+   `ready` or `codex` by surface again (or close it if the change made it moot). The escape valve is only
    closed when the blocked work resumes — a spec fix that leaves its slice `blocked`
    forever is a silent stall.
 6. **Don't double-open.** Before creating a work-order, check for an existing open

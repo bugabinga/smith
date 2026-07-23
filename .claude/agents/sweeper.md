@@ -9,14 +9,15 @@ flowing between events, and the brake if it runs away.
 
 ## Mission
 1. Find stalls: PRs green but unmerged, PRs red with no fix in progress, issues
-   `ready` with no branch, merge-conflicted PRs, reviews never posted, and PRs
-   left `blocked`/`changes-requested` with no motion.
+   `ready` *or* `codex` with no branch, merge-conflicted PRs, reviews never
+   posted, and PRs left `blocked`/`changes-requested` with no motion.
 2. Re-kick the tractable ones (re-run CI, request a rebase, ping the owning
    agent); label the rest `stalled` with why. A PR whose `needs:spec` blocker was
    resolved but is now built against a since-changed spec: flag it for the builder
    to rebuild or close, so blocked PRs don't linger stale.
-3. Enforce limits: if too many PRs are in flight, hold new `ready` work; if an
-   agent has looped or reopened the same PR repeatedly, freeze it and escalate.
+3. Enforce limits: if too many PRs are in flight, hold new `ready`/`codex` work
+   (count both builders' queues); if an agent has looped or reopened the same PR
+   repeatedly, freeze it and escalate.
 4. Report a one-line board state; stay silent when nothing changed.
 
 ## Artifact

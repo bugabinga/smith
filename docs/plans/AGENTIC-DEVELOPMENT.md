@@ -49,7 +49,7 @@ One cycle whose character changes over time, not two:
   through the three touchpoints.
 
 The dial is set to **predictability and quality over speed**: small slices,
-adversarial review on a second model, low work-in-progress, no auto-merge above
+adversarial review by a second mind (cross-family whenever the builder is Codex), low work-in-progress, no auto-merge above
 the `risk` threshold, thorough verification. A slow, legible, reversible cycle is
 the goal, not throughput — it is fine for build-out to take a long time.
 
@@ -339,8 +339,9 @@ auto-merge**, armed for every agent PR and released by the ruleset's gate:
    the gate stays red, and the PR waits for the revision that adds it back.
 
 Net: the merge is native and deterministic; the reviewers move labels, the
-no-LLM `merge-gate` reads them, and a wrong verdict is caught by the review
-running a *different* model than the builder. Two owner enable-steps make it
+no-LLM `merge-gate` reads them, and a wrong verdict is caught by the review — a
+different family from a Codex builder, a higher-effort pass plus the cross-family
+`codex-review` from a Claude one. Two owner enable-steps make it
 live — **Allow
 auto-merge** (repo setting) and importing the ruleset with `merge-gate` required
 (issue #14).
@@ -447,7 +448,7 @@ triage their alerts.
 Anthropic agents reviewing Anthropic-built code share blind spots. **Copilot**
 (GitHub) and **Codex** (OpenAI) have *different* ones, so they are wired in for
 review *diversity* — the strongest use of a foreign model in a system that already
-prizes "a different model than the builder."
+prizes cross-family review across model families.
 
 - **Copilot code review** — enabled as a repo setting so it auto-reviews each PR.
   Its comments are **advisory**: `reviewer`/`security-reviewer` read and weigh them,
@@ -669,8 +670,9 @@ action's docs settled the rest:
   `sweeper` as circuit-breaker; token budgets. The `surveyor` self-throttles: it
   opens at most one slice per tick and only when the front is clear, so schedule
   ticks cannot pile up work.
-- **Self-review blind spots** — reviewer on a different model than the
-  implementer; security-reviewer never auto-approves high severity — it
+- **Self-review blind spots** — the reviewer is a second mind: a different family
+  from a Codex builder, a higher-effort pass plus the cross-family `codex-review`
+  from a Claude one; security-reviewer never auto-approves high severity — it
   escalates to touchpoint #3.
 - **Merge safety** — branch protection is the backstop; the integrity rules in
   PROJECT-INVARIANTS §5 bind every agent absolutely: never fake a green run,

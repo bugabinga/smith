@@ -36,15 +36,11 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             Use the surveyor subagent (.claude/agents/surveyor.md) on
-            ${{ github.repository }}. First check work-in-progress: if any open
-            `ready` issue exists, or more than one open agent PR, do nothing and
-            stop — the front is busy. Otherwise survey the gap between
-            docs/SPEC.md (the goal) and the code, in the order set by
-            docs/plans/WALKING-SKELETON.md then TASK-BREAKDOWN.md, and open ONE
-            `ready` work-order for the next unbuilt slice that has no tracking
-            issue — one deliverable, its SPEC anchor, acceptance in the spec's own
-            terms. If the next slice needs a spec decision, open it `needs:spec`
-            (owner, not ready); if it rests on an unproven spec claim, open it
-            `needs:prototype`. One issue per tick, or none. Never edit the spec,
-            never write code.
+            ${{ github.repository }}. Follow the charter exactly: check
+            work-in-progress first (count BOTH the `ready` and `codex` queues, and
+            open agent PRs) and stop if the front is busy; otherwise open the single
+            next unbuilt work-order in walking-skeleton order, routed by surface
+            (`ready` for UI/UX, `codex` for backend) — or `needs:spec` /
+            `needs:prototype` if it needs a decision or proof. One issue per tick,
+            or none. Never edit the spec, never write code.
           claude_args: --model claude-fable-5 --effort high --dangerously-skip-permissions
