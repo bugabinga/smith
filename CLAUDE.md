@@ -67,8 +67,10 @@ absorbed into `docs/SPEC.md` and deleted (see git history).
 4. Open questions: stop and ask. No guessing.
 5. Invoke spec work: `/smith <topic>`. Commands are defined once,
    harness-agnostically, in `.claude/skills/<name>/SKILL.md`
-   (smith, pioneer, handmade, sabotnik); `.pi/prompts/` holds thin pi
-   adapters that defer to them.
+   (smith, pioneer, handmade, sabotnik, capture); `.pi/prompts/` holds thin
+   pi adapters that defer to them. `.agents/skills` symlinks to
+   `.claude/skills` so harnesses that discover skills there (codex-style)
+   read the same definitions; smith's own CI wiring does not consume it.
 6. Cargo is the sole build system. See `docs/PROJECT-INVARIANTS.md` §1.
 7. Agents must not modify `docs/SPEC.md` or `docs/PROJECT-INVARIANTS.md` without approval.
 
