@@ -371,9 +371,10 @@ agents produce as a matter of course, which is why the loop-guards matter — wi
 them, an agent's own review or merge would wake another agent without end.
 
 Claude Code rejects bot-originated events by default. The intentionally
-bot-originated build, plan, review, and revise lanes therefore allowlist only
-`agent-smith-bugabinga-adc`; `allowed_bots: "*"` is forbidden because an
-external App could then invoke a token-holding workflow in this public repository.
+bot-originated build, plan, review, revise, and alert-triage lanes therefore
+allowlist only `agent-smith-bugabinga-adc`; `allowed_bots: "*"` is forbidden
+because an external App could then invoke a token-holding workflow in this
+public repository.
 
 ## Coordination — choreography and a single writer
 
