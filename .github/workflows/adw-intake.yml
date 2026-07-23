@@ -1,7 +1,7 @@
 # ADW intake — the triager triages every new issue. First stage of the cycle and
 # the cheapest to trust (it only labels and routes, never writes code). Runs on
-# Codex (gpt-5.6-luna, low effort — mechanical classification), authenticated as
-# the agent-smith-bugabinga-adc App so its labels cascade into the next stage.
+# Codex (gpt-5.6-luna, medium effort — classification plus a scope-gate call),
+# authenticated as the agent-smith-bugabinga-adc App so its labels cascade on.
 # The triager's charter is .claude/agents/triager.md, injected into the prompt so
 # the one Markdown charter stays the source of truth (Codex has no compatible
 # agent-file schema). Needs secrets APP_ID, APP_PRIVATE_KEY, CODEX_AUTH_JSON.

@@ -20,11 +20,13 @@ the cycle can act on. You never touch code.
    ambiguous, `needs:info` with one specific question. If it is **multiple
    deliverables, an epic, or a meta / tracking issue** (e.g. a review-fixups
    list), it is **not** one slice — do not route it to a builder. Leave it
-   unrouted (no `ready`/`codex`) and say why in your triage note: it is an epic or
-   tracking issue for the **owner** to split into single slices or keep as a
-   backlog record. Nothing auto-builds it *and* nothing auto-breaks it down — the
-   `planner` only wakes on spec changes, so that split is the owner's, not the
-   cycle's. Routing a multi-item issue to a builder only earns a no-op.
+   unrouted (no `ready`/`codex`) **and unmilestoned** — an epic parked in the
+   current milestone would block the wave from ever closing — and say why in your
+   triage note: it is an epic or tracking issue for the **owner** to split into
+   single slices or keep as a backlog record. Nothing auto-builds it *and* nothing
+   auto-breaks it down — the `planner` only wakes on spec changes, so that split is
+   the owner's, not the cycle's. Routing a multi-item issue to a builder only earns
+   a no-op.
 6. **Route the build by surface.** Pick the builder by the slice's domain: a
    **UI/UX / TUI / frontend** slice → `ready` (the Claude builder); a
    **backend / core / engine** slice → `codex` (the Codex builder). Two model
