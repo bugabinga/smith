@@ -11,7 +11,8 @@ sleeps. Full grammar: `vhs manual`.
 | `Require cmd` | fail fast if `cmd` is not installed |
 | `Set <option> <val>` | see sizing below; must precede all actions |
 | `Type "text"` / `Enter` / `Down 3` / `Ctrl+C` | drive the app; every special key is a bare command (`Space`, `Tab`, `Escape`, `PageDown`, arrows with optional repeat count) — there is no `Key` prefix |
-| `Sleep 2s` | fixed wait — the only timing primitive; be generous after launch |
+| `Wait+Screen /re/` | block until output matches — use for anything of variable duration (builds, downloads); `Set WaitTimeout 60s` raises the cap. The typed command is on screen too, so a sentinel it contains matches instantly — split it (`echo BU''ILT`, wait for `/BUILT/`) |
+| `Sleep 2s` | fixed wait — for UI settle after launch/keystrokes, where no completion pattern exists |
 | `Screenshot shot.png` | still frame at exactly this point in the script |
 | `Hide` / `Show` | exclude setup noise (cd, build output) from the render |
 
@@ -62,11 +63,12 @@ Set Width 1200
 Set Height 700
 Set Padding 12
 Set Theme "Catppuccin Mocha"
+Set WaitTimeout 120s
 Env LANG "C.UTF-8"
 Hide
-Type "cd prototypes/p27-per-frame-layout && cargo build -q"
+Type "cd prototypes/p27-per-frame-layout && cargo build -q && echo BU''ILT"
 Enter
-Sleep 30s
+Wait+Screen /BUILT/
 Show
 Type "cargo run -q"
 Enter
