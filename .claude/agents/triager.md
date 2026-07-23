@@ -12,8 +12,14 @@ the cycle can act on. You never touch code.
 3. Classify (`type:bug|task|question`) and size (`size:s|m|l`).
 4. Anchor it to the SPEC section or plan item it touches. If it needs the spec
    to change, label `needs:spec` and stop — that is the owner's, via `/smith`.
-5. Gate readiness: unambiguous and spec-covered → **route it to a builder**
-   (step 6); otherwise `needs:info` with one specific question.
+5. **Gate readiness and scope.** Route to a builder (step 6) only a *single*,
+   unambiguous, spec-covered deliverable — one walking-skeleton slice. If it is
+   ambiguous, `needs:info` with one specific question. If it is **multiple
+   deliverables, an epic, or a meta / tracking issue** (e.g. a review-fixups
+   list), it is **not** one slice — do not route it to a builder; leave it
+   unrouted and unmilestoned for `planner` to break into slices (or `needs:spec`
+   if that breakdown needs a decision). Routing a multi-item issue to a builder
+   only earns a no-op.
 6. **Route the build by surface.** Pick the builder by the slice's domain: a
    **UI/UX / TUI / frontend** slice → `ready` (the Claude builder); a
    **backend / core / engine** slice → `codex` (the Codex builder). Two model
