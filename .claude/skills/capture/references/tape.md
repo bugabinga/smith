@@ -10,7 +10,7 @@ sleeps. Full grammar: `vhs manual`.
 | `Output demo.gif` | render target; repeat for more formats (`.mp4`, `.webm`); omit entirely for still-only tapes |
 | `Require cmd` | fail fast if `cmd` is not installed |
 | `Set <option> <val>` | see sizing below; must precede all actions |
-| `Type "text"` / `Enter` / `Key <k>` | drive the app (`Key` for ctrl/arrows, e.g. `Ctrl+C`, `Down 3`; special keys are bare commands — `Space`, `Tab`, `Backspace`, not `Key Space`) |
+| `Type "text"` / `Enter` / `Down 3` / `Ctrl+C` | drive the app; every special key is a bare command (`Space`, `Tab`, `Escape`, `PageDown`, arrows with optional repeat count) — there is no `Key` prefix |
 | `Sleep 2s` | fixed wait — the only timing primitive; be generous after launch |
 | `Screenshot shot.png` | still frame at exactly this point in the script |
 | `Hide` / `Show` | exclude setup noise (cd, build output) from the render |
@@ -72,7 +72,7 @@ Type "cargo run -q"
 Enter
 Sleep 3s
 Screenshot startup.png
-Key Down 3
+Down 3
 Sleep 1s
 Type "q"
 Sleep 500ms
