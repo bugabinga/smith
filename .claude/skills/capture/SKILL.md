@@ -36,9 +36,10 @@ behavior to show. If none was given, ask for one.
 - **One capture, one claim.** Show exactly the behavior the PR or issue is
   about. Trim scope with terminal size and tape length, never by editing
   the image afterwards.
-- **Deterministic tapes.** Drive the app with `Type`/`Enter`/key commands and
-  fixed `Sleep`s; no wall-clock-dependent content in the frame if you can
-  avoid it (clocks, PIDs, load averages make diffs and reruns noisy).
+- **Deterministic tapes.** Drive the app with `Type`/`Enter`/key commands;
+  `Wait` on a completion pattern for anything of variable duration, `Sleep`
+  only for UI settle. No wall-clock-dependent content in the frame if you
+  can avoid it (clocks, PIDs, load averages make diffs and reruns noisy).
 - **Stills are tapes too.** Use the `Screenshot` command inside a tape; it
   captures at an exact scripted moment.
 - **No browser or ffmpeg available?** Use the tmux + `freeze` still path
