@@ -486,11 +486,11 @@ load-bearing control — a **durable** repo setting (unlike the old interaction 
 it does not expire), so it does not silently lapse; even so, nothing security-critical
 rests on it alone. The remaining same-repo residual is **symmetric across
 families**, not specific to Codex: the triager auto-routes an issue to a builder —
-Claude's on `ready` or Codex's on `codex` — so attacker-influenceable issue text
+Claude's on `ready` or Codex's on `codex` — so a collaborator-authored issue's text
 reaches a credentialed builder whose same-repo PR then draws a credentialed review.
 Codex gets **no extra gate**, because Claude's builder has none either — same
 shape, same rules. The bound sits on the *input*, not the build: who can open an
-issue at all (repository access — issue/PR creation is Collaborators-only), and the
+issue at all (issue/PR creation is Collaborators-only — write access), and the
 review jobs merge nothing and post only a redacted comment. It is
 an accepted residual, held equally for both families. This is the ADW analogue of
 **SPEC §6.7**. Other residuals are accepted, not hidden: the token is a rotatable
