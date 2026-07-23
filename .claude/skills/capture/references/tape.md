@@ -29,6 +29,18 @@ Fix the *font* size, then give the app only the columns it needs:
 - `Set Theme "Catppuccin Mocha"` (or any high-contrast dark theme) and
   `Set Padding 12` keep edges and colors readable.
 
+## Two environment traps
+
+- **No UTF-8 locale in the vhs shell.** Non-ASCII text (§, em-dashes,
+  box-drawing) renders as raw bytes like `<C2><A7>`. Put
+  `Env LANG "C.UTF-8"` in every tape (add `Env LESSCHARSET "utf-8"` when
+  driving `less`), and when verifying the output, check a non-ASCII glyph
+  specifically.
+- **Absolute `Output` paths can be rejected** by the tape parser (e.g.
+  deep paths with hyphen-leading components). Keep `Output` and
+  `Screenshot` paths relative and run `vhs` from the directory the files
+  belong in.
+
 ## Keeping recordings small
 
 GitHub renders inline images up to ~10 MB; aim well under.
@@ -50,6 +62,7 @@ Set Width 1200
 Set Height 700
 Set Padding 12
 Set Theme "Catppuccin Mocha"
+Env LANG "C.UTF-8"
 Hide
 Type "cd prototypes/p27-per-frame-layout && cargo build -q"
 Enter

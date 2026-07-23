@@ -29,6 +29,10 @@ behavior to show. If none was given, ask for one.
 
 ## Rules
 
+- **Capture, don't fabricate.** The image must be a render of a real
+  terminal session (vhs, or tmux + freeze). Never fake a "screenshot" by
+  drawing command output into an image with an image library — that is
+  fabricated evidence, and colors/attributes/interaction state are lost.
 - **One capture, one claim.** Show exactly the behavior the PR or issue is
   about. Trim scope with terminal size and tape length, never by editing
   the image afterwards.

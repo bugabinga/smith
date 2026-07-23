@@ -9,6 +9,7 @@ Set Padding 12
 Set Theme "Catppuccin Mocha"
 Set TypingSpeed 50ms
 Set Framerate 24
+Env LANG "C.UTF-8"
 Type "top"
 Enter
 Sleep 3s
