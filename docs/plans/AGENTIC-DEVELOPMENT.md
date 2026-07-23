@@ -656,10 +656,12 @@ action's docs settled the rest:
 - **One runner: `claude-code-action@v1`, in two modes.** It routes by event:
   *interactive* (issue / PR / comment — reads that entity and replies) and
   *automation* (`schedule` / `workflow_dispatch` — runs an explicit `prompt`).
-  It **rejects `push`** (and `issues`) because those have no entity and fit neither
-  mode. So a push- or `needs:breakdown`-triggered `planner` is split into a plain
-  no-Claude watcher that `gh workflow run`s the action on `workflow_dispatch`. No
-  CLI is used — the headless `claude -p` path is dropped.
+  It **rejects `push`** (no entity, fits neither mode); an `issues` event it *does*
+  serve, but in **interactive** mode (reply to the issue), not the **automation**
+  mode the `planner` needs to run its explicit prompt. So a push- or
+  `needs:breakdown`-triggered `planner` is split into a plain no-Claude watcher that
+  `gh workflow run`s the action on `workflow_dispatch` (automation mode). No CLI is
+  used — the headless `claude -p` path is dropped.
 - **Subscription auth, no metered API.** Every workflow authenticates with
   `claude_code_oauth_token` (`${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}`, generated
   once with `claude setup-token`), which draws on the owner's Claude

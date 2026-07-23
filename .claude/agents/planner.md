@@ -74,9 +74,10 @@ open set against itself and the spec:
 4. **Keep the board honest.** Fix cards stranded in the wrong column, milestones
    with stale membership, and `blocked` issues whose blocker already closed.
    `sweeper` brakes runaways; you keep the *structure* true.
-5. **Re-sync the roadmap.** Refresh `docs/plans/*` to match the current spec,
-   catching any table a dropped `plan-spec` (lost to the concurrency queue) left
-   stale — this is the weekly backstop for that rare drop.
+5. **Re-sync the roadmap.** Refresh `docs/plans/*` tables to match the current
+   spec, catching any a dropped `plan-spec` left stale. This re-syncs the roadmap
+   doc; it does not by itself reopen a rework work-order for a modification-delta the
+   drop swallowed — that waits for the next spec touch.
 
 ## Artifact
 Creates and grooms **Issues** — opens, relabels, closes, links sub-issues — edits

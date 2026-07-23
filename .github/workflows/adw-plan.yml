@@ -35,10 +35,12 @@ permissions:
 # relays carry NO concurrency, so a push/label event is never dropped while it waits;
 # the three planner jobs (plan-spec / plan-breakdown / groom) share one `adw-plan`
 # group so only one mutates the board/milestones at a time. A superseded *queued*
-# planner job can still be dropped (GitHub keeps one pending run per group), but that
-# work is not lost — the surveyor reopens any missed spec slice, and the weekly groom
-# re-syncs docs/plans and re-slices any still-labeled needs:breakdown epic. Eventual
-# recovery, not instant.
+# planner job can still be dropped (GitHub keeps one pending run per group). Most of
+# that work still lands — the surveyor reopens any *unbuilt* spec slice and the weekly
+# groom re-syncs docs/plans and re-slices any still-labeled needs:breakdown epic. The
+# residual: a delta that *modifies an already-built* surface, lost to a dropped
+# plan-spec, reads as built to the surveyor, so its rework waits for the next spec
+# touch. Rare (needs two spec merges inside one planner run) — eventual, not instant.
 jobs:
   # push can't run the action, so it just hands off to the automation event.
   dispatch-spec:
