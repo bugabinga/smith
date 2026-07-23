@@ -29,6 +29,11 @@ render inline in PR/issue bodies.
    `gh release create captures --prerelease --title "capture evidence"
    --notes "PR/issue evidence uploads; not a product release."`
    The tag points at an existing commit — no new git objects.
+   **Bootstrap proof, once:** the inline-render claim below is an
+   assumption until demonstrated on this repo. On first use, upload one
+   PNG, embed it in a comment, and look at the rendered result. If it
+   renders, delete this paragraph and carry on. If it only links, change
+   step 3's guidance to plain links and note the finding here.
 2. Upload with a unique, traceable name:
    `gh release upload captures pr53-fold-demo.gif`
 3. Embed:
