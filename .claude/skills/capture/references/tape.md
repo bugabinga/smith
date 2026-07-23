@@ -10,7 +10,7 @@ sleeps. Full grammar: `vhs manual`.
 | `Output demo.gif` | render target; repeat for more formats (`.mp4`, `.webm`); omit entirely for still-only tapes |
 | `Require cmd` | fail fast if `cmd` is not installed |
 | `Set <option> <val>` | see sizing below; must precede all actions |
-| `Type "text"` / `Enter` / `Key <k>` | drive the app (`Key` for ctrl/arrows, e.g. `Ctrl+C`, `Down 3`) |
+| `Type "text"` / `Enter` / `Key <k>` | drive the app (`Key` for ctrl/arrows, e.g. `Ctrl+C`, `Down 3`; special keys are bare commands — `Space`, `Tab`, `Backspace`, not `Key Space`) |
 | `Sleep 2s` | fixed wait — the only timing primitive; be generous after launch |
 | `Screenshot shot.png` | still frame at exactly this point in the script |
 | `Hide` / `Show` | exclude setup noise (cd, build output) from the render |
