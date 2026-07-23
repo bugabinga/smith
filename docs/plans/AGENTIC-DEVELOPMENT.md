@@ -480,17 +480,18 @@ control is **GitHub's fork-secret isolation**: `adw-codex-review` triggers on
 `pull_request` (never `pull_request_target`), so a PR from a fork gets an empty
 `CODEX_AUTH_JSON` and a read-only token — the credentialed path simply cannot run
 on untrusted fork code. That control is permanent and GitHub-enforced; it does not
-depend on who opened the PR. Interaction limits ("contributors only" on issues and
-PRs) are defense-in-depth on top, not the load-bearing control — and they are
-*temporary* (GitHub expires them after at most six months), so nothing security-
-critical rests on them. The remaining same-repo residual is **symmetric across
+depend on who opened the PR. The **Collaborators-only** creation setting (Issues and
+PRs → `Creation allowed by: Collaborators only`) is defense-in-depth on top, not the
+load-bearing control — a **durable** repo setting (unlike the old interaction limits,
+it does not expire), so it does not silently lapse; even so, nothing security-critical
+rests on it alone. The remaining same-repo residual is **symmetric across
 families**, not specific to Codex: the triager auto-routes an issue to a builder —
 Claude's on `ready` or Codex's on `codex` — so attacker-influenceable issue text
 reaches a credentialed builder whose same-repo PR then draws a credentialed review.
 Codex gets **no extra gate**, because Claude's builder has none either — same
 shape, same rules. The bound sits on the *input*, not the build: who can open an
-issue at all (repository access, with interaction limits as the temporary layer
-above), and the review jobs merge nothing and post only a redacted comment. It is
+issue at all (repository access — issue/PR creation is Collaborators-only), and the
+review jobs merge nothing and post only a redacted comment. It is
 an accepted residual, held equally for both families. This is the ADW analogue of
 **SPEC §6.7**. Other residuals are accepted, not hidden: the token is a rotatable
 non-GitHub credential on advisory jobs, `@openai/codex` is unpinned, and a
