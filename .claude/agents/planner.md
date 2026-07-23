@@ -60,7 +60,8 @@ On a cadence, take the **global** pass the per-issue `triager` can't — reconci
 open set against itself and the spec:
 1. **Reconcile rank.** Rebalance `priority:*` / `urgent` where the open set has
    drifted out of order against the mission's critical path; the `triager` ranks
-   each issue in isolation, you balance them.
+   each issue in isolation, you balance them. Keep **exactly one** `priority:*` per
+   issue — swap, never stack.
 2. **Retire the dead.** Close issues the spec no longer implies, that a merged PR
    already satisfied, or that a newer issue supersedes — each with a one-line
    reason. When it is not clear-cut, comment and leave it **open** for the owner;

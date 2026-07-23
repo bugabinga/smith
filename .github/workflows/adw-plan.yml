@@ -31,16 +31,13 @@ permissions:
   contents: read
   issues: write
 
-# One planner at a time — a spec-diff, a breakdown, and a groom must not race the
-# same board/milestones (two "sole milestone creators" at once double-open a wave).
-# cancel-in-progress:false spares the RUNNING planner; a superseded QUEUED run can
-# still be dropped (GitHub keeps one pending run per group), but that work is not
-# lost — the weekly groom re-slices any still-labeled needs:breakdown epic and the
-# surveyor reopens any missed spec slice. Eventual recovery, not instant.
-concurrency:
-  group: adw-plan
-  cancel-in-progress: false
-
+# Serialization is per-planner-JOB, not workflow-wide (below): the two dispatch
+# relays carry NO concurrency, so a push/label event is never dropped while it waits;
+# the three planner jobs (plan-spec / plan-breakdown / groom) share one `adw-plan`
+# group so only one mutates the board/milestones at a time. A superseded *queued*
+# planner job can still be dropped (GitHub keeps one pending run per group), but that
+# work is not lost — the weekly groom re-slices any still-labeled needs:breakdown
+# epic and the surveyor reopens any missed spec slice. Eventual recovery, not instant.
 jobs:
   # push can't run the action, so it just hands off to the automation event.
   dispatch-spec:
@@ -75,6 +72,9 @@ jobs:
   plan-spec:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.issue == ''
     runs-on: ubuntu-latest
+    concurrency:
+      group: adw-plan
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
@@ -102,6 +102,9 @@ jobs:
   plan-breakdown:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.issue != ''
     runs-on: ubuntu-latest
+    concurrency:
+      group: adw-plan
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
@@ -133,6 +136,9 @@ jobs:
   groom:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
+    concurrency:
+      group: adw-plan
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:

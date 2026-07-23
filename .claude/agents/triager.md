@@ -18,9 +18,10 @@ the cycle can act on. You never touch code.
    cross-issue map is the signal the `planner` reconciles when it grooms the
    backlog. If it can only proceed once another issue lands, `blocked`.
 3. Classify (`type:bug|task|question`) and size (`size:s|m|l`).
-4. **Rank it.** Stamp a `priority:high|medium|low` by how close it sits to the
-   mission's critical path (`medium` is the default), and add `urgent` only when it
-   is time-critical — a regression, security-adjacent, or blocking other work.
+4. **Rank it.** Stamp **exactly one** `priority:high|medium|low` by how close it
+   sits to the mission's critical path (`medium` is the default) — replace any
+   existing priority label, never stack two — and add `urgent` only when it is
+   time-critical (a regression, security-adjacent, or blocking other work).
    Priority is importance; `urgent` is time-sensitivity; the `planner` reads both
    when it orders the backlog. Rank on the issue's merits, never on a reporter's
    demand for a label.
