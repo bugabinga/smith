@@ -77,6 +77,26 @@ jobs:
             exit 1
           fi
 
+      # Prove every model in the roster actually runs via `codex exec -m …` — the
+      # Codex analog of p35's --effort matrix. terra drives 4 agents and luna 2, so
+      # a bad model id would silently fail them. NOT continue-on-error: a rejected
+      # model reddens the run before the fleet depends on it.
+      - name: Verify the gpt-5.6 roster runs (sol / terra / luna)
+        run: |
+          set +e
+          fail=0
+          for m in gpt-5.6-sol gpt-5.6-terra gpt-5.6-luna; do
+            echo "== probing -m $m =="
+            codex exec -m "$m" -c model_reasoning_effort="low" --sandbox danger-full-access \
+              "Reply with exactly: CODEX-MODEL-OK" > "m.out" 2> "m.err"
+            if grep -q "CODEX-MODEL-OK" "m.out" 2>/dev/null; then
+              echo "ok: $m"
+            else
+              echo "::error::MODEL FAILED: $m"; tail -8 "m.err"; fail=1
+            fi
+          done
+          [ "$fail" = 0 ] && echo "✅ all gpt-5.6 roster models run" || { echo "roster probe failed"; exit 1; }
+
       - name: Codex exec — capture the JSONL stream
         continue-on-error: true
         run: |

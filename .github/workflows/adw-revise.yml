@@ -101,7 +101,7 @@ jobs:
           git config user.email "agent-smith-bugabinga-adc[bot]@users.noreply.github.com"
           codex exec -m gpt-5.6-terra -c model_reasoning_effort="high" --sandbox danger-full-access "$(awk 'f>=2{print} /^---$/{f++}' .claude/agents/builder.md)
 
-          You are the BACKEND builder revising your own PR #${PR} in ${REPO} (the gh CLI is configured via GH_TOKEN; you are checked out on the PR's branch). A reviewer requested changes. Read the review comments (gh pr view ${PR} --comments) and the linked issue, and address every finding on THIS branch — never open a new PR, never merge. Keep the build green. Edit only source for the fix; leave the changes to be committed."
+          You are the BACKEND builder revising your own PR #${PR} in ${REPO} (the gh CLI is configured via GH_TOKEN; you are checked out on the PR's branch). A reviewer requested changes. Read the full review — the PR conversation (gh pr view ${PR} --comments) AND the inline review-thread comments (gh api repos/${REPO}/pulls/${PR}/comments), plus the linked issue — and address every finding on THIS branch — never open a new PR, never merge. Keep the build green. Edit only source for the fix; leave the changes to be committed."
           git add -A
           if git diff --cached --quiet; then
             # No revision produced: leave changes-requested ON so the sweeper sees the
