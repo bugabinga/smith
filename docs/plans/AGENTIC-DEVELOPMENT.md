@@ -134,13 +134,16 @@ cross-family read gating too — a later tightening, not a blocker.
 **Codex is first-class, not foreign.** `sol`/`terra`/`luna` agents run on the
 owner's ChatGPT subscription (`CODEX_AUTH_JSON` seeds auth each run; re-seed when
 the ~8-day token lapses), but they are the same citizens as the Claude agents and
-obey the **same charters**: each Codex workflow injects its `.claude/agents/<name>.md`
-into the `codex exec` prompt at runtime — one source of truth, no `.codex/agents/*.toml`
-duplicate to drift (Codex's native agent files are TOML, an incompatible schema, so
-a symlink can't share the Markdown charter). They also load `CLAUDE.md` as their
-project doc via `project_doc_fallback_filenames = ["CLAUDE.md"]`. `codex-review`
-stays advisory — a comment + `codex-reviewed`, never a merge-gate label, so an
-OpenAI outage can't deadlock a merge.
+obey the **same charters**: each Codex *agent* workflow (builder, docs-writer,
+dependency-manager, release-manager, triager, sweeper, adw-doctor) injects its
+`.claude/agents/<name>.md` charter body into the `codex exec` prompt at runtime —
+one source of truth, no `.codex/agents/*.toml` duplicate to drift (Codex's native
+agent files are TOML, an incompatible schema, so a symlink can't share the Markdown
+charter). They also load `CLAUDE.md` as their project doc via
+`project_doc_fallback_filenames = ["CLAUDE.md"]`. The exception is `codex-review`:
+it is not a roster agent and has no charter file — it runs a self-contained inline
+review prompt, and stays advisory (a comment + `codex-reviewed`, never a merge-gate
+label, so an OpenAI outage can't deadlock a merge).
 
 The **authority** for each agent's mission and boundaries is its `.claude/agents/`
 charter; **model, effort, and tool access** are set by the workflow that runs it

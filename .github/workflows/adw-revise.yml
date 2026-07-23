@@ -48,13 +48,14 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           use_commit_signing: true
           prompt: |
-            Use the builder subagent to revise PR
-            #${{ github.event.pull_request.number }} in ${{ github.repository }}.
-            A reviewer requested changes. First remove the `changes-requested`
-            label to acknowledge. Then read the review comments and the linked
-            issue, address every finding on the SAME branch (never open a new PR),
-            keep `cargo run -p xtask -- check` green, and push. The reviewers
-            re-run automatically on your push; do not merge.
+            Revise PR #${{ github.event.pull_request.number }} in
+            ${{ github.repository }} using the subagent that AUTHORED it — read the
+            PR to tell which: `builder` for a feature slice, `docs-writer` for a
+            `docs/*` branch, `adw-doctor` for an ADW-config PR. A reviewer requested
+            changes: address every finding on the SAME branch (never open a new PR),
+            keep `cargo run -p xtask -- check` green, and push. The push re-runs the
+            reviewers, which clear the stale `changes-requested` label themselves —
+            don't remove it yourself, and do not merge.
           claude_args: --model claude-opus-4-8 --effort high --dangerously-skip-permissions
 
   # Codex (backend) builder revises its own `codex/*` PRs, on the same family it
