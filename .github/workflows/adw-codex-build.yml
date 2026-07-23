@@ -5,7 +5,7 @@
 # builder or Codex.
 #
 # Trust: the triager auto-applies `codex` on issues whose creation is Collaborators-
-# only (repository access is the input bound), so this is NOT human-gated — the same
+# only (collaborator write access is the input bound), so this is NOT human-gated — the same
 # shape as Claude's builder on `ready`. Hostile issue text can reach this credentialed
 # build; that residual is accepted symmetrically
 # across both builders (see AGENTIC-DEVELOPMENT.md "Credentialed agents over
