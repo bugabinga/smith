@@ -4,10 +4,10 @@
 # builder-authored PR. Mix-and-match: the triager routes each issue to Claude's
 # builder or Codex.
 #
-# Trust: the triager auto-applies `codex` on issues (contributor-only, but a
-# compromised account can still author a hostile body), so this is NOT human-gated —
-# the same shape as Claude's builder on `ready`. That hostile issue text can reach
-# this credentialed build; that residual is accepted symmetrically
+# Trust: the triager auto-applies `codex` on issues with no reliable access gate
+# (interaction limits are temporary and may be inactive; accounts can be compromised),
+# so this is NOT human-gated — the same shape as Claude's builder on `ready`. Hostile
+# issue text can reach this credentialed build; that residual is accepted symmetrically
 # across both builders (see AGENTIC-DEVELOPMENT.md "Credentialed agents over
 # untrusted input"), not closed by a per-workflow author gate.
 #
