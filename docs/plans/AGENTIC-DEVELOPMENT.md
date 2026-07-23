@@ -116,7 +116,7 @@ level below is a standing assignment.
 | `docs-writer` | merged PR changes user-facing / SDK behavior | keep user + plugin-author docs and the site true to the product | doc sources + Pages, via **PR** | terra | medium |
 | `dependency-manager` | Dependabot bump PR | shepherd version bumps through the gates; escalate risky ones | **Dependabot PRs** | terra | medium |
 | `release-manager` | `v*` tag | draft notes, verify the §14 matrix, publish the Release | a **GitHub Release** | terra | medium |
-| `triager` | issue opened | triage a raw issue into a labeled, routed, spec-anchored work-order | the **Issue** + board card | luna | low |
+| `triager` | issue opened | triage a raw issue into a labeled, spec-anchored work-order — routed to a builder, or left unrouted+unmilestoned if it is an epic/meta issue | the **Issue** + board card | luna | medium |
 | `sweeper` | `schedule` | unstick stalls, enforce WIP, brake runaways | **Issues/PRs/board** labels | luna | low |
 | `pioneer` (skill) | `needs:prototype` | prove/disprove an unproven spec claim with a prototype | `prototypes/*` | — | — |
 
@@ -190,6 +190,7 @@ sequenceDiagram
     Owner->>Board: file an issue
     Board-->>Tri: issue opened
     Tri->>Board: classify · anchor · size · route · card→Ready
+    Note over Tri,Board: epic/meta issue → held unrouted+unmilestoned, no builder
 
     Board-->>Bld: labeled `ready` (card→In Progress)
     loop until gates green
@@ -381,7 +382,8 @@ lives, declaratively, in the workflow `on:` triggers and `if:` guards: each even
 maps to its agent with no LLM in the middle. An orchestrator would add cost,
 latency, a single point of failure, and — worst for the dial — a model *guessing*
 the route. The only per-item routing judgment belongs to `triager` (one issue →
-`ready` / `needs:spec` / `needs:prototype`), which is scoped triage, not global
+`ready`/`codex` by surface, `needs:spec`/`needs:info`, or held unrouted if it is an
+epic), which is scoped triage, not global
 control. If routing ever branches, the answer is a **deterministic dispatcher
 workflow** (plain `if:` logic), never an LLM conductor. Recorded here so it is a
 decision, not an omission someone later "fixes."
