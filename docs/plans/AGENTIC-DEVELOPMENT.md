@@ -581,8 +581,9 @@ clean audit identity.
 1. **Settings → Developer settings → GitHub Apps → New GitHub App** (org-level if
    the Project is org-owned).
 2. **Permissions:** Contents RW, Issues RW, Pull requests RW, Checks R, Actions
-   R; Organization **Projects RW** (and repo Projects if used); Discussions RW
-   and Metadata R as needed.
+   **RW** (the no-Claude watchers relay `push`/`issues` via `gh workflow run`, which
+   needs Actions:write); Organization **Projects RW** (and repo Projects if used);
+   Discussions RW and Metadata R as needed.
 3. **Install** the App on the `smith` repo.
 4. **Generate a private key**; store `APP_ID` + `PRIVATE_KEY` as repo/org
    secrets.
