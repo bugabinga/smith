@@ -1,24 +1,24 @@
 # ADW jam detector — the pipeline's dead-man's switch. Every ADW gate is
-# fail-closed by design: an unexpected failure in a merge-critical check is
-# correct for ONE bad PR but catastrophic when the break is systemic (a green-
-# tree CodeQL that finds no code and fails on every PR, an action that got
-# yanked). Then nothing merges and no single PR is "wrong" — the jam is invisible
-# from any one PR's vantage. This job watches the whole board and rings a bell.
+# fail-closed by design: an unexpected failure in the required merge-gate is
+# correct for ONE bad PR but catastrophic when the break is systemic. Then
+# nothing merges and no single PR is "wrong" — the jam is invisible from any
+# one PR's vantage. This job watches the whole board and rings a bell.
 #
 # Deterministic, no LLM: a shell/jq scan reduces each check name to its latest
-# run, then tallies how many distinct open non-draft PRs carry the same active
-# failure. `merge-gate` is special: red is its normal waiting/held state, so it
-# counts only when the verdict/blocking labels say it should be green. Same
-# unexpected failure on >= 2 PRs = a systemic jam, not one bad branch. The LLM
-# (adw-doctor) is dispatched only AFTER a jam is confirmed, and only on the
-# transition into jam — never on a steady-state re-scan, so it can't spam.
+# run, then tallies how many distinct open non-draft PRs carry an active
+# `merge-gate` failure. Red is its normal waiting/held state, so it counts only
+# when the verdict/blocking labels say it should be green and the gate attempt
+# started after the PR's latest update. Same unexpected failure on >= 2 PRs = a
+# systemic jam, not one bad branch. The LLM (adw-doctor) is dispatched only
+# AFTER a jam is confirmed, and only on the transition into jam — never on a
+# steady-state re-scan, so it can't spam.
 #
 # Escalation lands as an ISSUE, not a PR — issues have no merge gate, so the
 # alert reaches the owner even when every merge lane is wedged. The issue is
 # idempotent (one open `pipeline-jammed` issue at a time) and auto-closes the
 # instant a scan comes back clean.
 #
-# Triggers: failure-completions of the gating workflows and check-suites give a
+# Triggers: failure-completions of the gate workflow and check-suites give a
 # fast edge (seconds after the break), and a 30-minute schedule is the
 # deterministic floor — GitHub suppresses some self-triggered check events, so
 # the cron is what guarantees the jam is caught even if every edge is missed.
@@ -26,7 +26,7 @@ name: adw-jam-detector
 
 on:
   workflow_run:
-    workflows: ["adw-review", "adw-gate", "adw-build", "CodeQL Advanced", "DevSkim"]
+    workflows: ["adw-review", "adw-gate", "adw-build"]
     types: [completed]
   check_suite:
     types: [completed]
@@ -78,24 +78,35 @@ jobs:
           # (PR, actively-failing-check) pairs, one line each, tab-separated.
           # statusCheckRollup retains older attempts after a re-run, so reduce
           # each check name to its latest start before deciding its state.
+          # Legacy StatusContext entries provide createdAt instead of CheckRun
+          # times.
           #
           # merge-gate is deliberately red while verdicts are missing or a
-          # blocking label holds the PR. Count it only when both verdicts are in
-          # and no blocker remains — the label state in which it must be green.
+          # blocking label holds the PR. Count it only when both verdicts are
+          # in, no blocker remains, and the attempt began after the latest PR
+          # update.
+          # The last condition rejects the ordinary red attempt that a label
+          # change supersedes before the label-triggered gate run appears.
           : > fails.tsv
           for n in $prs; do
-            gh pr view "$n" --repo "$REPO" --json labels,statusCheckRollup --jq '
+            gh pr view "$n" --repo "$REPO" \
+              --json labels,statusCheckRollup,updatedAt --jq '
               ([.labels[].name] | unique) as $labels
+              | (.updatedAt // "") as $pr_updated_at
               | (.statusCheckRollup
                  | group_by(.name // .context)
-                 | map(max_by(.startedAt // .completedAt // "")))[]
+                 | map(
+                     max_by(.startedAt // .completedAt // .createdAt // "")
+                   )[]
+              | (.startedAt // .completedAt // .createdAt // "") as $attempt_at
               | ((.conclusion // .state)) as $c
               | select($c=="FAILURE" or $c=="ERROR" or $c=="TIMED_OUT"
                        or $c=="STARTUP_FAILURE" or $c=="CANCELLED")
               | (.name // .context) as $check
               | select(
-                  $check != "merge-gate"
-                  or (
+                  $check == "merge-gate"
+                  and $attempt_at >= $pr_updated_at
+                  and (
                     ($labels | index("reviewed")) != null
                     and ($labels | index("security-cleared")) != null
                     and (($labels | map(select(
