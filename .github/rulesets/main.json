@@ -20,7 +20,16 @@
         "require_code_owner_review": true,
         "dismiss_stale_reviews_on_push": false,
         "require_last_push_approval": false,
-        "required_review_thread_resolution": false
+        "required_review_thread_resolution": false,
+        "required_reviewers": [],
+        "allowed_merge_methods": ["squash"]
+      }
+    },
+    {
+      "type": "copilot_code_review",
+      "parameters": {
+        "review_on_push": true,
+        "review_draft_pull_requests": false
       }
     },
     {
