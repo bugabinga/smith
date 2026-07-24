@@ -51,8 +51,10 @@ jobs:
           prompt: |
             Revise PR #${{ github.event.pull_request.number }} in
             ${{ github.repository }} using the subagent that AUTHORED it — read the
-            PR to tell which: `builder` for a feature slice, `docs-writer` for a
-            `docs/*` branch, `adw-doctor` for an ADW-config PR. A reviewer requested
+            PR to tell which: `builder` for a feature slice **or a builder-authored
+            ADW/config PR** (it owns both kinds — see .claude/agents/builder.md),
+            `docs-writer` for a `docs/*` branch, `adw-doctor` only for a PR the
+            doctor itself opened. A reviewer requested
             changes: address every finding on the SAME branch (never open a new PR),
             keep `cargo run -p xtask -- check` green, and push. The push re-runs the
             reviewers, which clear the stale `changes-requested` label themselves —
@@ -102,7 +104,7 @@ jobs:
           git config user.email "agent-smith-bugabinga-adc[bot]@users.noreply.github.com"
           codex exec -m gpt-5.6-terra -c model_reasoning_effort="high" --sandbox danger-full-access "$(awk 'f>=2{print} /^---$/{f++}' .claude/agents/builder.md)
 
-          You are the BACKEND builder revising your own PR #${PR} in ${REPO} (the gh CLI is configured via GH_TOKEN; you are checked out on the PR's branch). A reviewer requested changes. Read the full review — the PR conversation (gh pr view ${PR} --comments) AND the inline review-thread comments (gh api repos/${REPO}/pulls/${PR}/comments), plus the linked issue — and address every finding on THIS branch — never open a new PR, never merge. Keep the build green. Edit only source for the fix; leave the changes to be committed."
+          You are the BACKEND builder revising your own PR #${PR} in ${REPO} (the gh CLI is configured via GH_TOKEN; you are checked out on the PR's branch). A reviewer requested changes. Read the full review — the PR conversation (gh pr view ${PR} --comments) AND the inline review-thread comments (gh api repos/${REPO}/pulls/${PR}/comments), plus the linked issue — and address every finding on THIS branch — never open a new PR, never merge. Keep the build green. The charter above defines TWO kinds of PR and both are revisable: for a product slice edit source; for an ADW/config PR edit the .github/ or .claude/ file the review names — those paths are CODEOWNERS-gated so the owner still reviews. Do not widen your own permissions or touch docs/SPEC.md or PROJECT-INVARIANTS.md. If you truly cannot revise, say why in one line. Leave the changes to be committed."
           git add -A
           if git diff --cached --quiet; then
             # No revision produced: leave changes-requested ON so the sweeper sees the

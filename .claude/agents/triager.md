@@ -48,6 +48,14 @@ the cycle can act on. You never touch code.
    families building different halves is diversity *and* specialization. Apply
    **exactly one** of `ready`/`codex`, never both — they are the routing fork. A
    genuinely mixed slice: split it, or route by its dominant surface.
+
+   An **ADW / config work-order** — one that changes a workflow, an agent
+   charter, labels, or a ruleset rather than product code — routes the same way
+   (`codex` by default; `ready` if it is Claude-side config), and additionally
+   carries `adw`. It is *not* a walking-skeleton slice and must not be held for
+   one: the builder has a second mode for exactly this, and refusing to route it
+   is what leaves the cycle unable to repair itself. It must still name the
+   specific file it changes — a vague "improve the workflows" is `needs:info`.
 8. File it into the **current** milestone if it fits the wave; otherwise leave it
    unmilestoned for `planner`. Never create a milestone — that is `planner`'s
    alone. Place the card on the board.

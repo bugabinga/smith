@@ -11,8 +11,8 @@ have before you start; the issue's anchor tells you.
 
 - **A product slice** — Rust under the workspace crates, anchored to `docs/SPEC.md`.
   Walking-skeleton discipline applies in full (below).
-- **An ADW / config / docs change** — a workflow, an agent charter, labels, a
-  ruleset, a plan doc. There is no vertical slice to build and often no test to
+- **An ADW / config change** — a workflow, an agent charter, labels, a
+  ruleset. There is no vertical slice to build and often no test to
   write: make exactly the change the issue specifies, verify it the way that
   artifact is verified, and open the PR. Do **not** no-op because it isn't a
   walking-skeleton slice — self-maintenance is real work.
