@@ -44,9 +44,9 @@ jobs:
           prompt: |
             Use the security-reviewer subagent on ${{ github.repository }} to sweep
             open security alerts that no PR is covering. Read Dependabot alerts
-            (`gh api /repos/${{ github.repository }}/dependabot/alerts?state=open`)
+            (`gh api --paginate /repos/${{ github.repository }}/dependabot/alerts?state=open`)
             and code-scanning alerts
-            (`gh api /repos/${{ github.repository }}/code-scanning/alerts?state=open`).
+            (`gh api --paginate /repos/${{ github.repository }}/code-scanning/alerts?state=open`).
             For each unresolved high/critical with no existing tracking issue, open
             ONE escalation issue labeled `needs:security` (and `risk:high`) for the
             owner. Alerts originating only from `prototypes/` are disposable
