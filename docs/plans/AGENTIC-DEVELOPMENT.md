@@ -370,6 +370,12 @@ Everything else keys off structural events (a review verdict, a merge, a tag) th
 agents produce as a matter of course, which is why the loop-guards matter — without
 them, an agent's own review or merge would wake another agent without end.
 
+Claude Code rejects bot-originated events by default. The intentionally
+bot-originated build, plan, review, revise, and alert-triage lanes therefore
+allowlist only `agent-smith-bugabinga-adc`; `allowed_bots: "*"` is forbidden
+because an external App could then invoke a token-holding workflow in this
+public repository.
+
 ## Coordination — choreography and a single writer
 
 Three agents open issues and touch milestones (`planner`, `surveyor`, `triager`),
