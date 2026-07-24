@@ -8,7 +8,8 @@
 # run, then tallies how many distinct open non-draft PRs carry an active
 # `merge-gate` failure. Red is its normal waiting/held state, so it counts only
 # when the verdict/blocking labels say it should be green and the gate attempt
-# started after the PR's latest update. Same unexpected failure on >= 2 PRs = a
+# started after the last gate-relevant label transition. Same unexpected failure
+# on >= 2 PRs = a
 # systemic jam, not one bad branch. The LLM (adw-doctor) is dispatched only
 # AFTER a jam is confirmed, and only on the transition into jam — never on a
 # steady-state re-scan, so it can't spam.
@@ -83,21 +84,71 @@ jobs:
           #
           # merge-gate is deliberately red while verdicts are missing or a
           # blocking label holds the PR. Count it only when both verdicts are
-          # in, no blocker remains, and the attempt began after the latest PR
-          # update.
-          # The last condition rejects the ordinary red attempt that a label
-          # change supersedes before the label-triggered gate run appears.
+          # in, no blocker remains, and the attempt began after the last label
+          # transition that adw-gate reads. This rejects the ordinary red
+          # attempt that a label change supersedes before its gate run appears,
+          # without treating comments or unrelated labels as a fresh PR state.
           : > fails.tsv
+          required_gate_labels=(reviewed security-cleared)
+          blocking_gate_labels=(risk:high blocked changes-requested needs:info needs:spec needs:prototype stalled)
+
+          has_label() {
+            case $'\n'"$1"$'\n' in *$'\n'"$2"$'\n'*) return 0 ;; esac
+            return 1
+          }
+
+          is_gate_label() {
+            local label=$1
+            local gate_label
+            for gate_label in "${required_gate_labels[@]}" "${blocking_gate_labels[@]}"; do
+              [ "$label" = "$gate_label" ] && return 0
+            done
+            return 1
+          }
+
+          gate_should_be_green() {
+            local labels=$1
+            local gate_label
+            for gate_label in "${required_gate_labels[@]}"; do
+              has_label "$labels" "$gate_label" || return 1
+            done
+            for gate_label in "${blocking_gate_labels[@]}"; do
+              has_label "$labels" "$gate_label" && return 1
+            done
+            return 0
+          }
+
+          last_gate_label_transition() {
+            gh api --paginate "repos/$REPO/issues/$1/events" \
+              --jq '.[] | select(.event == "labeled" or .event == "unlabeled") | [.label.name, .created_at] | @tsv' \
+            | while IFS=$'\t' read -r label changed_at; do
+                if is_gate_label "$label"; then
+                  printf '%s\n' "$changed_at"
+                fi
+              done \
+            | sort \
+            | tail -n 1
+          }
+
           for n in $prs; do
-            gh pr view "$n" --repo "$REPO" \
-              --json labels,statusCheckRollup,updatedAt --jq '
-              ([.labels[].name] | unique) as $labels
-              | (.updatedAt // "") as $pr_updated_at
-              | (.statusCheckRollup
+            pr=$(gh pr view "$n" --repo "$REPO" --json labels,statusCheckRollup)
+            labels=$(printf '%s' "$pr" | jq -r '.labels[].name')
+
+            if ! gate_should_be_green "$labels"; then
+              continue
+            fi
+
+            gate_label_transition=$(last_gate_label_transition "$n")
+            if [ -z "$gate_label_transition" ]; then
+              continue
+            fi
+
+            printf '%s' "$pr" | jq -r --arg gate_label_transition "$gate_label_transition" '
+              ((.statusCheckRollup // [])
                  | group_by(.name // .context)
                  | map(
                      max_by(.startedAt // .completedAt // .createdAt // "")
-                   )[]
+                   )[])
               | (.startedAt // .completedAt // .createdAt // "") as $attempt_at
               | ((.conclusion // .state)) as $c
               | select($c=="FAILURE" or $c=="ERROR" or $c=="TIMED_OUT"
@@ -105,20 +156,10 @@ jobs:
               | (.name // .context) as $check
               | select(
                   $check == "merge-gate"
-                  and $attempt_at >= $pr_updated_at
-                  and (
-                    ($labels | index("reviewed")) != null
-                    and ($labels | index("security-cleared")) != null
-                    and (($labels | map(select(
-                      . == "risk:high" or . == "blocked"
-                      or . == "changes-requested" or . == "needs:info"
-                      or . == "needs:spec" or . == "needs:prototype"
-                      or . == "stalled"
-                    )) | length) == 0)
-                  )
+                  and $attempt_at >= $gate_label_transition
                 )
-              | $check' 2>/dev/null | sort -u \
-            | while IFS= read -r chk; do printf '%s\t%s\n' "$n" "$chk"; done >> fails.tsv || true
+              | $check' | sort -u \
+            | while IFS= read -r chk; do printf '%s\t%s\n' "$n" "$chk"; done >> fails.tsv
           done
 
           # Most-failing check and the distinct-PR count behind it. Each check
