@@ -504,6 +504,28 @@ an accepted residual, held equally for both families. This is the ADW analogue o
 non-GitHub credential on advisory jobs, `@openai/codex` is unpinned, and a
 compromised member account is out of scope.
 
+**Agents are inside the trust boundary.** The owner authors and owns every agent
+instruction — charters in `.claude/agents/`, prompts in `.github/workflows/`, the
+shared rules in `CLAUDE.md` — and all of it is CODEOWNERS-gated, so no instruction
+changes without the owner's review. Agents are therefore *trusted actors running
+owner-written instructions*, not untrusted code to be sandboxed from the repo's own
+configuration. That is why a builder may edit ADW config when a triaged work-order
+names the file: it is the owner's machinery being maintained by the owner's agents.
+
+The residual this accepts is real and named: for a `pull_request` event GitHub runs
+the workflow as it exists **on the PR head**, and a same-repo branch carries secrets,
+so a workflow edited in a PR executes with credentials *before* the merge gate ever
+applies — CODEOWNERS gates merging, not PR-time execution. That window is accepted
+because the *input* bound holds: issue and PR creation are Collaborators-only, and a
+compromised member account is already out of scope (above). The safeguard is who can
+ask for work, not a cage around the agent doing it.
+
+What stays forbidden regardless: an agent widening its own permissions, weakening a
+gate (`rulesets/`, `CODEOWNERS`, verdict labels, `merge-gate`), or editing
+`docs/SPEC.md` / `PROJECT-INVARIANTS.md`. Those are the owner's alone — and a
+work-order asking an agent for any of them is the red flag, not the config edit
+itself.
+
 Two owner-added workflows already sit on `main` and the plan wraps around them
 rather than replacing them:
 
