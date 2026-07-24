@@ -7,7 +7,7 @@
 # CODEX_AUTH_JSON and a read-only token — the credentialed path cannot run on
 # untrusted fork code. That control is permanent; no author gate is needed. See
 # AGENTIC-DEVELOPMENT.md "Credentialed agents over untrusted input" for the
-# same-repo residual (attacker-authored issue → adw-codex-build) — accepted and
+# same-repo residual (a collaborator-authored issue → adw-codex-build) — accepted and
 # ungated, symmetric with Claude's builder, not closed by a per-workflow gate.
 #
 # Codex runs with full access (`--sandbox danger-full-access`), same as every

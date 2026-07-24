@@ -45,8 +45,8 @@ One cycle whose character changes over time, not two:
 - **Maintenance (indefinite).** The same machinery keeps the product healthy with
   near-zero owner input — `dependency-manager` on bumps, `security-reviewer` on
   alerts, `docs-writer` on drift, `release-manager` on the next release, `triager`
-  on incoming bugs, `sweeper` keeping it moving. New work still enters only
-  through the three touchpoints.
+  on incoming bugs, `planner` grooming the backlog, `sweeper` keeping it moving.
+  New work still enters only through the three touchpoints.
 
 The dial is set to **predictability and quality over speed**: small slices,
 adversarial review by a second mind (cross-family whenever the builder is Codex), low work-in-progress, no auto-merge above
@@ -105,7 +105,7 @@ level below is a standing assignment.
 
 | Agent | Woken by (in the workflow) | Mission | Artifact it owns | Model | Effort |
 |-------|----------------------------|---------|------------------|-------|--------|
-| `planner` | spec change lands on `main` | interpret the spec diff into tracked work-orders + refresh the plan | **Issues** + `docs/plans/*` | fable | xhigh |
+| `planner` | spec change on `main`; a `needs:breakdown` epic; weekly `schedule` | interpret spec diffs into work-orders, slice epics into single work-orders, and groom the backlog + board | **Issues** + `docs/plans/*` | fable | xhigh |
 | `surveyor` | `schedule` | measure the spec-vs-code gap and open the next unbuilt slice as a work-order | **one Issue** per tick | fable | high |
 | `reviewer` | `pull_request` | adversarial correctness review vs the spec — a *second* model | a **PR review** | opus | xhigh |
 | `security-reviewer` | PR on sensitive surface / `needs:security` / scanner alert | security review; escalate high severity | a **PR review** + `risk:*` | opus | high |
@@ -116,7 +116,7 @@ level below is a standing assignment.
 | `docs-writer` | merged PR changes user-facing / SDK behavior | keep user + plugin-author docs and the site true to the product | doc sources + Pages, via **PR** | terra | medium |
 | `dependency-manager` | Dependabot bump PR | shepherd version bumps through the gates; escalate risky ones | **Dependabot PRs** | terra | medium |
 | `release-manager` | `v*` tag | draft notes, verify the §14 matrix, publish the Release | a **GitHub Release** | terra | medium |
-| `triager` | issue opened | triage a raw issue into a labeled, spec-anchored work-order — routed to a builder, or left unrouted+unmilestoned if it is an epic/meta issue | the **Issue** + board card | luna | medium |
+| `triager` | issue opened | triage a raw issue into a labeled, ranked, spec-anchored work-order related to the open backlog — routed to a builder, or `needs:breakdown` to the planner if it is an epic/meta issue | the **Issue** + board card | luna | medium |
 | `sweeper` | `schedule` | unstick stalls, enforce WIP, brake runaways | **Issues/PRs/board** labels | luna | low |
 | `pioneer` (skill) | `needs:prototype` | prove/disprove an unproven spec claim with a prototype | `prototypes/*` | — | — |
 
@@ -190,7 +190,7 @@ sequenceDiagram
     Owner->>Board: file an issue
     Board-->>Tri: issue opened
     Tri->>Board: classify · anchor · size · route · card→Ready
-    Note over Tri,Board: epic/meta issue → held unrouted+unmilestoned, no builder
+    Note over Tri,Board: epic/meta issue → needs:breakdown (planner slices it), no builder
 
     Board-->>Bld: labeled `ready` (card→In Progress)
     loop until gates green
@@ -374,6 +374,12 @@ Everything else keys off structural events (a review verdict, a merge, a tag) th
 agents produce as a matter of course, which is why the loop-guards matter — without
 them, an agent's own review or merge would wake another agent without end.
 
+Claude Code rejects bot-originated events by default. The intentionally
+bot-originated build, plan, review, revise, and alert-triage lanes therefore
+allowlist only `agent-smith-bugabinga-adc`; `allowed_bots: "*"` is forbidden
+because an external App could then invoke a token-holding workflow in this
+public repository.
+
 ## Coordination — choreography and a single writer
 
 Three agents open issues and touch milestones (`planner`, `surveyor`, `triager`),
@@ -386,8 +392,8 @@ lives, declaratively, in the workflow `on:` triggers and `if:` guards: each even
 maps to its agent with no LLM in the middle. An orchestrator would add cost,
 latency, a single point of failure, and — worst for the dial — a model *guessing*
 the route. The only per-item routing judgment belongs to `triager` (one issue →
-`ready`/`codex` by surface, `needs:spec`/`needs:info`, or held unrouted if it is an
-epic), which is scoped triage, not global
+`ready`/`codex` by surface, `needs:spec`/`needs:info`, or `needs:breakdown` to the
+planner if it is an epic), which is scoped triage, not global
 control. If routing ever branches, the answer is a **deterministic dispatcher
 workflow** (plain `if:` logic), never an LLM conductor. Recorded here so it is a
 decision, not an omission someone later "fixes."
@@ -434,7 +440,7 @@ do is invisible. Beyond the issue→PR spine:
 |---|---|---|
 | unit of work | **Issues** (+ sub-issues) | triager / planner / surveyor |
 | lifecycle state | **Project (v2)** board: Triage → Ready → In Progress → In Review → Security → Done; fields for risk / wave / owner | each agent moves its own card; `sweeper` reconciles drift |
-| routing & gates | **Labels** (`.github/labels.yml`, as code) | triager / security-reviewer |
+| routing & gates | **Labels** (`.github/labels.yml`, as code) | triager / planner / security-reviewer |
 | grouping | **Milestones** = waves | `planner` opens + assigns; `surveyor` fills the current one; `release-manager` closes |
 | every change | **PRs** linked to issues, agent-reviewed | builder |
 | review diversity | **Copilot code review** (advisory) + **Codex** (cross-family builder + advisory reviewer) | `reviewer` / `security-reviewer` weigh |
@@ -484,17 +490,18 @@ control is **GitHub's fork-secret isolation**: `adw-codex-review` triggers on
 `pull_request` (never `pull_request_target`), so a PR from a fork gets an empty
 `CODEX_AUTH_JSON` and a read-only token — the credentialed path simply cannot run
 on untrusted fork code. That control is permanent and GitHub-enforced; it does not
-depend on who opened the PR. Interaction limits ("contributors only" on issues and
-PRs) are defense-in-depth on top, not the load-bearing control — and they are
-*temporary* (GitHub expires them after at most six months), so nothing security-
-critical rests on them. The remaining same-repo residual is **symmetric across
+depend on who opened the PR. The **Collaborators-only** creation setting (Issues and
+PRs → `Creation allowed by: Collaborators only`) is defense-in-depth on top, not the
+load-bearing control — a **durable** repo setting (unlike the old interaction limits,
+it does not expire), so it does not silently lapse; even so, nothing security-critical
+rests on it alone. The remaining same-repo residual is **symmetric across
 families**, not specific to Codex: the triager auto-routes an issue to a builder —
-Claude's on `ready` or Codex's on `codex` — so attacker-influenceable issue text
+Claude's on `ready` or Codex's on `codex` — so a collaborator-authored issue's text
 reaches a credentialed builder whose same-repo PR then draws a credentialed review.
 Codex gets **no extra gate**, because Claude's builder has none either — same
 shape, same rules. The bound sits on the *input*, not the build: who can open an
-issue at all (repository access, with interaction limits as the temporary layer
-above), and the review jobs merge nothing and post only a redacted comment. It is
+issue at all (issue/PR creation is Collaborators-only — write access), and the
+review jobs merge nothing and post only a redacted comment. It is
 an accepted residual, held equally for both families. This is the ADW analogue of
 **SPEC §6.7**. Other residuals are accepted, not hidden: the token is a rotatable
 non-GitHub credential on advisory jobs, `@openai/codex` is unpinned, and a
@@ -585,8 +592,9 @@ clean audit identity.
 1. **Settings → Developer settings → GitHub Apps → New GitHub App** (org-level if
    the Project is org-owned).
 2. **Permissions:** Contents RW, Issues RW, Pull requests RW, Checks R, Actions
-   R; Organization **Projects RW** (and repo Projects if used); Discussions RW
-   and Metadata R as needed.
+   **RW** (the no-Claude watchers relay `push`/`issues` via `gh workflow run`, which
+   needs Actions:write); Organization **Projects RW** (and repo Projects if used);
+   Discussions RW and Metadata R as needed.
 3. **Install** the App on the `smith` repo.
 4. **Generate a private key**; store `APP_ID` + `PRIVATE_KEY` as repo/org
    secrets.
@@ -659,10 +667,12 @@ action's docs settled the rest:
 - **One runner: `claude-code-action@v1`, in two modes.** It routes by event:
   *interactive* (issue / PR / comment — reads that entity and replies) and
   *automation* (`schedule` / `workflow_dispatch` — runs an explicit `prompt`).
-  It **rejects `push`** because that has no entity and fits neither mode. So a
-  push-triggered agent (`planner`) is split into a plain no-Claude watcher that
-  `gh workflow run`s the action on `workflow_dispatch`. No CLI is used — the
-  headless `claude -p` path is dropped.
+  It **rejects `push`** (no entity, fits neither mode); an `issues` event it *does*
+  serve, but in **interactive** mode (reply to the issue), not the **automation**
+  mode the `planner` needs to run its explicit prompt. So a push- or
+  `needs:breakdown`-triggered `planner` is split into a plain no-Claude watcher that
+  `gh workflow run`s the action on `workflow_dispatch` (automation mode). No CLI is
+  used — the headless `claude -p` path is dropped.
 - **Subscription auth, no metered API.** Every workflow authenticates with
   `claude_code_oauth_token` (`${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}`, generated
   once with `claude setup-token`), which draws on the owner's Claude
