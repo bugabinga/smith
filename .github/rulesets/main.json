@@ -20,7 +20,36 @@
         "require_code_owner_review": true,
         "dismiss_stale_reviews_on_push": false,
         "require_last_push_approval": false,
-        "required_review_thread_resolution": false
+        "required_review_thread_resolution": false,
+        "required_reviewers": [],
+        "allowed_merge_methods": ["squash"]
+      }
+    },
+    {
+      "type": "copilot_code_review",
+      "parameters": {
+        "review_on_push": true,
+        "review_draft_pull_requests": false
+      }
+    },
+    {
+      "type": "code_quality",
+      "parameters": { "severity": "errors" }
+    },
+    {
+      "type": "code_coverage",
+      "parameters": {
+        "minimum_coverage": 0.7,
+        "max_coverage_drop": 0.1
+      }
+    },
+    {
+      "type": "code_scanning",
+      "parameters": {
+        "code_scanning_tools": [
+          { "tool": "CodeQL", "security_alerts_threshold": "high_or_higher", "alerts_threshold": "errors" },
+          { "tool": "devskim", "security_alerts_threshold": "high_or_higher", "alerts_threshold": "errors" }
+        ]
       }
     },
     {
