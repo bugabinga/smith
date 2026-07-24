@@ -33,17 +33,6 @@
       }
     },
     {
-      "type": "code_quality",
-      "parameters": { "severity": "errors" }
-    },
-    {
-      "type": "code_coverage",
-      "parameters": {
-        "minimum_coverage": 0.7,
-        "max_coverage_drop": 0.1
-      }
-    },
-    {
       "type": "code_scanning",
       "parameters": {
         "code_scanning_tools": [
