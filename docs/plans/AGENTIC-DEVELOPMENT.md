@@ -520,6 +520,17 @@ because the *input* bound holds: issue and PR creation are Collaborators-only, a
 compromised member account is already out of scope (above). The safeguard is who can
 ask for work, not a cage around the agent doing it.
 
+**How to verify that bound — and why an agent cannot.** The PR side is API-visible:
+`GET /repos/bugabinga/smith` reports `pull_request_creation_policy: collaborators_only`.
+The **issue** side is not exposed by any API — it lives at *Settings → General →
+Features → Issues → Creation allowed by: Collaborators only*, a durable repo setting
+(shipped 2026-06), and the owner has verified it there. Do **not** infer the issue
+bound from `GET /repos/.../interaction-limits`: that endpoint reads the *legacy,
+temporary* interaction-limits feature, which this repo does not use, so it returns
+`{}` whether or not the durable setting is on. An empty response is not evidence the
+repo is open — reading it as such has already produced two rounds of wrong
+conclusions. Treat the issue bound as owner-verified and recorded here.
+
 What stays forbidden regardless: an agent widening its own permissions, weakening a
 gate (`rulesets/`, `CODEOWNERS`, verdict labels, `merge-gate`), or editing
 `docs/SPEC.md` / `PROJECT-INVARIANTS.md`. Those are the owner's alone — and a
