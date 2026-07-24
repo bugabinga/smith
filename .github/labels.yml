@@ -29,6 +29,20 @@
   color: "2b2d42"
   description: "Large — likely needs decomposition first"
 
+# — priority (triager ranks; planner reconciles across the backlog) —
+- name: "priority:high"
+  color: "d9480f"
+  description: "Do this before medium/low — closest to the mission's critical path"
+- name: "priority:medium"
+  color: "f76707"
+  description: "Normal importance — the default rank"
+- name: "priority:low"
+  color: "ffa94d"
+  description: "Nice-to-have — yields to everything above it"
+- name: "urgent"
+  color: "e03131"
+  description: "Time-critical (regression, security-adjacent, or blocking others) — the planner ranks it ahead of same/lower-priority work when ordering the backlog"
+
 # — state (drives routing) —
 - name: "ready"
   color: "1f9d55"
@@ -45,6 +59,9 @@
 - name: "needs:security"
   color: "7a1fa2"
   description: "Force a security-reviewer review"
+- name: "needs:breakdown"
+  color: "d6336c"
+  description: "Epic / multi-item — the planner slices it into single work-orders"
 
 # — build routing (triager decides; owner may override) —
 - name: "codex"

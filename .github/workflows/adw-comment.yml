@@ -1,7 +1,7 @@
 # ADW comment — the steering channel. When the OWNER writes `@smith ...` on an
 # issue or PR, route it to the right agent. Locked to the owner on purpose: this
-# is a public repo, so anyone can comment, and a comment body is untrusted input
-# — only author_association OWNER may steer, so a stranger's `@smith` does nothing.
+# is a public repo and a comment body is untrusted input — only author_association
+# OWNER may steer, so any non-owner `@smith` (contributor or stranger) does nothing.
 # Loop-safe: the agents' own comments are not authored by the owner, so they can
 # never trigger this.
 name: adw-comment
