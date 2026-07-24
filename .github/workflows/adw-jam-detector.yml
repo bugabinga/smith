@@ -1,15 +1,17 @@
 # ADW jam detector — the pipeline's dead-man's switch. Every ADW gate is
-# fail-closed by design: a broken required check holds `merge-gate` red, which is
+# fail-closed by design: an unexpected failure in a merge-critical check is
 # correct for ONE bad PR but catastrophic when the break is systemic (a green-
 # tree CodeQL that finds no code and fails on every PR, an action that got
 # yanked). Then nothing merges and no single PR is "wrong" — the jam is invisible
 # from any one PR's vantage. This job watches the whole board and rings a bell.
 #
-# Deterministic, no LLM: a shell/jq scan tallies, per required-check name, how
-# many distinct open non-draft PRs it is FAILING on. Same check red on >= 2 PRs =
-# a systemic jam, not one bad branch. The LLM (adw-doctor) is dispatched only
-# AFTER a jam is confirmed, and only on the transition into jam — never on a
-# steady-state re-scan, so it can't spam.
+# Deterministic, no LLM: a shell/jq scan reduces each check name to its latest
+# run, then tallies how many distinct open non-draft PRs carry the same active
+# failure. `merge-gate` is special: red is its normal waiting/held state, so it
+# counts only when the verdict/blocking labels say it should be green. Same
+# unexpected failure on >= 2 PRs = a systemic jam, not one bad branch. The LLM
+# (adw-doctor) is dispatched only AFTER a jam is confirmed, and only on the
+# transition into jam — never on a steady-state re-scan, so it can't spam.
 #
 # Escalation lands as an ISSUE, not a PR — issues have no merge gate, so the
 # alert reaches the owner even when every merge lane is wedged. The issue is
@@ -73,16 +75,38 @@ jobs:
           prs=$(gh pr list --repo "$REPO" --state open --json number,isDraft \
                   --jq '.[] | select(.isDraft==false) | .number')
 
-          # (PR, failing-check) pairs, one line each, tab-separated. Dedup per PR
-          # so a check counts once per PR no matter how many contexts it reports.
+          # (PR, actively-failing-check) pairs, one line each, tab-separated.
+          # statusCheckRollup retains older attempts after a re-run, so reduce
+          # each check name to its latest start before deciding its state.
+          #
+          # merge-gate is deliberately red while verdicts are missing or a
+          # blocking label holds the PR. Count it only when both verdicts are in
+          # and no blocker remains — the label state in which it must be green.
           : > fails.tsv
           for n in $prs; do
-            gh pr view "$n" --repo "$REPO" --json statusCheckRollup --jq '
-              .statusCheckRollup[]
+            gh pr view "$n" --repo "$REPO" --json labels,statusCheckRollup --jq '
+              ([.labels[].name] | unique) as $labels
+              | (.statusCheckRollup
+                 | group_by(.name // .context)
+                 | map(max_by(.startedAt // .completedAt // "")))[]
               | ((.conclusion // .state)) as $c
               | select($c=="FAILURE" or $c=="ERROR" or $c=="TIMED_OUT"
                        or $c=="STARTUP_FAILURE" or $c=="CANCELLED")
-              | (.name // .context)' 2>/dev/null | sort -u \
+              | (.name // .context) as $check
+              | select(
+                  $check != "merge-gate"
+                  or (
+                    ($labels | index("reviewed")) != null
+                    and ($labels | index("security-cleared")) != null
+                    and (($labels | map(select(
+                      . == "risk:high" or . == "blocked"
+                      or . == "changes-requested" or . == "needs:info"
+                      or . == "needs:spec" or . == "needs:prototype"
+                      or . == "stalled"
+                    )) | length) == 0)
+                  )
+                )
+              | $check' 2>/dev/null | sort -u \
             | while IFS= read -r chk; do printf '%s\t%s\n' "$n" "$chk"; done >> fails.tsv || true
           done
 
@@ -123,13 +147,14 @@ jobs:
 
           if [ "$JAMMED" = "true" ]; then
             body=$(cat <<EOF
-          The pipeline is jammed: the required check **\`$CULPRIT\`** is failing on
-          **$COUNT** open PRs, so \`merge-gate\` stays red and nothing merges.
+          The pipeline is jammed: the merge-critical check **\`$CULPRIT\`** has an
+          active, unexpected failure on **$COUNT** open PRs, so merges may be wedged.
 
           Affected PRs: $AFFECTED
 
-          This is a *systemic* failure — the same check is red across multiple
-          unrelated PRs, so it is the check (or its config), not any one branch.
+          This is a *systemic* failure — the same current check attempt is red
+          across multiple unrelated PRs, so it is the check (or its config), not
+          any one branch.
           Detector run: $RUN_URL
 
           The adw-doctor has been dispatched to diagnose. This issue auto-closes

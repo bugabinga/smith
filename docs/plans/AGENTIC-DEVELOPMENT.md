@@ -287,7 +287,7 @@ and destination; nothing dead-ends or merges on a guess.
 | a spec claim is unproven | `planner` / `surveyor` | `/pioneer` | `needs:prototype`; a prototype proves or disproves it |
 | a Dependabot bump is semver-incompatible / MSRV-raising | `dependency-manager` | owner | escalate as its own issue; the bump waits |
 | the cycle floods (WIP exceeded) or an agent loops | schedule | `sweeper` | enforce WIP, brake the runaway — the circuit-breaker |
-| a required check breaks systemically — same check red on ≥2 PRs, every lane wedged | `adw-jam-detector` (failure-events + 30-min floor) | owner + `adw-doctor` | un-gated `pipeline-jammed` issue; doctor dispatched once |
+| a merge-critical check breaks systemically — same active, unexpected failure on ≥2 PRs | `adw-jam-detector` (failure-events + 30-min floor) | owner + `adw-doctor` | un-gated `pipeline-jammed` issue; doctor dispatched once |
 
 Two invariants hold across every row: an agent never fakes a green gate to move a
 PR (PROJECT-INVARIANTS §5), and an agent never resolves ambiguity by guessing — it
@@ -298,16 +298,20 @@ fail-closed — a red required check holds `merge-gate` down — which is right 
 one bad PR but catastrophic when the *check itself* breaks (a green-tree CodeQL
 that finds no code and fails everywhere, a yanked action). Then no single PR is
 "wrong" and the jam is invisible from any one PR. `adw-jam-detector` watches the
-whole board: a deterministic, no-LLM scan tallies how many open non-draft PRs
-each required check is failing on, and calls a jam when one check is red on ≥2.
-It fires on failure-completions of the gating workflows for a fast edge, with a
-30-minute schedule as the deterministic floor (GitHub suppresses some
-self-triggered check events). The alert is an **issue**, not a PR — issues carry
-no merge gate, so it reaches the owner even when every merge lane is jammed — and
-it is idempotent: one open `pipeline-jammed` issue that auto-closes the moment a
-scan comes back clean. Only after a jam is confirmed, and only on the transition
-into it, is `adw-doctor` woken to diagnose — never on a steady-state re-scan, so
-the LLM can't spam.
+whole board: a deterministic, no-LLM scan reduces each check name to its latest
+run, then tallies active failures across open non-draft PRs. An ordinary red
+`merge-gate` is control state, not illness: while a verdict is missing or a
+blocking label is present, the gate is supposed to fail. The detector therefore
+counts `merge-gate` only when both verdict labels are present and no blocking
+label remains; other merge-critical failures count normally. The same unexpected
+failure on ≥2 PRs is a jam. It fires on failure-completions of the gating
+workflows for a fast edge, with a 30-minute schedule as the deterministic floor
+(GitHub suppresses some self-triggered check events). The alert is an **issue**,
+not a PR — issues carry no merge gate, so it reaches the owner even when every
+merge lane is jammed — and it is idempotent: one open `pipeline-jammed` issue
+that auto-closes the moment a scan comes back clean. Only after a jam is
+confirmed, and only on the transition into it, is `adw-doctor` woken to diagnose
+— never on a steady-state re-scan, so the LLM can't spam.
 
 ## Merging — native auto-merge, gated by labels
 
