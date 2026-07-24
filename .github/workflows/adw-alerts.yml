@@ -3,9 +3,9 @@
 # only covers alerts present while a PR is open; this closes the gap the roster
 # always claimed security-reviewer owned but nothing wired.
 #
-# The alert events are automation-only (the action rejects them like `push`), so
-# they relay to a workflow_dispatch — the event the action serves. A daily
-# schedule is the backstop so nothing lingers even if an event is missed.
+# GitHub exposes alert activity as webhook events, but not as Actions workflow
+# triggers. Poll daily so the sweep is both supported and deterministic; manual
+# dispatch remains available for diagnosis.
 #
 # Needs the App to be granted "Dependabot alerts: read" and "Code scanning
 # alerts: read" (owner, #14) — without them the gh queries error (that error is
@@ -13,12 +13,8 @@
 name: adw-alerts
 
 on:
-  dependabot_alert:
-    types: [created, reopened, reintroduced]
-  code_scanning_alert:
-    types: [created, reopened, appeared_in_branch]
   schedule:
-    - cron: "41 6 * * *"        # daily backstop
+    - cron: "41 6 * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -31,22 +27,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # alert events can't run the action, so hand off to the automation event.
-  relay:
-    if: github.event_name == 'dependabot_alert' || github.event_name == 'code_scanning_alert'
-    runs-on: ubuntu-latest
-    steps:
-      - id: token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-      - env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
-        run: gh workflow run adw-alerts.yml -R ${{ github.repository }}
-
   triage:
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
