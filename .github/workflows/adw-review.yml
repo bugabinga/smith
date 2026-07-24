@@ -51,6 +51,7 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           github_token: ${{ steps.token.outputs.token }}
+          allowed_bots: agent-smith-bugabinga-adc
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             Use the reviewer subagent to review PR
@@ -78,6 +79,7 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           github_token: ${{ steps.token.outputs.token }}
+          allowed_bots: agent-smith-bugabinga-adc
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             Use the security-reviewer subagent to review PR
