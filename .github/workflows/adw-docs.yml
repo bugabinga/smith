@@ -29,11 +29,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - id: token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Persist the App token (not the ambient GITHUB_TOKEN) so the full-access
           # Codex step has only one credential in reach, and git push works.
