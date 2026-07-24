@@ -5,7 +5,7 @@
 # The action serves only `workflow_dispatch` and `schedule` (same as adw-alerts), so
 # the two events it rejects — `push` and `issues` — are relayed to a dispatch by
 # plain no-Claude watchers that `gh workflow run` with the App token (the same relay
-# adw-alerts / adw-release use). Subscription auth; no CLI, no metered API.
+# adw-release uses). Subscription auth; no CLI, no metered API.
 name: adw-plan
 
 on:

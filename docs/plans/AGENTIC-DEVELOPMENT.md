@@ -108,7 +108,7 @@ level below is a standing assignment.
 | `planner` | spec change on `main`; a `needs:breakdown` epic; weekly `schedule` | interpret spec diffs into work-orders, slice epics into single work-orders, and groom the backlog + board | **Issues** + `docs/plans/*` | fable | xhigh |
 | `surveyor` | `schedule` | measure the spec-vs-code gap and open the next unbuilt slice as a work-order | **one Issue** per tick | fable | high |
 | `reviewer` | `pull_request` | adversarial correctness review vs the spec — a *second* model | a **PR review** | opus | xhigh |
-| `security-reviewer` | PR on sensitive surface / `needs:security` / scanner alert | security review; escalate high severity | a **PR review** + `risk:*` | opus | high |
+| `security-reviewer` | PR on sensitive surface / `needs:security` / `adw-alerts` daily sweep or manual dispatch | security review; escalate high severity | a **PR review** + `risk:*` | opus | high |
 | `builder` (Claude) | issue labeled `ready` | build one **UI/UX** slice per `WALKING-SKELETON`, hardened, tested | a **branch + PR** | opus | high |
 | `builder` (Codex) | issue labeled `codex` | build one **backend** slice per `WALKING-SKELETON`, hardened, tested | a **branch + PR** | terra | high |
 | `codex-review` | `pull_request` | cross-family second opinion (advisory; never a gate label) | a **PR comment** | sol | high |
@@ -352,8 +352,9 @@ auto-merge** (repo setting) and importing the ruleset with `merge-gate` required
 
 ## Reaction workflows — the loops that make it self-sustaining
 
-Beyond the issue→PR spine, five workflows wake agents on GitHub's own feedback
-events, each carrying a loop-guard so agents never react to themselves:
+Beyond the issue→PR spine, five workflows keep agents moving: three react to
+GitHub feedback events, while the other two use owner input or a deterministic
+schedule. Each carries a guard against an endless self-loop:
 
 | Workflow | Wakes on | Does | Loop-guard |
 |---|---|---|---|
@@ -366,9 +367,9 @@ events, each carrying a loop-guard so agents never react to themselves:
 
 The one deliberately-owner-gated reaction is `adw-comment`: because the repo is
 public, a comment body is untrusted input, so only the owner may steer through it.
-Everything else keys off structural events (a review verdict, a merge, a tag) that
-agents produce as a matter of course, which is why the loop-guards matter — without
-them, an agent's own review or merge would wake another agent without end.
+Everything else keys off structural events (a review verdict, a merge, a tag) or
+the deterministic alert schedule. The guards prevent agents from reacting to their
+own work.
 
 Claude Code rejects bot-originated events by default. The intentionally
 bot-originated build, plan, review, revise, and alert-triage lanes therefore
