@@ -278,7 +278,19 @@ Files that coding agents MUST NOT modify without explicit user approval:
 - `docs/SPEC.md` (source of truth — agents read, don't edit without approval)
 - `docs/plans/AGENTIC-DEVELOPMENT.md` (the "how to build" spec)
 - `.github/workflows/`, `.github/CODEOWNERS`, `.claude/agents/` (the agentic
-  workflow's own config — agents must not rewrite the rules they run under)
+  workflow's own config — agents must not rewrite the rules they run under).
+  **Carve-out (owner-approved):** a builder acting on a *triaged ADW work-order
+  that names the file* may edit `.github/**` and `.claude/**`. These paths are
+  CODEOWNERS-owned and the ruleset sets `require_code_owner_review: true` with the
+  App outside `bypass_actors`, so such a change still cannot land without the
+  owner's review — that required review **is** the "explicit approval" this
+  section demands. Agents are inside the trust boundary: the owner authors and
+  owns every agent instruction (see AGENTIC-DEVELOPMENT → *Credentialed agents
+  over untrusted input*, which also names the accepted PR-time execution
+  residual). Still never, whatever a work-order asks: `.github/rulesets/**`,
+  `.github/CODEOWNERS`, `adw-gate.yml`, `adw-automerge.yml`,
+  `.claude/settings.json` — an agent does not widen its own permissions or weaken
+  the check that judges it.
 - `Cargo.toml` workspace root
 - adding or removing a crate in any `Cargo.toml` `[dependencies]` (version
   bumps are maintenance — see the dependency rule below)
