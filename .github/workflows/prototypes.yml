@@ -30,7 +30,7 @@ jobs:
   build-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: toolchain
         run: rustup default stable && rustc -V && cargo -V
       - name: build + test every prototype (fail if any regresses)
