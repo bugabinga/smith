@@ -43,7 +43,20 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          . .github/adw/gate-labels.sh
+          # BOOTSTRAP FALLBACK — keep in sync with .github/adw/gate-labels.sh;
+          # .github/adw/gate-labels.test.sh fails if these two ever disagree.
+          # A base that predates the shared file (this PR before it lands, a
+          # revert, an old branch cut) must degrade to the known-good label sets,
+          # not die on `source` under `set -e`. A gate that cannot read its own
+          # definition and therefore fails every PR is the jam this workflow
+          # exists to prevent.
+          if [ -f .github/adw/gate-labels.sh ]; then
+            . .github/adw/gate-labels.sh
+          else
+            echo "::warning::base lacks .github/adw/gate-labels.sh — using bootstrap defaults"
+            REQUIRED_GATE_LABELS="reviewed security-cleared"
+            BLOCKING_GATE_LABELS="risk:high blocked changes-requested needs:info needs:spec needs:prototype"
+          fi
           labels=$(gh pr view "$PR" --repo "$REPO" --json labels -q '[.labels[].name] | join(",")')
           echo "labels: [$labels]"
           csv=",$labels,"

@@ -55,6 +55,8 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - name: Mark the start of this review
+        run: echo "REVIEW_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
       - uses: anthropics/claude-code-action@v1
         with:
           github_token: ${{ steps.token.outputs.token }}
@@ -82,13 +84,25 @@ jobs:
           set -euo pipefail
           labels=$(gh pr view "$PR" --repo "$REPO" --json labels -q '[.labels[].name] | join(",")')
           case ",$labels," in
-            *,reviewed,*|*,changes-requested,*)
-              echo "verdict cast — labels: [$labels]" ;;
+            *,reviewed,*|*,changes-requested,*) ;;
             *)
               echo "::error::reviewer ended without a verdict label (have: [$labels]);"\
                    "expected reviewed or changes-requested"
               exit 1 ;;
           esac
+          # A label can outlive the run that set it, so label presence alone
+          # cannot prove this run did anything. The charter requires one comment
+          # per review, so a comment newer than the job start is the evidence.
+          # ISO-8601 sorts lexically, which is all the comparison needs.
+          posted=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                     --jq '.[].created_at' \
+                   | awk -v t="$REVIEW_STARTED_AT" '$0 >= t' | wc -l)
+          if [ "$posted" -eq 0 ]; then
+            echo "::error::reviewer posted no comment this run (since $REVIEW_STARTED_AT);"\
+                 "the verdict label is stale, not earned"
+            exit 1
+          fi
+          echo "verdict cast and $posted comment(s) posted — labels: [$labels]"
 
   security-reviewer:
     needs: reset
@@ -100,6 +114,8 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - name: Mark the start of this review
+        run: echo "REVIEW_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
       - uses: anthropics/claude-code-action@v1
         with:
           github_token: ${{ steps.token.outputs.token }}
@@ -127,10 +143,23 @@ jobs:
           set -euo pipefail
           labels=$(gh pr view "$PR" --repo "$REPO" --json labels -q '[.labels[].name] | join(",")')
           case ",$labels," in
-            *,security-cleared,*|*,risk:high,*)
-              echo "verdict cast — labels: [$labels]" ;;
+            *,security-cleared,*|*,risk:high,*) ;;
             *)
               echo "::error::security-reviewer ended without a verdict label (have: [$labels]);"\
                    "expected security-cleared or risk:high"
               exit 1 ;;
           esac
+          # `risk:high` deliberately survives the reset, so on this path the
+          # label check alone is satisfiable by a sticky label from an earlier
+          # run — a no-op review would pass green, which is exactly the bug this
+          # assertion exists to catch. A comment newer than the job start is the
+          # evidence that this run actually reviewed anything.
+          posted=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                     --jq '.[].created_at' \
+                   | awk -v t="$REVIEW_STARTED_AT" '$0 >= t' | wc -l)
+          if [ "$posted" -eq 0 ]; then
+            echo "::error::security-reviewer posted no comment this run (since $REVIEW_STARTED_AT);"\
+                 "the verdict label is stale, not earned"
+            exit 1
+          fi
+          echo "verdict cast and $posted comment(s) posted — labels: [$labels]"

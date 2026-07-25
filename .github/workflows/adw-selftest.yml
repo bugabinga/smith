@@ -1,0 +1,34 @@
+# ADW self-test — the deterministic checks on the cycle's own contracts.
+#
+# The gate's label sets are duplicated by necessity: adw-gate and
+# adw-jam-detector each inline a bootstrap copy for a base that predates the
+# shared file. Duplication that nothing checks is how the two drifted apart in
+# the first place, so the drift is checked here instead of trusted.
+#
+# No LLM, no network, no tokens — plain shell over files in the repo. It runs on
+# every PR touching the ADW so a change to the label contract cannot land
+# without its consequences being asserted.
+name: adw-selftest
+
+on:
+  pull_request:
+    paths:
+      - '.github/adw/**'
+      - '.github/workflows/adw-*.yml'
+  push:
+    branches: [ "main" ]
+    paths:
+      - '.github/adw/**'
+      - '.github/workflows/adw-*.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  gate-labels:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Gate label contract
+        run: bash .github/adw/gate-labels.test.sh

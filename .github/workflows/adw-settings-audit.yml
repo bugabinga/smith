@@ -56,9 +56,19 @@ jobs:
             exit 0
           fi
 
+          # /rulesets lists everything defined on the repository, including
+          # rulesets that target other refs or are disabled. Saying "N applied to
+          # main" off that raw count would be the same kind of false confidence
+          # this job exists to remove, so report the scope plainly and let the
+          # per-ruleset target and enforcement below carry the truth.
           count=$(printf '%s' "$rulesets" | jq 'length')
-          echo "$count ruleset(s) applied. The repo file describes one." >> "$GITHUB_STEP_SUMMARY"
-          echo >> "$GITHUB_STEP_SUMMARY"
+          active=$(printf '%s' "$rulesets" | jq '[.[] | select(.enforcement == "active")] | length')
+          {
+            echo "$count ruleset(s) defined on the repository, $active active."
+            echo "Scope is per-ruleset — read \`target\` and \`enforcement\` on each."
+            echo "The repo file describes one."
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
 
           printf '%s' "$rulesets" | jq -r '.[] | "\(.id)\t\(.name)\t\(.target)\t\(.enforcement)"' \
           | while IFS=$'\t' read -r id name target enforcement; do
@@ -101,9 +111,12 @@ jobs:
             echo
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if ! analyses=$(gh api \
+          # --paginate, not a single page: the stale categories are by definition
+          # the OLDEST analyses, so capping at the newest 100 would hide exactly
+          # what this is looking for.
+          if ! analyses=$(gh api --paginate --slurp \
                 "repos/$REPO/code-scanning/analyses?ref=refs/heads/$BRANCH&per_page=100" \
-                2>/dev/null); then
+                --jq 'add' 2>/dev/null); then
             echo "Could not read analyses — the App is missing **Code scanning alerts: read**." \
               >> "$GITHUB_STEP_SUMMARY"
             exit 0

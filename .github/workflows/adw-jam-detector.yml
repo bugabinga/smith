@@ -97,7 +97,19 @@ jobs:
           # attempt that a label change supersedes before its gate run appears,
           # without treating comments or unrelated labels as a fresh PR state.
           : > fails.tsv
-          . .github/adw/gate-labels.sh
+          # BOOTSTRAP FALLBACK — keep in sync with .github/adw/gate-labels.sh;
+          # .github/adw/gate-labels.test.sh fails if these two ever disagree.
+          # The detector must survive a checkout without the shared file for the
+          # same reason the gate must: dying on `source` would take out the
+          # dead-man's switch itself, which is the one thing that must not fail
+          # silently.
+          if [ -f .github/adw/gate-labels.sh ]; then
+            . .github/adw/gate-labels.sh
+          else
+            echo "::warning::checkout lacks .github/adw/gate-labels.sh — using bootstrap defaults"
+            REQUIRED_GATE_LABELS="reviewed security-cleared"
+            BLOCKING_GATE_LABELS="risk:high blocked changes-requested needs:info needs:spec needs:prototype"
+          fi
           read -r -a required_gate_labels <<< "$REQUIRED_GATE_LABELS"
           read -r -a blocking_gate_labels <<< "$BLOCKING_GATE_LABELS"
 
