@@ -303,9 +303,11 @@ run, then tallies active failures across open non-draft PRs. An ordinary red
 `merge-gate` is control state, not illness: while a verdict is missing or a
 blocking label is present, the gate is supposed to fail. The detector therefore
 counts `merge-gate` only when both verdict labels are present and no blocking
-label remains; other merge-critical failures count normally. The same unexpected
-failure on ≥2 PRs is a jam. It fires on failure-completions of the gating
-workflows for a fast edge, with a 30-minute schedule as the deterministic floor
+label remains — and `merge-gate` is the only check it counts at all, because the
+ruleset makes it the sole required one, so anything that genuinely blocks a
+merge surfaces as a red gate. An unexpected gate red on ≥2 PRs is a jam. It
+fires on failure-completions of the gating workflows for a fast edge, with a
+30-minute schedule as the deterministic floor
 (GitHub suppresses some self-triggered check events). The alert is an **issue**,
 not a PR — issues carry no merge gate, so it reaches the owner even when every
 merge lane is jammed — and it is idempotent: one open `pipeline-jammed` issue

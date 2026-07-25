@@ -9,8 +9,9 @@
 # `merge-gate` failure. Red is its normal waiting/held state, so it counts only
 # when the verdict/blocking labels say it should be green and the gate attempt
 # started after the last gate-relevant label transition. Same unexpected failure
-# on >= 2 PRs = a
-# systemic jam, not one bad branch. The LLM (adw-doctor) is dispatched only
+# on >= 2 PRs = a systemic jam, not one bad branch. It is the only check tallied,
+# because the ruleset makes it the sole required one — anything that genuinely
+# blocks a merge lands as a red gate. The LLM (adw-doctor) is dispatched only
 # AFTER a jam is confirmed, and only on the transition into jam — never on a
 # steady-state re-scan, so it can't spam.
 #
