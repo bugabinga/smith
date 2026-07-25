@@ -148,8 +148,13 @@ label, so an OpenAI outage can't deadlock a merge).
 The **authority** for each agent's mission and boundaries is its `.claude/agents/`
 charter; **model, effort, and tool access** are set by the workflow that runs it
 (this table is the map). Every agent runs at full access — bounded by its charter
-prose, not a frontmatter tool allow-list. `builder` and `reviewer` wield `/sabotnik` and `/handmade`; `pioneer`
-and `smith` stay owner/skill-invoked, since the spec is touchpoint 1.
+prose, not a frontmatter tool allow-list. `builder` and `reviewer` wield
+`/sabotnik` and `/handmade`. `smith` stays owner-invoked, since the spec is
+touchpoint 1 and only the owner writes it. `pioneer` no longer does: a
+`needs:prototype` label wakes it (`adw-pioneer.yml`), because an unproven claim
+is a gap the cycle finds on its own — the surveyor and planner both apply that
+label without the owner — and waiting for a manual invocation is what left four
+such issues parked with nothing running.
 
 ## How the cycle pushes Smith forward
 

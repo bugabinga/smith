@@ -26,8 +26,12 @@ permissions:
   contents: read
   issues: write
 
+# Global, not per-issue: two prototypes started together would each read the
+# same highest `pNN`, claim it, and append a result block to `prototypes/PLAN.md`
+# from the same base — two PRs colliding on a directory name and a file. The
+# numbering is shared state, so the runs have to queue rather than fan out.
 concurrency:
-  group: adw-pioneer-${{ github.event.issue.number }}
+  group: adw-pioneer
   cancel-in-progress: false
 
 jobs:
