@@ -24,7 +24,7 @@ they never become one.
 **Prohibited:**
 - Makefile, justfile, package.json, build.sh
 - Shell scripts in repo root or scripts/
-- Any build step that requires tools not installable via `cargo install`, with two named exceptions: pinned nightly rustup components required by the `cargo-pup` architecture gate, and the `zig` toolchain required by `cargo-zigbuild` for release cross-builds (§8a)
+- Any build step that requires tools not installable via `cargo install`, with three named exceptions, all confined to gates and release builds: pinned nightly rustup components required by the `cargo-pup` architecture gate; the **toolchains** the cross-compilers drive — the `zig` toolchain `cargo-zigbuild` needs, and the host **LLVM/clang** installation `cargo-xwin` needs (it fetches the Microsoft SDK, not the compiler that consumes it); and the **platform SDKs** themselves — the Microsoft C runtime and Windows SDK that `cargo-xwin` fetches, and a macOS SDK where a C dependency's darwin headers demand one (§4, *Cross-compilation*). The cross-compilers themselves are `cargo install`-able; the exception covers the external toolchains and SDKs they drive, nothing else
 
 **Scope:** this invariant governs the **Rust workspace** — the app, its crates,
 and their build. The published **web site** is a separate artifact and is exempt,
@@ -254,6 +254,40 @@ xtask is the single extension point for tasks cargo does not handle natively.
 | `cargo run -p xtask -- mutants` | Run mutation testing (cargo-mutants) | Nightly |
 | `cargo run -p xtask -- release` | Build release binary for all targets, archive + checksum | Release |
 
+### Cross-compilation
+
+SPEC §14 states what a release must guarantee — one host, MSVC-ABI on Windows, a
+glibc floor below the build host, no target silently dropped. This is the encoding
+that currently satisfies it:
+
+This table is the **single** encoding of how each target is built. §8a and
+`docs/plans/AGENTIC-DEVELOPMENT.md` point here rather than restating it; four
+copies in lockstep is how the `cargo-zigbuild`-builds-everything falsehood
+survived in §8a after §14 had already been corrected.
+
+| Target family | Cross-compiler | Proven by |
+|---|---|---|
+| Linux (glibc, musl) | `cargo-zigbuild` — supports a minimum-glibc suffix on the target triple | `prototypes/p34` |
+| macOS | `cargo-zigbuild` — needs a macOS SDK only where a C dependency pulls darwin headers | p34, on a **native** runner |
+| Windows (MSVC) | `cargo-xwin` — fetches Microsoft's CRT and Windows SDK; **using it accepts Microsoft's licence**, an owner-approved condition of shipping Windows artifacts | **unproven** — p34 proved zigbuild→windows-*gnu* and *native* MSVC, never `cargo-xwin`; SPEC §18 prototype required before the matrix relies on it |
+| Android (Bionic) | **unproven** — outside both tools' stated support; SPEC §18 prototype decides before the matrix claims it | — |
+| FreeBSD, OpenBSD, riscv64 (best-effort) | **unproven** — same; best-effort targets may be skipped, but the skip is reported | — |
+
+`cargo-zigbuild` supports Linux and macOS only, which is why Windows needs the
+second tool rather than a GNU-ABI substitute — SPEC §14 forbids that substitution
+outright, so "cheaper to produce" is not an argument available here.
+
+Both cross-compilers need something the host must already have: `zig` for one,
+an LLVM/clang installation for the other (`cargo-xwin` fetches Microsoft's SDK
+but not the compiler that consumes it). §1 names both as exceptions.
+
+The **Proven by** column is load-bearing, not commentary: SPEC §14 forbids the
+matrix claiming a target whose cross-build no prototype has exercised. Windows
+MSVC is listed here as the intended encoding and marked unproven — the release
+matrix may not depend on `cargo-xwin` until a §18 prototype builds with it.
+This table is an implementation choice and may change with the ecosystem; the
+guarantees in SPEC §14 may not.
+
 ### xtask Implementation Rule
 xtask commands must be thin orchestrators. They delegate to cargo, nextest, clippy, etc. No heavy logic in xtask. No business logic. Just task coordination.
 
@@ -425,8 +459,14 @@ No debug info in release builds. Debug symbols are produced only by the default 
 
 ### Release Pipeline
 
-1. `cargo run -p xtask -- release` — builds all targets via cargo-zigbuild, creates archives, generates checksums.
-2. OpenBSD (Tier 3) is best-effort — build natively if possible, skip otherwise.
+1. `cargo run -p xtask -- release` — builds every target, creates archives,
+   generates checksums. Which cross-compiler each target family uses is the §4
+   *Cross-compilation* table, not restated here: no single tool builds them all,
+   and saying otherwise is what sent the release pipeline at `cargo-zigbuild` for
+   Windows, which it does not support.
+2. Best-effort targets — riscv64, FreeBSD, OpenBSD — build natively where
+   possible and are skipped otherwise. A skip is reported, never silent
+   (SPEC §14); a *required* target that fails stops the release.
 
 No CI-driven *release* automation yet: no automated distribution, no code
 signing — these are deferred. The test/lint/coverage CI gates themselves
@@ -534,6 +574,7 @@ Rules:
 
 | Date | Change | Author |
 |------|--------|--------|
+| 2026-07-25 | §4 becomes the single cross-compiler mapping, with a proven-by column; §1 exception widened to the host LLVM `cargo-xwin` needs and repointed at §4; §8a release pipeline stops naming one tool for every target (user-approved) | smith-spec |
 | 2026-07-19 | §7 switch rebase→squash merge: rebase-merge can't be signed, so squash is the only method that satisfies signed-commits + linear history; one-PR-one-decision keeps squash = one-commit-per-decision (user-directed) | smith-spec |
 | 2026-07-18 | §1 scope note: Astro site exempt from the package.json ban, confined to `site/`; book stays mdBook (cargo-native) (user-directed) | smith-spec |
 | 2026-07-18 | §7 require signed commits on `main`, enforced by the branch ruleset (unlocked by going public) (user-approved) | smith-spec |

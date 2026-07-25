@@ -613,10 +613,15 @@ Cutting a release is a gated, predictable event:
    target matrix still cross-builds (proven in `prototypes/p34-ci-pipeline`).
 3. It opens a release-readiness issue; the **owner approves the version tag** —
    the one release touchpoint.
-4. On the `v*` tag, the release workflow builds every §14 triple (`cargo-zigbuild`
-   for linux/windows-gnu, native runners for msvc/darwin), emits
-   `smith-{triple}-v{version}` archives + `checksums-sha256.txt`, and publishes a
-   **GitHub Release**.
+4. On the `v*` tag, the release workflow builds every §14 triple — per the
+   cross-compiler table in PROJECT-INVARIANTS §4, which is the only place that
+   mapping lives — emits `smith-{triple}-v{version}` archives +
+   `checksums-sha256.txt`, and publishes a **GitHub Release**.
+
+   This step used to name `cargo-zigbuild` for `windows-gnu`. SPEC §14 forbids a
+   GNU-ABI binary standing in for an MSVC target, so that line described a release
+   the spec would reject — and it survived a correction that touched three other
+   sections because the mapping was written out in four places at once.
 
 **Why Releases and not Packages:** GitHub Packages hosts registry artifacts
 (containers, crates, npm). Smith v1 ships standalone binaries + checksums for end

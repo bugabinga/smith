@@ -2601,6 +2601,32 @@ Artifacts:
 - `smith-{triple}-v{version}.{zip|tar.gz}`,
 - `checksums-sha256.txt`.
 
+**One host builds the matrix.** Producing thirteen targets must not require
+thirteen build environments. The release is cross-compiled from a single host
+wherever a target allows it; CI installs toolchains and invokes `xtask release`,
+holding no build logic of its own (PROJECT-INVARIANTS §1). Which cross-compilers
+achieve this is an implementation choice, not a spec commitment — it changes as
+the ecosystem does.
+
+Three properties the artifacts must have, whatever builds them:
+
+- **Windows artifacts are MSVC-ABI.** A GNU-ABI binary is a different artifact —
+  different C++ exception handling, different C runtime — so it is never a
+  substitute for a target the matrix lists as MSVC, however much easier it is to
+  produce.
+- **glibc artifacts run on glibc 2.28 or newer** — Debian 10, RHEL 8, Ubuntu
+  18.10. The floor is a property of the release, not of whatever the build machine
+  happens to ship: linking against the builder's glibc silently narrows who can run
+  smith, and by an amount nobody stated. Raising the floor drops users, so it is a
+  spec change, not a build detail.
+- **No target is silently dropped.** Each release accounts for every target as
+  built, or skipped with a reason. A required target that fails to build stops the
+  release (above); quietly shipping a short matrix is a defect, not a degraded
+  release.
+
+Where a target's cross-build is unproven, a prototype (§18) establishes it before
+the matrix claims it — an unverified target is a promise, not a platform.
+
 No install scripts, package manifests, distribution metadata, or code signing in v1.
 
 ## 15. xtask
