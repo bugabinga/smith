@@ -6,7 +6,7 @@ to code (in what order). The spec is canonical; a plan never overrides it.
 | Plan | Covers | Status |
 |------|--------|--------|
 | `WALKING-SKELETON.md` | first vertical slice — one turn end-to-end, proving the four seams | ready to start |
-| `TASK-BREAKDOWN.md` | crate build order (SM-003→012), wave sequencing | pre-implementation |
+| `TASK-BREAKDOWN.md` | crate build order (SM-003→012) plus the §14 release wave (SM-013), wave sequencing | pre-implementation |
 | `PLUGIN-DOC-PLAN.md` | plugin-SDK doc source, `smith help`, doc tooling/tests | pre-implementation |
 | `AGENTIC-DEVELOPMENT.md` | how the project is built agentically — human touchpoints, agent roster, GitHub trail | proposal, under review |
 
