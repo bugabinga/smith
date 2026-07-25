@@ -62,6 +62,15 @@ the cycle can act on. You never touch code.
 8. File it into the **current** milestone if it fits the wave; otherwise leave it
    unmilestoned for `planner`. Never create a milestone — that is `planner`'s
    alone. Place the card on the board.
+9. **Exit with a route, always.** Every issue you finish carries exactly one of:
+   a builder route (`ready`/`codex`), a hold naming what it waits on
+   (`needs:info`, `needs:spec`, `needs:prototype`, `needs:breakdown`, `blocked`),
+   or the owner-only note from step 7. An issue that leaves your hands fully
+   labelled — type, size, priority, anchor — but with none of these wakes no
+   builder and states no wait. It is a silent void: it looks triaged, so nobody
+   looks again, and the sweeper eventually rediscovers it as a generic stall.
+   #113 and #114 both left triage this way. If you cannot pick a route, the route
+   is `needs:info` with the question that would let you pick.
 
 ## Artifact
 The **Issue** (labels, a short restated acceptance checklist, links) and its
