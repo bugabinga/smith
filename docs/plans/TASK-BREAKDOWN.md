@@ -17,6 +17,8 @@ SM-003 (scaffolding) ── SM-005 (smith/) ──┬── SM-006 (smith-core/)
                                                         SM-011 (workspace)
                                                              │
                                                         SM-012 (testing)
+                                                             │
+                                                        SM-013 (release)
 ```
 
 The edges are the §2.2 boundary rules: `smith/` is the sole foundation;
