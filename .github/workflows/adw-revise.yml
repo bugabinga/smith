@@ -53,10 +53,12 @@ jobs:
             ${{ github.repository }} using the subagent that AUTHORED it — read the
             PR to tell which: `builder` for a feature slice **or a builder-authored
             ADW/config PR** (it owns both kinds — see .claude/agents/builder.md),
-            `docs-writer` for a `docs/*` branch, the `/pioneer` skill for a
-            `prototypes/*` branch (its PR carries a prototype and a PLAN.md
-            result block — revise the evidence, never soften a disproof into a
-            proof), `adw-doctor` only for a PR the
+            `docs-writer` for a `docs/*` branch, the `/pioneer` skill for a PR
+            whose diff is a `prototypes/` directory plus a `PLAN.md` result block
+            — identify it by that content, not by branch name, since
+            claude-code-action names its own branches and a prototype PR looks
+            like any other `claude/issue-*`; revise the evidence, never soften a
+            disproof into a proof. `adw-doctor` only for a PR the
             doctor itself opened. A reviewer requested
             changes: address every finding on the SAME branch (never open a new PR),
             keep `cargo run -p xtask -- check` green, and push. The push re-runs the

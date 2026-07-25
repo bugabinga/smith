@@ -116,13 +116,16 @@ jobs:
             must not be softened into a proof with caveats — the whole point of
             the label is that nobody yet knows which it is.
 
-            Whatever you do, comment on the issue and begin the comment's FIRST
-            LINE with exactly `Pioneer: #${{ github.event.issue.number }}` — the
-            workflow proves this run did something by finding that line, and
-            every agent here posts under one App identity, so a comment without
-            it is indistinguishable from a reviewer's.
+            Whatever you do, comment on the issue and include the exact string
+            `Pioneer: #${{ github.event.issue.number }}` somewhere in that
+            comment. The workflow proves this run did something by finding it,
+            and every agent here posts under one App identity, so a comment
+            without it is indistinguishable from a reviewer's. It need not lead
+            the comment — the action prepends its own header — but it must be
+            present verbatim.
 
-            Then finish the issue, on a branch `prototypes/issue-${{ github.event.issue.number }}`:
+            Then finish the issue (the action manages the branch; do not try to
+            switch it):
             - PROVED — open a PR whose body begins `Closes #${{ github.event.issue.number }}`,
               so the merge retires the work-order rather than leaving it open for
               the sweeper to find and call stalled. Remove `needs:prototype`.
@@ -162,25 +165,29 @@ jobs:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           ISSUE: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
-          BRANCH: prototypes/issue-${{ github.event.issue.number }}
           BOT: "agent-smith-bugabinga-adc[bot]"
           MARKER: "Pioneer: #${{ github.event.issue.number }}"
         run: |
           set -euo pipefail
-          # Every clause is scoped to THIS run. A rerun of a no-op would
-          # otherwise pass on the previous run's PR, on a comment the triager or
-          # sweeper happened to leave, or on a label someone else removed —
-          # evidence that something once happened, not that this run did
-          # anything. Author alone is not enough either: every agent posts under
-          # one App identity, so the marker is what separates the pioneer's
-          # comment from a reviewer's landing in the same window.
-          pr=$(gh pr list --repo "$REPO" --head "$BRANCH" --state all \
-                 --json createdAt -q '.[].createdAt' \
-               | awk -v t="$STARTED_AT" '$0 >= t' | wc -l)
+          # The comment is the whole proof, because it is the one thing every
+          # outcome produces. An earlier version also looked for a PR on a branch
+          # this workflow named — but claude-code-action picks its own branch
+          # (`claude/issue-<n>-<timestamp>`) and refuses to switch, so that
+          # lookup could only ever return nothing.
+          #
+          # Scoped to THIS run by time and author, since a rerun of a no-op would
+          # otherwise pass on a comment the triager or sweeper happened to leave.
+          # Author alone is not enough either — every agent posts under one App
+          # identity — so the marker separates the pioneer's comment from a
+          # reviewer's landing in the same window. The marker may sit anywhere in
+          # the body: the action prepends its own header, so requiring the first
+          # line would fail every honest run. Newlines and tabs are flattened so
+          # one comment stays one record.
           commented=$(gh api "repos/$REPO/issues/$ISSUE/comments" --paginate \
-                        --jq '.[] | [.created_at, .user.login, (.body | split("\n")[0])] | @tsv' \
+                        --jq '.[] | [.created_at, .user.login,
+                                     (.body | gsub("[\n\t]"; " "))] | @tsv' \
                       | awk -F'\t' -v t="$STARTED_AT" -v b="$BOT" -v m="$MARKER" \
-                          '$2 == b && $1 >= t && index($3, m) == 1' | wc -l)
+                          '$2 == b && $1 >= t && index($3, m) > 0' | wc -l)
 
           # Still parked is still broken, whatever else the run produced. A
           # marker comment saying "cannot run here" is a trace, and on its own it
@@ -198,16 +205,14 @@ jobs:
               exit 1 ;;
           esac
 
-          if [ "$pr" -gt 0 ] || [ "$commented" -gt 0 ]; then
-            echo "pioneer left a trace this run — pr=$pr comments=$commented"
+          if [ "$commented" -gt 0 ]; then
+            echo "pioneer left a trace this run — $commented marker comment(s)"
             exit 0
           fi
-          # A bare label change is deliberately not accepted as evidence. Each of
-          # the three outcomes the prompt defines produces a PR or a comment, so
-          # a label moving on its own means something other than the pioneer did
-          # it — and treating that as success is how the issue gets parked again.
-          echo "::error::pioneer produced nothing for #$ISSUE this run: no PR"\
-               "opened on $BRANCH and no comment from $BOT since $STARTED_AT."\
-               "Nothing re-fires on a label already present, so the issue is"\
-               "parked with no wake-up scheduled"
+          # A bare label change is deliberately not accepted as evidence. Every
+          # defined outcome comments, so a label moving on its own means
+          # something other than the pioneer moved it — and treating that as
+          # success is how the issue gets parked again.
+          echo "::error::pioneer produced nothing for #$ISSUE this run: no"\
+               "comment from $BOT carrying '$MARKER' since $STARTED_AT"
           exit 1
