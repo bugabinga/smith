@@ -30,7 +30,8 @@ the cycle can act on. You never touch code.
 6. **Gate readiness and scope.** Route to a builder (step 7) only a *single*,
    unambiguous, spec-covered deliverable — one walking-skeleton slice with **no
    hold label**. `ready`/`codex` are mutually exclusive with every hold —
-   `blocked`, `needs:info`, `needs:spec`, `needs:breakdown` — because a builder
+   `blocked`, `needs:info`, `needs:spec`, `needs:prototype`, `needs:breakdown`,
+   `risk:high` — because a builder
    fires on `ready`/`codex` alone and would launch work that isn't ready; a held
    issue gets its hold label and *no* builder label. If it is ambiguous,
    `needs:info` with one specific question (and no `ready`/`codex`). If it is **multiple
@@ -58,10 +59,22 @@ the cycle can act on. You never touch code.
    specific file it changes — a vague "improve the workflows" is `needs:info`.
    A change to the **gate itself** (`.github/rulesets/**`, `CODEOWNERS`,
    `adw-gate.yml`, `adw-automerge.yml`, `.claude/settings.json`) is **owner-only**:
-   leave it unrouted and say so — no builder may edit the rules that judge it.
+   no builder may edit the rules that judge it. Label it `blocked` and say in one
+   line that the blocker is the owner. A note alone is not a route — nothing
+   reads prose, so an unlabelled owner-only issue is the same silent void as an
+   unrouted one, just with an explanation nobody consumes.
 8. File it into the **current** milestone if it fits the wave; otherwise leave it
    unmilestoned for `planner`. Never create a milestone — that is `planner`'s
    alone. Place the card on the board.
+9. **Exit with a route, always.** Every issue you finish carries exactly one of:
+   a builder route (`ready`/`codex`), a hold naming what it waits on
+   (`needs:info`, `needs:spec`, `needs:prototype`, `needs:breakdown`, `blocked`),
+   or the owner-only note from step 7. An issue that leaves your hands fully
+   labelled — type, size, priority, anchor — but with none of these wakes no
+   builder and states no wait. It is a silent void: it looks triaged, so nobody
+   looks again, and the sweeper eventually rediscovers it as a generic stall.
+   #113 and #114 both left triage this way. If you cannot pick a route, the route
+   is `needs:info` with the question that would let you pick.
 
 ## Artifact
 The **Issue** (labels, a short restated acceptance checklist, links) and its

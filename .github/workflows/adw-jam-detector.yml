@@ -64,6 +64,13 @@ jobs:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
+      # The gate's label sets, shared verbatim. Predicting the gate's verdict
+      # from a stale copy is how an expected red becomes a false jam.
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github/adw
+          sparse-checkout-cone-mode: false
+
       - id: scan
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
@@ -90,8 +97,21 @@ jobs:
           # attempt that a label change supersedes before its gate run appears,
           # without treating comments or unrelated labels as a fresh PR state.
           : > fails.tsv
-          required_gate_labels=(reviewed security-cleared)
-          blocking_gate_labels=(risk:high blocked changes-requested needs:info needs:spec needs:prototype stalled)
+          # BOOTSTRAP FALLBACK — keep in sync with .github/adw/gate-labels.sh;
+          # .github/adw/gate-labels.test.sh fails if these two ever disagree.
+          # The detector must survive a checkout without the shared file for the
+          # same reason the gate must: dying on `source` would take out the
+          # dead-man's switch itself, which is the one thing that must not fail
+          # silently.
+          if [ -f .github/adw/gate-labels.sh ]; then
+            . .github/adw/gate-labels.sh
+          else
+            echo "::warning::checkout lacks .github/adw/gate-labels.sh — using bootstrap defaults"
+            REQUIRED_GATE_LABELS="reviewed security-cleared"
+            BLOCKING_GATE_LABELS="risk:high blocked changes-requested needs:info needs:spec needs:prototype"
+          fi
+          read -r -a required_gate_labels <<< "$REQUIRED_GATE_LABELS"
+          read -r -a blocking_gate_labels <<< "$BLOCKING_GATE_LABELS"
 
           has_label() {
             case $'\n'"$1"$'\n' in *$'\n'"$2"$'\n'*) return 0 ;; esac
@@ -132,7 +152,7 @@ jobs:
           }
 
           for n in $prs; do
-            pr=$(gh pr view "$n" --repo "$REPO" --json labels,statusCheckRollup)
+            pr=$(gh pr view "$n" --repo "$REPO" --json labels,statusCheckRollup,commits)
             labels=$(printf '%s' "$pr" | jq -r '.labels[].name')
 
             if ! gate_should_be_green "$labels"; then
@@ -141,6 +161,17 @@ jobs:
 
             gate_label_transition=$(last_gate_label_transition "$n")
             if [ -z "$gate_label_transition" ]; then
+              continue
+            fi
+
+            # Labels older than the head are not a verdict on the head. adw-gate
+            # refuses on a push, and for the moments between that push and the
+            # reset stripping the previous verdicts, the PR reads as "should be
+            # green" while being correctly red. Counting that window would let a
+            # burst of pushes across two approved PRs raise a jam out of the
+            # machinery working — the exact false alarm this scan exists to stop.
+            head_committed=$(printf '%s' "$pr" | jq -r '.commits[-1].committedDate // ""')
+            if [ -n "$head_committed" ] && [ "$head_committed" \> "$gate_label_transition" ]; then
               continue
             fi
 
