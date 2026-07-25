@@ -144,14 +144,18 @@ cargo bench -- --baseline main
 
 # Full platform matrix (if multi-platform CI)
 # - Linux x86_64
-# - Linux aarch64 (Termux target)
+# - Linux aarch64
+# - Android ARM64 (Bionic)
 # - macOS aarch64
 # - Windows x86_64
 ```
 
 ### Android/Termux validation lane
 
-[V] Android/Termux is a supported development environment for smith, especially for agent-in-terminal workflows on mobile devices. It is not a v1 release artifact target; release artifacts target desktop/server platforms first.
+[V] Android/Termux on `aarch64-linux-android` is both a supported development
+environment and a required release-artifact target — canonical in SPEC §14. The
+terminal-first workflow is supported on mobile as well as desktop and server
+platforms.
 
 [V] CI should still validate Android/Termux compatibility because prototype evidence found two platform-sensitive integrations:
 
@@ -167,7 +171,7 @@ cargo bench -- --baseline main
 [V] Recommended CI posture:
 
 - Run Android/Termux compatibility in slow tier and before releases.
-- Treat failures as release blockers for source compatibility, not artifact publishing blockers.
+- Treat failures as release blockers, including artifact publishing.
 - Include a focused smoke test: vendored LuaJIT links, Lua sandbox executes, syntastica highlights Rust code, and no `libonig`/external `libtree-sitter` dynamic dependency appears.
 
 ### Timing budget
