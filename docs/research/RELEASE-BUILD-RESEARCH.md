@@ -12,6 +12,10 @@
 | Linux ARM64 (glibc) | `aarch64-unknown-linux-gnu` | Tier 1 | Native or cross | Raspberry Pi 4/5, AWS Graviton |
 | Linux x86_64 (musl) | `x86_64-unknown-linux-musl` | Tier 2 | cargo-zigbuild | Static binary, Alpine/containers |
 | Linux ARM64 (musl) | `aarch64-unknown-linux-musl` | Tier 2 | cargo-zigbuild | Static ARM64, containers |
+| Android ARM64 (Bionic) | `aarch64-linux-android` | Tier 2 | Required release artifact | Android/Termux |
+| Linux riscv64 (glibc) | `riscv64gc-unknown-linux-gnu` | Tier 2 | Best-effort | — |
+| Linux riscv64 (musl) | `riscv64gc-unknown-linux-musl` | Tier 2 | Best-effort | — |
+| FreeBSD x86_64 | `x86_64-unknown-freebsd` | Tier 2 | Best-effort | — |
 | OpenBSD x86_64 | `x86_64-unknown-openbsd` | Tier 3 | Native build only | No cross-image available |
 
 **OpenBSD is Tier 3** — Rust project does not build or test it automatically. `rustup target add` works but std may have bugs. No Docker cross-image from cross-rs. Must build natively or via zig (experimental).
