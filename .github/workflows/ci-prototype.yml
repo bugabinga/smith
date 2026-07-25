@@ -32,7 +32,7 @@ jobs:
       run:
         working-directory: prototypes/p34-ci-pipeline/cross
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: toolchain + targets
         run: |
           rustup default stable
@@ -74,7 +74,7 @@ jobs:
       run:
         working-directory: prototypes/p34-ci-pipeline/cross
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup default stable
       - name: build + run cross bin natively
         run: cargo run
@@ -90,7 +90,7 @@ jobs:
       run:
         working-directory: prototypes/p34-ci-pipeline/archgate
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup default stable
       - name: metadata gate PASSES the legal graph
         run: python3 gate.py
