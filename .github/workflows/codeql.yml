@@ -15,16 +15,20 @@ name: "CodeQL Advanced"
 # markdown PR has nothing for CodeQL to analyze. The weekly schedule is the
 # full-tree backstop.
 #
-# This used to claim the arrangement was safe "because CodeQL is not a required
-# merge check; only `merge-gate` is". That is wrong, and it wedged the board:
-# code-scanning MERGE PROTECTION is a separate mechanism from the ruleset's
-# required_status_checks, so keeping CodeQL out of the ruleset does not keep it
-# out of the merge decision. With protection on, GitHub posts a
-# "Code scanning results / CodeQL" check and treats a NEUTRAL result as
-# not-passed — and "N configurations not found" is neutral. Every PR then reads
-# "All checks have passed" and "Unable to merge — some checks did not pass" at
-# the same time, which is what #112 showed. The deadlock the RE-ADD CHECKLIST
-# below warns about was therefore already live, not merely a future risk.
+# The header used to argue this was safe "because CodeQL is not a required merge
+# check; only `merge-gate` is". Whatever the ruleset requires, dropping a
+# language has a cost this missed: code scanning remembers the configurations it
+# has seen on the base branch, and one that stops reporting does not disappear —
+# it goes STALE. GitHub then cannot diff a PR's alerts against a baseline, and
+# posts "Code scanning results / CodeQL — N configurations not found" as a
+# NEUTRAL check. #112 sat with every verdict in and merge-gate green, showing
+# "All checks have passed" and "Unable to merge — some checks did not pass" in
+# the same view.
+#
+# Stale configurations are cleared from the repository's code-scanning tool
+# status page, not from this file. The deadlock the RE-ADD CHECKLIST below warns
+# about is therefore not only a risk when ADDING a language — REMOVING one
+# arms it too.
 on:
   push:
     branches: [ "main" ]
@@ -76,11 +80,11 @@ jobs:
         #     Note its extractor only partially parses `.astro` SFCs (embedded
         #     JS, not the template DSL); DevSkim + npm-audit/Dependabot carry the
         #     site's real coverage.
-        #   - Each language added changes the produced result-count. Keeping
-        #     CodeQL out of the ruleset is NOT enough to make it alerts-only:
-        #     code-scanning merge protection must be off in the repository's
-        #     code-security settings, or the configuration count itself becomes a
-        #     merge gate. See #17.
+        #   - Adding OR removing a language changes the set of configurations
+        #     code scanning expects. A removed one goes stale rather than away,
+        #     and a stale configuration makes every PR's code-scanning check
+        #     neutral until it is deleted on the tool status page. Do that in the
+        #     same change that edits this matrix. See #116, #17.
         - language: actions
           build-mode: none
         # CodeQL supports the following values keywords for 'language': 'actions', 'c-cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby', 'rust', 'swift'
