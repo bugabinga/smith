@@ -118,7 +118,7 @@ level below is a standing assignment.
 | `release-manager` | `v*` tag | draft notes, verify the §14 matrix, publish the Release | a **GitHub Release** | terra | medium |
 | `triager` | issue opened | triage a raw issue into a labeled, ranked, spec-anchored work-order related to the open backlog — routed to a builder, or `needs:breakdown` to the planner if it is an epic/meta issue | the **Issue** + board card | luna | medium |
 | `sweeper` | `schedule` | unstick stalls, enforce WIP, brake runaways | **Issues/PRs/board** labels | luna | low |
-| `pioneer` (skill) | `needs:prototype` | prove/disprove an unproven spec claim with a prototype | `prototypes/*` | — | — |
+| `pioneer` (skill) | issue labeled `needs:prototype` (`adw-pioneer.yml`) | prove/disprove an unproven spec claim with a prototype | `prototypes/*` + a **PR** | opus | high |
 
 **Two builders, by domain.** The `triager` routes each `ready`-able issue by
 surface: **UI/UX → the Claude builder** (`opus`, `ready`), **backend → the Codex
