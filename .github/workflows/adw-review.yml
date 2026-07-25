@@ -8,6 +8,13 @@
 # The reset job strips stale verdict labels first (except sticky `risk:high`), so
 # a new push can't inherit a prior review's pass — the reviewers re-earn it on the
 # current head.
+#
+# Each reviewer's contract is its LABEL, not its exit code. A model can return a
+# clean success having called no tool and said nothing, which GitHub then records
+# as a passed mission-critical gate; seen on #77, where the security job went
+# green in 18.8s over two turns with no comment and no verdict. So every review
+# job asserts that it actually labelled, and fails loudly when it didn't — a
+# silent skip becomes a red check the rest of the machinery can already escalate.
 name: adw-review
 
 on:
@@ -65,6 +72,23 @@ jobs:
             `changes-requested` and remove `reviewed`.
             You are a mission-critical gate.
           claude_args: --model claude-opus-4-8 --effort xhigh --dangerously-skip-permissions
+      - name: Assert a verdict was cast
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          labels=$(gh pr view "$PR" --repo "$REPO" --json labels -q '[.labels[].name] | join(",")')
+          case ",$labels," in
+            *,reviewed,*|*,changes-requested,*)
+              echo "verdict cast — labels: [$labels]" ;;
+            *)
+              echo "::error::reviewer ended without a verdict label (have: [$labels]);"\
+                   "expected reviewed or changes-requested"
+              exit 1 ;;
+          esac
 
   security-reviewer:
     needs: reset
@@ -93,3 +117,20 @@ jobs:
             absent (holds the merge for the owner).
             You are a mission-critical gate.
           claude_args: --model claude-opus-4-8 --effort high --dangerously-skip-permissions
+      - name: Assert a verdict was cast
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          labels=$(gh pr view "$PR" --repo "$REPO" --json labels -q '[.labels[].name] | join(",")')
+          case ",$labels," in
+            *,security-cleared,*|*,risk:high,*)
+              echo "verdict cast — labels: [$labels]" ;;
+            *)
+              echo "::error::security-reviewer ended without a verdict label (have: [$labels]);"\
+                   "expected security-cleared or risk:high"
+              exit 1 ;;
+          esac
