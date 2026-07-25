@@ -64,6 +64,13 @@ jobs:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
+      # The gate's label sets, shared verbatim. Predicting the gate's verdict
+      # from a stale copy is how an expected red becomes a false jam.
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github/adw
+          sparse-checkout-cone-mode: false
+
       - id: scan
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
@@ -90,8 +97,9 @@ jobs:
           # attempt that a label change supersedes before its gate run appears,
           # without treating comments or unrelated labels as a fresh PR state.
           : > fails.tsv
-          required_gate_labels=(reviewed security-cleared)
-          blocking_gate_labels=(risk:high blocked changes-requested needs:info needs:spec needs:prototype stalled)
+          . .github/adw/gate-labels.sh
+          read -r -a required_gate_labels <<< "$REQUIRED_GATE_LABELS"
+          read -r -a blocking_gate_labels <<< "$BLOCKING_GATE_LABELS"
 
           has_label() {
             case $'\n'"$1"$'\n' in *$'\n'"$2"$'\n'*) return 0 ;; esac
