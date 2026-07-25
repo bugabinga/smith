@@ -24,7 +24,7 @@ they never become one.
 **Prohibited:**
 - Makefile, justfile, package.json, build.sh
 - Shell scripts in repo root or scripts/
-- Any build step that requires tools not installable via `cargo install`, with three named exceptions, all confined to gates and release builds: pinned nightly rustup components required by the `cargo-pup` architecture gate; the `zig` toolchain required by `cargo-zigbuild` for Linux and macOS release cross-builds; and the Microsoft C runtime and Windows SDK that `cargo-xwin` fetches for Windows MSVC release cross-builds (§8a). The cross-compilers themselves are `cargo install`-able; the exception covers the external toolchains they drive
+- Any build step that requires tools not installable via `cargo install`, with three named exceptions, all confined to gates and release builds: pinned nightly rustup components required by the `cargo-pup` architecture gate; the `zig` toolchain required by `cargo-zigbuild` for Linux and macOS release cross-builds; and the platform SDKs the cross-compilers require — the Microsoft C runtime and Windows SDK that `cargo-xwin` fetches, and a macOS SDK where a C dependency's darwin headers demand one (§8a). The cross-compilers themselves are `cargo install`-able; the exception covers the external toolchains and SDKs they drive, nothing else
 
 **Scope:** this invariant governs the **Rust workspace** — the app, its crates,
 and their build. The published **web site** is a separate artifact and is exempt,
@@ -265,9 +265,12 @@ that currently satisfies it:
 | Linux (glibc, musl) | `cargo-zigbuild` — supports a minimum-glibc suffix on the target triple |
 | macOS | `cargo-zigbuild` — needs `SDKROOT` only if a darwin framework is linked |
 | Windows (MSVC) | `cargo-xwin` — fetches Microsoft's CRT and Windows SDK; **using it accepts Microsoft's licence**, an owner-approved condition of shipping Windows artifacts |
+| Android (Bionic) | **unproven** — outside both tools' stated support; SPEC §18 prototype decides before the matrix claims it |
+| FreeBSD, OpenBSD (best-effort) | **unproven** — same; best-effort targets may be skipped, but the skip is reported |
 
 `cargo-zigbuild` supports Linux and macOS only, which is why Windows needs the
-second tool rather than a GNU-ABI substitute. Android and the BSDs are outside
+second tool rather than a GNU-ABI substitute. macOS may additionally need an SDK
+if a C dependency pulls darwin headers; the prototype establishes whether it does. Android and the BSDs are outside
 both tools' stated support and are unproven — SPEC §14 requires a prototype before
 the matrix claims them. This table is an implementation choice and may change with
 the ecosystem; the guarantees in SPEC §14 may not.

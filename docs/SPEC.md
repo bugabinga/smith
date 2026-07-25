@@ -2614,9 +2614,11 @@ Three properties the artifacts must have, whatever builds them:
   different C++ exception handling, different C runtime — so it is never a
   substitute for a target the matrix lists as MSVC, however much easier it is to
   produce.
-- **glibc artifacts run on distributions older than the build host.** Linking
-  against whatever glibc the builder happens to ship silently narrows who can run
-  smith; the floor is a property of the release, not of the machine that made it.
+- **glibc artifacts run on glibc 2.28 or newer** — Debian 10, RHEL 8, Ubuntu
+  18.10. The floor is a property of the release, not of whatever the build machine
+  happens to ship: linking against the builder's glibc silently narrows who can run
+  smith, and by an amount nobody stated. Raising the floor drops users, so it is a
+  spec change, not a build detail.
 - **No target is silently dropped.** Each release accounts for every target as
   built, or skipped with a reason. A required target that fails to build stops the
   release (above); quietly shipping a short matrix is a defect, not a degraded
