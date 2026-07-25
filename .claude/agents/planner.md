@@ -75,6 +75,19 @@ open set against itself and the spec:
 4. **Keep the board honest.** Fix cards stranded in the wrong column, milestones
    with stale membership, and `blocked` issues whose blocker already closed.
    `sweeper` brakes runaways; you keep the *structure* true.
+
+   Clearing a stale `blocked` is not housekeeping — it is the only way a
+   dependent slice ever becomes buildable again, because nothing clears that
+   label at the moment the blocker merges. Walk every open `blocked` issue each
+   pass and check its named blocker. A slice left falsely blocked is
+   indistinguishable from one genuinely waiting, and no builder will ever wake
+   for it.
+
+   Clear the label only when the blocker was actually **satisfied** — an issue
+   closed as completed, a PR merged. Closed is not the same as done: a PR closed
+   unmerged or an issue closed as not-planned means the dependency was abandoned,
+   and routing the dependent slice as buildable would send a builder at work
+   whose premise no longer holds. Re-anchor or close that slice instead.
 5. **Re-sync the roadmap.** Refresh `docs/plans/*` tables to match the current
    spec, catching any a dropped `plan-spec` left stale. This re-syncs the roadmap
    doc; it does not by itself reopen a rework work-order for a modification-delta the

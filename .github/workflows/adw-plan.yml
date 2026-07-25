@@ -15,7 +15,11 @@ on:
   issues:
     types: [labeled]
   schedule:
-    - cron: "23 5 * * 1"          # weekly Monday groom
+    # Daily, not weekly. The groom is the only thing that clears a `blocked`
+    # label whose blocker has already merged, so a weekly cadence meant a slice
+    # could sit falsely blocked for six days after its dependency landed — #90
+    # and #91 did exactly that once #88 merged.
+    - cron: "23 5 * * *"
   workflow_dispatch:
     inputs:
       base_sha:

@@ -17,7 +17,10 @@ flowing between events, and the brake if it runs away.
    to rebuild or close, so blocked PRs don't linger stale.
 3. Enforce limits: if too many PRs are in flight, hold new `ready`/`codex` work
    (count both builders' queues); if an agent has looped or reopened the same PR
-   repeatedly, freeze it and escalate.
+   repeatedly, freeze it and escalate. Freezing means `blocked` — `stalled` does
+   not hold the merge gate and is not meant to. `stalled` says a PR stopped
+   moving; `blocked` says it must not move. Reaching for the first when you mean
+   the second leaves a runaway free to merge.
 4. Report a one-line board state; stay silent when nothing changed.
 
 ## Artifact
