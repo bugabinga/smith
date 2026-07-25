@@ -1,13 +1,17 @@
 # ADW jam detector — the pipeline's dead-man's switch. Every ADW gate is
-# fail-closed by design: a broken required check holds `merge-gate` red, which is
-# correct for ONE bad PR but catastrophic when the break is systemic (a green-
-# tree CodeQL that finds no code and fails on every PR, an action that got
-# yanked). Then nothing merges and no single PR is "wrong" — the jam is invisible
-# from any one PR's vantage. This job watches the whole board and rings a bell.
+# fail-closed by design: an unexpected failure in the required merge-gate is
+# correct for ONE bad PR but catastrophic when the break is systemic. Then
+# nothing merges and no single PR is "wrong" — the jam is invisible from any
+# one PR's vantage. This job watches the whole board and rings a bell.
 #
-# Deterministic, no LLM: a shell/jq scan tallies, per required-check name, how
-# many distinct open non-draft PRs it is FAILING on. Same check red on >= 2 PRs =
-# a systemic jam, not one bad branch. The LLM (adw-doctor) is dispatched only
+# Deterministic, no LLM: a shell/jq scan reduces each check name to its latest
+# run, then tallies how many distinct open non-draft PRs carry an active
+# `merge-gate` failure. Red is its normal waiting/held state, so it counts only
+# when the verdict/blocking labels say it should be green and the gate attempt
+# started after the last gate-relevant label transition. Same unexpected failure
+# on >= 2 PRs = a systemic jam, not one bad branch. It is the only check tallied,
+# because the ruleset makes it the sole required one — anything that genuinely
+# blocks a merge lands as a red gate. The LLM (adw-doctor) is dispatched only
 # AFTER a jam is confirmed, and only on the transition into jam — never on a
 # steady-state re-scan, so it can't spam.
 #
@@ -16,7 +20,7 @@
 # idempotent (one open `pipeline-jammed` issue at a time) and auto-closes the
 # instant a scan comes back clean.
 #
-# Triggers: failure-completions of the gating workflows and check-suites give a
+# Triggers: failure-completions of the gate workflow and check-suites give a
 # fast edge (seconds after the break), and a 30-minute schedule is the
 # deterministic floor — GitHub suppresses some self-triggered check events, so
 # the cron is what guarantees the jam is caught even if every edge is missed.
@@ -24,7 +28,7 @@ name: adw-jam-detector
 
 on:
   workflow_run:
-    workflows: ["adw-review", "adw-gate", "adw-build", "CodeQL Advanced", "DevSkim"]
+    workflows: ["adw-review", "adw-gate", "adw-build"]
     types: [completed]
   check_suite:
     types: [completed]
@@ -73,17 +77,90 @@ jobs:
           prs=$(gh pr list --repo "$REPO" --state open --json number,isDraft \
                   --jq '.[] | select(.isDraft==false) | .number')
 
-          # (PR, failing-check) pairs, one line each, tab-separated. Dedup per PR
-          # so a check counts once per PR no matter how many contexts it reports.
+          # (PR, actively-failing-check) pairs, one line each, tab-separated.
+          # statusCheckRollup retains older attempts after a re-run, so reduce
+          # each check name to its latest start before deciding its state.
+          # Legacy StatusContext entries provide createdAt instead of CheckRun
+          # times.
+          #
+          # merge-gate is deliberately red while verdicts are missing or a
+          # blocking label holds the PR. Count it only when both verdicts are
+          # in, no blocker remains, and the attempt began after the last label
+          # transition that adw-gate reads. This rejects the ordinary red
+          # attempt that a label change supersedes before its gate run appears,
+          # without treating comments or unrelated labels as a fresh PR state.
           : > fails.tsv
+          required_gate_labels=(reviewed security-cleared)
+          blocking_gate_labels=(risk:high blocked changes-requested needs:info needs:spec needs:prototype stalled)
+
+          has_label() {
+            case $'\n'"$1"$'\n' in *$'\n'"$2"$'\n'*) return 0 ;; esac
+            return 1
+          }
+
+          is_gate_label() {
+            local label=$1
+            local gate_label
+            for gate_label in "${required_gate_labels[@]}" "${blocking_gate_labels[@]}"; do
+              [ "$label" = "$gate_label" ] && return 0
+            done
+            return 1
+          }
+
+          gate_should_be_green() {
+            local labels=$1
+            local gate_label
+            for gate_label in "${required_gate_labels[@]}"; do
+              has_label "$labels" "$gate_label" || return 1
+            done
+            for gate_label in "${blocking_gate_labels[@]}"; do
+              has_label "$labels" "$gate_label" && return 1
+            done
+            return 0
+          }
+
+          last_gate_label_transition() {
+            gh api --paginate "repos/$REPO/issues/$1/events" \
+              --jq '.[] | select(.event == "labeled" or .event == "unlabeled") | [.label.name, .created_at] | @tsv' \
+            | while IFS=$'\t' read -r label changed_at; do
+                if is_gate_label "$label"; then
+                  printf '%s\n' "$changed_at"
+                fi
+              done \
+            | sort \
+            | tail -n 1
+          }
+
           for n in $prs; do
-            gh pr view "$n" --repo "$REPO" --json statusCheckRollup --jq '
-              .statusCheckRollup[]
+            pr=$(gh pr view "$n" --repo "$REPO" --json labels,statusCheckRollup)
+            labels=$(printf '%s' "$pr" | jq -r '.labels[].name')
+
+            if ! gate_should_be_green "$labels"; then
+              continue
+            fi
+
+            gate_label_transition=$(last_gate_label_transition "$n")
+            if [ -z "$gate_label_transition" ]; then
+              continue
+            fi
+
+            printf '%s' "$pr" | jq -r --arg gate_label_transition "$gate_label_transition" '
+              ((.statusCheckRollup // [])
+                 | group_by(.name // .context)
+                 | map(
+                     max_by(.startedAt // .completedAt // .createdAt // "")
+                   )[])
+              | (.startedAt // .completedAt // .createdAt // "") as $attempt_at
               | ((.conclusion // .state)) as $c
               | select($c=="FAILURE" or $c=="ERROR" or $c=="TIMED_OUT"
                        or $c=="STARTUP_FAILURE" or $c=="CANCELLED")
-              | (.name // .context)' 2>/dev/null | sort -u \
-            | while IFS= read -r chk; do printf '%s\t%s\n' "$n" "$chk"; done >> fails.tsv || true
+              | (.name // .context) as $check
+              | select(
+                  $check == "merge-gate"
+                  and $attempt_at >= $gate_label_transition
+                )
+              | $check' | sort -u \
+            | while IFS= read -r chk; do printf '%s\t%s\n' "$n" "$chk"; done >> fails.tsv
           done
 
           # Most-failing check and the distinct-PR count behind it. Each check
@@ -123,13 +200,14 @@ jobs:
 
           if [ "$JAMMED" = "true" ]; then
             body=$(cat <<EOF
-          The pipeline is jammed: the required check **\`$CULPRIT\`** is failing on
-          **$COUNT** open PRs, so \`merge-gate\` stays red and nothing merges.
+          The pipeline is jammed: the merge-critical check **\`$CULPRIT\`** has an
+          active, unexpected failure on **$COUNT** open PRs, so merges may be wedged.
 
           Affected PRs: $AFFECTED
 
-          This is a *systemic* failure — the same check is red across multiple
-          unrelated PRs, so it is the check (or its config), not any one branch.
+          This is a *systemic* failure — the same current check attempt is red
+          across multiple unrelated PRs, so it is the check (or its config), not
+          any one branch.
           Detector run: $RUN_URL
 
           The adw-doctor has been dispatched to diagnose. This issue auto-closes
