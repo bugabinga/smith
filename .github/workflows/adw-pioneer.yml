@@ -129,16 +129,23 @@ jobs:
             - DISPROVED — this is the escape valve in
               docs/plans/AGENTIC-DEVELOPMENT.md, and it has a shape: open a NEW
               `needs:spec` issue carrying the contradiction, the SPEC anchor and
-              the disproof, then label THIS work-order `blocked` with a comment
-              linking it. Do not relabel the work-order `needs:spec` — that
-              conflates "this slice is stuck" with "the spec is wrong", and the
-              spec question outlives the slice. Open the PR without a closing
-              keyword so the evidence lands either way. The owner decides; you do
-              not work around a broken claim.
+              the disproof, then on THIS work-order remove `needs:prototype`, add
+              `blocked`, and comment linking the new issue. Do not relabel the
+              work-order `needs:spec` — that conflates "this slice is stuck" with
+              "the spec is wrong", and the spec question outlives the slice. Open
+              the PR without a closing keyword so the evidence lands either way.
+              The owner decides; you do not work around a broken claim.
             - CANNOT RUN IT — if the prototype needs a toolchain or device this
-              runner cannot provide, say so in one line on the issue, leave
-              `needs:prototype`, and open no PR. An honest "not here" beats a
-              prototype that proves nothing.
+              runner cannot provide, remove `needs:prototype`, add `blocked`, say
+              in one line what is missing, and open no PR. An honest "not here"
+              beats a prototype that proves nothing.
+
+            Remove `needs:prototype` on EVERY one of those paths. Nothing fires
+            on a label that is already present, so leaving it does not queue a
+            retry — it parks the issue with the run already spent, which is the
+            dead end this workflow exists to close. Re-applying the label later
+            is how a human or the planner asks for another attempt, and that only
+            works if it was cleared first.
 
             Do not merge. One claim per prototype.
           claude_args: --model claude-opus-4-8 --effort high --dangerously-skip-permissions
@@ -174,6 +181,22 @@ jobs:
                         --jq '.[] | [.created_at, .user.login, (.body | split("\n")[0])] | @tsv' \
                       | awk -F'\t' -v t="$STARTED_AT" -v b="$BOT" -v m="$MARKER" \
                           '$2 == b && $1 >= t && index($3, m) == 1' | wc -l)
+
+          # Still parked is still broken, whatever else the run produced. A
+          # marker comment saying "cannot run here" is a trace, and on its own it
+          # would have passed this check while leaving `needs:prototype` set —
+          # and nothing fires on a label already present, so the issue would sit
+          # exactly as it did before this workflow existed. Every defined outcome
+          # clears the label; re-applying it is how another attempt is requested.
+          labels=$(gh issue view "$ISSUE" --repo "$REPO" --json labels \
+                     -q '[.labels[].name] | join(",")')
+          case ",$labels," in
+            *,needs:prototype,*)
+              echo "::error::#$ISSUE still carries needs:prototype after the run."\
+                   "Nothing re-fires on a label already present, so it is parked"\
+                   "with the attempt already spent — clear it on every outcome"
+              exit 1 ;;
+          esac
 
           if [ "$pr" -gt 0 ] || [ "$commented" -gt 0 ]; then
             echo "pioneer left a trace this run — pr=$pr comments=$commented"
