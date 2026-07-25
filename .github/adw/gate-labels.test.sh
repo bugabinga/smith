@@ -93,12 +93,15 @@ check "security rejects a silent no-op"     "$(verdict 'reviewed' security-clear
 # Input mirrors the workflow's jq: created_at TAB first-line-of-body.
 proof() {
   printf '%b' "$2" \
-  | awk -F'\t' -v t="$1" -v m="$3" '$1 >= t && index($2, m) == 1' | wc -l | tr -d ' '
+  | awk -F'\t' -v t="$1" -v m="$3" -v b="$BOT" \
+      '$2 == b && $1 >= t && index($3, m) == 1' | wc -l | tr -d ' '
 }
+BOT='agent-smith-bugabinga-adc[bot]'
 T=2026-07-25T12:00:00Z
-own="2026-07-25T12:01:00Z\tSecurity review: no findings.\n"
-sibling="2026-07-25T12:01:00Z\tReview: one blocker.\n"
-stale="2026-07-25T11:00:00Z\tSecurity review: no findings.\n"
+own="2026-07-25T12:01:00Z\t$BOT\tSecurity review: no findings.\n"
+sibling="2026-07-25T12:01:00Z\t$BOT\tReview: one blocker.\n"
+stale="2026-07-25T11:00:00Z\t$BOT\tSecurity review: no findings.\n"
+spoof="2026-07-25T12:01:00Z\tsome-human\tSecurity review: trust me.\n"
 
 check "security proof accepts its own fresh comment" \
   "$(proof "$T" "$own" 'Security review:')" 1
@@ -115,7 +118,41 @@ check "sibling comment alone never proves the security run" \
 check "reviewer proof accepts its own fresh comment" \
   "$(proof "$T" "$sibling" 'Review:')" 1
 check "marker must match at the START of the line" \
-  "$(proof "$T" "2026-07-25T12:01:00Z\tRe: Security review: nope\n" 'Security review:')" 0
+  "$(proof "$T" "2026-07-25T12:01:00Z\t$BOT\tRe: Security review: nope\n" 'Security review:')" 0
+check "a non-bot cannot forge the proof by using the prefix" \
+  "$(proof "$T" "$spoof" 'Security review:')" 0
+
+# --- which rulesets actually govern the default branch -----------------------
+# Ref conditions are globs, and `~ALL` on a tag ruleset governs no branch. The
+# first version of this matched three literal strings and, worse, compiled the
+# pattern against itself so every ruleset matched — a silent false "no drift".
+ruleset_governs() {
+  printf '%s' "$1" | jq -r --arg ref "refs/heads/main" '
+    select(.enforcement == "active" and .target == "branch")
+    | def matches($pats): any($pats[];
+        . as $p
+        | $p == "~ALL" or $p == "~DEFAULT_BRANCH" or
+          ($ref | test("^" + ($p | gsub("\\."; "\\\\.") | gsub("\\*"; ".*")) + "$")));
+      if matches(.conditions.ref_name.include // [])
+         and (matches(.conditions.ref_name.exclude // []) | not)
+      then .rules[].type else empty end'
+}
+rs() { printf '{"enforcement":"%s","target":"%s","conditions":{"ref_name":{"include":%s,"exclude":%s}},"rules":[{"type":"R"}]}' "$1" "$2" "$3" "$4"; }
+
+check "default-branch ruleset governs main" \
+  "$(ruleset_governs "$(rs active branch '["~DEFAULT_BRANCH"]' '[]')")" R
+check "literal refs/heads/main governs main" \
+  "$(ruleset_governs "$(rs active branch '["refs/heads/main"]' '[]')")" R
+check "branch glob governs main" \
+  "$(ruleset_governs "$(rs active branch '["refs/heads/*"]' '[]')")" R
+check "release-only glob does not govern main" \
+  "$(ruleset_governs "$(rs active branch '["refs/heads/release/*"]' '[]')")" ""
+check "main explicitly excluded does not govern main" \
+  "$(ruleset_governs "$(rs active branch '["~ALL"]' '["refs/heads/main"]')")" ""
+check "tag ruleset never governs a branch" \
+  "$(ruleset_governs "$(rs active tag '["~ALL"]' '[]')")" ""
+check "disabled ruleset does not govern" \
+  "$(ruleset_governs "$(rs disabled branch '["~ALL"]' '[]')")" ""
 
 if [ "$failures" -ne 0 ]; then
   printf '\n%d check(s) failed\n' "$failures"

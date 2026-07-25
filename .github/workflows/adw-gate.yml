@@ -41,8 +41,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          EVENT_ACTION: ${{ github.event.action }}
         run: |
           set -euo pipefail
+          # A new head has not been reviewed, whatever the labels currently say.
+          # adw-review's reset strips the previous head's verdicts, but it races
+          # this job: both fire on the same `synchronize`, and auto-merge stays
+          # armed across pushes, so a gate that read labels first could go green
+          # on a review that never saw this code and let it merge. Refusing on
+          # the push itself removes the race rather than narrowing it — the
+          # reviewers' own `labeled` events re-run this job once they re-earn.
+          if [ "$EVENT_ACTION" = "synchronize" ]; then
+            echo "::error::new head pushed — verdicts must be re-earned on this commit"
+            exit 1
+          fi
           # BOOTSTRAP FALLBACK — keep in sync with .github/adw/gate-labels.sh;
           # .github/adw/gate-labels.test.sh fails if these two ever disagree.
           # A base that predates the shared file (this PR before it lands, a

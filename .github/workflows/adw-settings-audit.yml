@@ -40,6 +40,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           {
@@ -92,15 +93,24 @@ jobs:
           # main rule behind an identical type defined elsewhere. Enforcement and
           # ref conditions are both part of "does this judge main".
           file_types=$(jq -r '[.rules[].type] | sort | join(", ")' .github/rulesets/main.json)
+          # Ref conditions are glob patterns, and `~ALL` on a TAG ruleset governs
+          # no branch at all. Matching three literal strings would both count
+          # tag rules and miss `refs/heads/*`, so the patterns are matched as
+          # globs and the target is checked.
           live_types=$(printf '%s' "$rulesets" \
-            | jq -r '.[] | select(.enforcement == "active") | .id' \
+            | jq -r '.[] | select(.enforcement == "active" and .target == "branch") | .id' \
             | while read -r id; do
-                gh api "repos/$REPO/rulesets/$id" --jq '
-                  (.conditions.ref_name.include // []) as $inc
-                  | (.conditions.ref_name.exclude // []) as $exc
-                  | if ($inc | any(. == "~ALL" or . == "~DEFAULT_BRANCH" or . == "refs/heads/main"))
-                       and ($exc | any(. == "refs/heads/main") | not)
-                    then .rules[].type else empty end'
+                gh api "repos/$REPO/rulesets/$id" --arg ref "refs/heads/$BRANCH" --jq '
+                  # $p is bound before the test: inside `$ref | test(...)` the
+                  # dot would refer to $ref, so the pattern would compile to
+                  # itself and match everything.
+                  def matches($pats): any($pats[];
+                    . as $p
+                    | $p == "~ALL" or $p == "~DEFAULT_BRANCH" or
+                      ($ref | test("^" + ($p | gsub("\\."; "\\\\.") | gsub("\\*"; ".*")) + "$")));
+                  if matches(.conditions.ref_name.include // [])
+                     and (matches(.conditions.ref_name.exclude // []) | not)
+                  then .rules[].type else empty end'
               done \
             | sort -u | paste -sd', ' -)
           [ -n "$live_types" ] || live_types="(none governing the default branch)"

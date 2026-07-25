@@ -39,11 +39,33 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
+          set -uo pipefail
           # risk:high is deliberately NOT stripped: once security-reviewer
           # escalates, only the owner de-escalates it.
-          for l in reviewed security-cleared changes-requested stalled; do
+          stripped="reviewed security-cleared changes-requested stalled"
+          for l in $stripped; do
+            # Removing an absent label errors, which is why failures are ignored
+            # here — but that also swallows a genuine API failure, and a verdict
+            # that survives the reset is a previous head's judgement standing in
+            # for this one.
             gh pr edit "$PR" --repo "$REPO" --remove-label "$l" 2>/dev/null || true
           done
+          # So verify rather than assume. The reviewers depend on this job, so
+          # failing here stops them running and leaves the gate red — a stale
+          # verdict never gets the chance to authorise the new head.
+          remaining=$(gh pr view "$PR" --repo "$REPO" --json labels \
+                        -q '[.labels[].name] | join(",")')
+          csv=",$remaining,"
+          survived=""
+          for l in $stripped; do
+            case "$csv" in *",$l,"*) survived="$survived $l";; esac
+          done
+          if [ -n "$survived" ]; then
+            echo "::error::reset failed to strip:$survived — refusing to let a"\
+                 "previous head's verdict stand for this one"
+            exit 1
+          fi
+          echo "verdict labels cleared for the new head"
 
   reviewer:
     needs: reset
@@ -84,6 +106,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           MARKER: "Review:"
+          REVIEW_BOT: "agent-smith-bugabinga-adc[bot]"
         run: |
           set -euo pipefail
           labels=$(gh pr view "$PR" --repo "$REPO" --json labels -q '[.labels[].name] | join(",")')
@@ -103,9 +126,9 @@ jobs:
           # first-line marker is what makes the proof specific.
           # ISO-8601 sorts lexically, which is all the date comparison needs.
           posted=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-                     --jq '.[] | [.created_at, (.body | split("\n")[0])] | @tsv' \
-                   | awk -F'\t' -v t="$REVIEW_STARTED_AT" -v m="$MARKER" \
-                       '$1 >= t && index($2, m) == 1' | wc -l)
+                     --jq '.[] | [.created_at, .user.login, (.body | split("\n")[0])] | @tsv' \
+                   | awk -F'\t' -v t="$REVIEW_STARTED_AT" -v m="$MARKER" -v b="$REVIEW_BOT" \
+                       '$2 == b && $1 >= t && index($3, m) == 1' | wc -l)
           if [ "$posted" -eq 0 ]; then
             echo "::error::reviewer posted no '$MARKER' comment this run"\
                  "(since $REVIEW_STARTED_AT); the verdict label is stale, not earned"
@@ -152,6 +175,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           MARKER: "Security review:"
+          REVIEW_BOT: "agent-smith-bugabinga-adc[bot]"
         run: |
           set -euo pipefail
           labels=$(gh pr view "$PR" --repo "$REPO" --json labels -q '[.labels[].name] | join(",")')
@@ -170,9 +194,9 @@ jobs:
           # parallel, so a bare recency count would accept the sibling's comment
           # and leave the hole open on precisely the path that needs it closed.
           posted=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-                     --jq '.[] | [.created_at, (.body | split("\n")[0])] | @tsv' \
-                   | awk -F'\t' -v t="$REVIEW_STARTED_AT" -v m="$MARKER" \
-                       '$1 >= t && index($2, m) == 1' | wc -l)
+                     --jq '.[] | [.created_at, .user.login, (.body | split("\n")[0])] | @tsv' \
+                   | awk -F'\t' -v t="$REVIEW_STARTED_AT" -v m="$MARKER" -v b="$REVIEW_BOT" \
+                       '$2 == b && $1 >= t && index($3, m) == 1' | wc -l)
           if [ "$posted" -eq 0 ]; then
             echo "::error::security-reviewer posted no '$MARKER' comment this run"\
                  "(since $REVIEW_STARTED_AT); the verdict label is stale, not earned"
