@@ -2584,7 +2584,24 @@ Required targets:
 | Linux ARM64 glibc | `aarch64-unknown-linux-gnu` | required |
 | Linux x86_64 musl | `x86_64-unknown-linux-musl` | required |
 | Linux ARM64 musl | `aarch64-unknown-linux-musl` | required |
+| Android ARM64 | `aarch64-linux-android` | required |
+| Linux riscv64 glibc | `riscv64gc-unknown-linux-gnu` | best-effort |
+| Linux riscv64 musl | `riscv64gc-unknown-linux-musl` | best-effort |
+| FreeBSD x86_64 | `x86_64-unknown-freebsd` | best-effort |
 | OpenBSD x86_64 | `x86_64-unknown-openbsd` | best-effort |
+
+**Three libcs, not two.** glibc and musl cover the Linux rows; **Android is
+Bionic**, which is why it is its own row rather than a Linux variant. Bionic does
+not carry the compiler-rt builtins Rust expects to find, so the Android target
+links against them explicitly — the flag lives in `.cargo/config.toml` (§3.2) and
+is normative for this target, not a local workaround. A toolchain that cannot
+supply them cannot produce this artifact.
+
+**Required means release-blocking.** A required target that fails to build stops
+the release; a best-effort target that fails is reported in the release notes and
+skipped, and its absence is never a reason to hold the other artifacts. Android is
+required because a terminal-first coding agent is used on a phone, not only built
+for one — it is a shipping platform, not a development convenience.
 
 Artifacts:
 
