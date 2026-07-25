@@ -144,6 +144,7 @@ cargo bench -- --baseline main
 
 # Full platform matrix (if multi-platform CI)
 # - Linux x86_64
+# - Linux aarch64
 # - Android ARM64 (Bionic)
 # - macOS aarch64
 # - Windows x86_64
@@ -152,8 +153,9 @@ cargo bench -- --baseline main
 ### Android/Termux validation lane
 
 [V] Android/Termux on `aarch64-linux-android` is both a supported development
-environment and a required release-artifact target. The terminal-first workflow
-is supported on mobile as well as desktop and server platforms.
+environment and a required release-artifact target — canonical in SPEC §14. The
+terminal-first workflow is supported on mobile as well as desktop and server
+platforms.
 
 [V] CI should still validate Android/Termux compatibility because prototype evidence found two platform-sensitive integrations:
 
