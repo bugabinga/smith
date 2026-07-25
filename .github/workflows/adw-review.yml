@@ -34,7 +34,7 @@ jobs:
         run: |
           # risk:high is deliberately NOT stripped: once security-reviewer
           # escalates, only the owner de-escalates it.
-          for l in reviewed security-cleared changes-requested; do
+          for l in reviewed security-cleared changes-requested stalled; do
             gh pr edit "$PR" --repo "$REPO" --remove-label "$l" 2>/dev/null || true
           done
 
