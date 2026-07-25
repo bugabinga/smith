@@ -33,7 +33,40 @@ rustflags = [
 [registries.crates-io]
 protocol = "sparse"
 
-# Bionic lacks the compiler-rt builtins Rust expects; vendored LuaJIT needs
-# __clear_cache. Normative for this target — see SPEC §3.2 and §14.
+# Cargo does NOT merge these with [build].rustflags — a target-specific
+# rustflags key REPLACES it entirely, so the lint wall is repeated verbatim.
+# Without it, Android (a required release target, SPEC §14) would build with
+# every -D warning off. Keep in sync with [build]; only the link flag differs.
+# Bionic carries no compiler-rt builtins: vendored LuaJIT needs __clear_cache.
 [target.aarch64-linux-android]
-rustflags = ["-C", "link-args=-lclang_rt.builtins-aarch64-android"]
+rustflags = [
+    # Zero warnings policy
+    "-D", "warnings",
+
+    # Core lint groups
+    "-D", "clippy::all",
+    "-D", "clippy::pedantic",
+    "-W", "clippy::nursery",
+    "-D", "clippy::suspicious",
+    "-D", "clippy::complexity",
+    "-D", "clippy::perf",
+    "-D", "clippy::style",
+    "-D", "clippy::correctness",
+
+    # Restriction lints — prohibited patterns
+    "-D", "clippy::unwrap_used",
+    "-D", "clippy::expect_used",
+    "-D", "clippy::panic",
+    "-D", "clippy::todo",
+    "-D", "clippy::unimplemented",
+    "-D", "clippy::print_stdout",
+    "-D", "clippy::print_stderr",
+
+    # Documentation lints
+    "-D", "missing_docs",
+    "-D", "rustdoc::missing_crate_level_docs",
+    "-D", "rustdoc::broken_intra_doc_links",
+    "-W", "rustdoc::invalid_html_tags",
+    "-W", "rustdoc::bare_urls",
+    "-C", "link-args=-lclang_rt.builtins-aarch64-android",
+]

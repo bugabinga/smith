@@ -303,9 +303,36 @@ rustflags = [
 [registries.crates-io]
 protocol = "sparse"
 
+# Cargo does NOT merge these with [build].rustflags — a target-specific
+# rustflags key REPLACES it entirely. The lint wall must therefore be repeated
+# here verbatim, or Android (a required release target, §14) would build with
+# every -D warning silently off. Keep this list byte-identical to [build] above
+# and append only the link flag: Bionic carries no compiler-rt builtins, so
+# vendored LuaJIT cannot link __clear_cache without them.
 [target.aarch64-linux-android]
-rustflags = ["-C", "link-args=-lclang_rt.builtins-aarch64-android"]
+rustflags = [
+    "-D", "warnings",
+    "-D", "clippy::unwrap_used",
+    "-D", "clippy::expect_used",
+    "-D", "clippy::panic",
+    "-D", "clippy::todo",
+    "-D", "clippy::unimplemented",
+    "-D", "clippy::print_stdout",
+    "-D", "clippy::print_stderr",
+    "-D", "missing_docs",
+    "-D", "rustdoc::missing_crate_level_docs",
+    "-D", "rustdoc::broken_intra_doc_links",
+    "-W", "rustdoc::invalid_html_tags",
+    "-W", "rustdoc::bare_urls",
+    "-C", "link-args=-lclang_rt.builtins-aarch64-android",
+]
 ```
+
+The duplication is deliberate and load-bearing: it is the only way to keep the
+zero-warning invariant (PROJECT-INVARIANTS §3) on a target whose `rustflags`
+override the global set. `xtask arch` asserts the two lists agree apart from the
+trailing link flag, so a lint added to `[build]` and forgotten here fails the
+gate rather than silently weakening Android.
 
 Every library crate has:
 
@@ -2847,10 +2874,11 @@ run, and the policy for who may merge — lives outside this spec, in
 PROJECT-INVARIANTS §5 and `docs/plans/AGENTIC-DEVELOPMENT.md`. This section
 defines Smith's test artifacts, not who is allowed to run or merge them.
 
-Android/Termux (`aarch64-linux-android`) is a supported development
-environment, not a release target (§14): CI keeps a validation lane that
-smoke-builds vendored LuaJIT and syntastica for it; breakage there blocks
-source-compatibility fixes, not artifact publishing.
+Android/Termux (`aarch64-linux-android`) is both the environment smith is
+developed in and a **required release target** (§14): CI keeps a validation lane
+that smoke-builds vendored LuaJIT and syntastica for it, and because the artifact
+ships, breakage there blocks publishing like any other required target — not only
+source-compatibility fixes.
 
 ## 18. Prototype Policy
 
