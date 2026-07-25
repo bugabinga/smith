@@ -11,10 +11,3 @@
 # -----------------------------------------------------------------------------
 # TUI event routing naturally hits this. Review functions >20 during review.
 cognitive-complexity-threshold = 25
-
-# -----------------------------------------------------------------------------
-# MSRV
-# -----------------------------------------------------------------------------
-# Align with workspace rust-version. Clippy suggests modern idioms
-# only if they're available on the MSRV.
-msrv = "1.85"

@@ -7,3 +7,6 @@ license.workspace = true
 [[bin]]
 name = "smith"
 path = "src/main.rs"
+
+[lints]
+workspace = true
