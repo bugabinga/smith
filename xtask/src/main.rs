@@ -239,7 +239,10 @@ fn run_print_modules() -> Result<(), ArchError> {
 }
 
 fn crate_root_name(package_name: &str) -> String {
-    package_name.replace('-', "_")
+    match package_name {
+        "smith-cli" => "smith".to_owned(),
+        _ => package_name.replace('-', "_"),
+    }
 }
 
 fn run_cargo(arguments: &[&str]) -> Result<(), GateError> {
@@ -451,28 +454,44 @@ fn json_objects(array: &str) -> Vec<&str> {
 }
 
 fn dependency_violations(packages: &[Package]) -> Vec<String> {
-    packages
-        .iter()
-        .filter_map(|package| {
-            let Some(rule) = ARCHITECTURE.iter().find(|rule| rule.name == package.name) else {
-                return Some(format!(
-                    "ARCH VIOLATION: {} has no dependency rule in SPEC §2.2",
-                    package.name
+    let mut violations = Vec::new();
+
+    for package in packages {
+        let Some(rule) = ARCHITECTURE.iter().find(|rule| rule.name == package.name) else {
+            violations.push(format!(
+                "ARCH VIOLATION: {} has no dependency rule in SPEC §2.2",
+                package.name
+            ));
+            continue;
+        };
+
+        for dependency in &package.dependencies {
+            if dependency.kind == DependencyKind::Normal
+                && ARCHITECTURE.iter().any(|rule| rule.name == dependency.name)
+                && !rule
+                    .allowed_internal_dependencies
+                    .contains(&dependency.name.as_str())
+            {
+                violations.push(format!(
+                    "ARCH VIOLATION: {} -> {} is forbidden by SPEC §2.2",
+                    package.name, dependency.name
                 ));
-            };
-            let forbidden = package.dependencies.iter().find(|dependency| {
-                dependency.kind == DependencyKind::Normal
-                    && ARCHITECTURE.iter().any(|rule| rule.name == dependency.name)
-                    && !rule
-                        .allowed_internal_dependencies
-                        .contains(&dependency.name.as_str())
-            })?;
-            Some(format!(
-                "ARCH VIOLATION: {} -> {} is forbidden by SPEC §2.2",
-                package.name, forbidden.name
-            ))
-        })
-        .collect()
+            }
+        }
+    }
+
+    violations.extend(
+        ARCHITECTURE
+            .iter()
+            .filter(|rule| !packages.iter().any(|package| package.name == rule.name))
+            .map(|rule| {
+                format!(
+                    "ARCH VIOLATION: required workspace package {} is absent from Cargo metadata",
+                    rule.name
+                )
+            }),
+    );
+    violations
 }
 
 #[cfg(test)]
@@ -485,6 +504,17 @@ mod tests {
         ARCHITECTURE, ArchError, Dependency, DependencyKind, GateError, Package, crate_root_name,
         dependency_violations, parse_metadata, run_check,
     };
+
+    fn complete_workspace() -> Vec<Package> {
+        ARCHITECTURE
+            .iter()
+            .map(|rule| Package {
+                name: rule.name.to_owned(),
+                dependencies: Vec::new(),
+            })
+            .collect()
+    }
+
     #[test]
     fn check_runs_architecture_gates_in_order() {
         let mut invocations = Vec::new();
@@ -566,51 +596,80 @@ mod tests {
     }
 
     #[test]
+    fn module_inventory_uses_the_cli_binary_crate_name() {
+        assert_eq!(crate_root_name("smith-cli"), "smith");
+    }
+
+    #[test]
     fn arch_rejects_forbidden_internal_dependency() {
-        let package = Package {
-            name: "smith-core".to_owned(),
-            dependencies: vec![Dependency {
+        let mut packages = complete_workspace();
+        let package = packages
+            .iter_mut()
+            .find(|package| package.name == "smith-core")
+            .unwrap();
+        package.dependencies = vec![
+            Dependency {
                 name: "smith-ai".to_owned(),
                 kind: DependencyKind::Normal,
-            }],
-        };
+            },
+            Dependency {
+                name: "smith-tui".to_owned(),
+                kind: DependencyKind::Normal,
+            },
+        ];
 
-        assert_eq!(ARCHITECTURE.len(), 7);
         assert_eq!(
-            dependency_violations(&[package]),
-            ["ARCH VIOLATION: smith-core -> smith-ai is forbidden by SPEC §2.2"]
+            dependency_violations(&packages),
+            [
+                "ARCH VIOLATION: smith-core -> smith-ai is forbidden by SPEC §2.2",
+                "ARCH VIOLATION: smith-core -> smith-tui is forbidden by SPEC §2.2",
+            ]
         );
     }
 
     #[test]
     fn arch_allows_dev_and_build_dependencies() {
-        let package = Package {
-            name: "smith-core".to_owned(),
-            dependencies: vec![
-                Dependency {
-                    name: "smith-ai".to_owned(),
-                    kind: DependencyKind::Development,
-                },
-                Dependency {
-                    name: "smith-ai".to_owned(),
-                    kind: DependencyKind::Build,
-                },
-            ],
-        };
+        let mut packages = complete_workspace();
+        let package = packages
+            .iter_mut()
+            .find(|package| package.name == "smith-core")
+            .unwrap();
+        package.dependencies = vec![
+            Dependency {
+                name: "smith-ai".to_owned(),
+                kind: DependencyKind::Development,
+            },
+            Dependency {
+                name: "smith-ai".to_owned(),
+                kind: DependencyKind::Build,
+            },
+        ];
 
-        assert!(dependency_violations(&[package]).is_empty());
+        assert!(dependency_violations(&packages).is_empty());
     }
 
     #[test]
     fn arch_rejects_an_unlisted_workspace_package() {
-        let package = Package {
+        let mut packages = complete_workspace();
+        packages.push(Package {
             name: "new-workspace-package".to_owned(),
             dependencies: Vec::new(),
-        };
+        });
 
         assert_eq!(
-            dependency_violations(&[package]),
+            dependency_violations(&packages),
             ["ARCH VIOLATION: new-workspace-package has no dependency rule in SPEC §2.2"]
+        );
+    }
+
+    #[test]
+    fn arch_rejects_a_missing_required_workspace_package() {
+        let mut packages = complete_workspace();
+        packages.retain(|package| package.name != "xtask");
+
+        assert_eq!(
+            dependency_violations(&packages),
+            ["ARCH VIOLATION: required workspace package xtask is absent from Cargo metadata"]
         );
     }
 
