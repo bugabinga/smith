@@ -33,8 +33,9 @@ name: "CodeQL Advanced"
 #
 # Stale configurations are cleared from the repository's code-scanning tool
 # status page, not from this file. The deadlock the RE-ADD CHECKLIST below warns
-# about is therefore not only a risk when ADDING a language — REMOVING one
-# arms it too.
+# about is therefore not only a risk when ADDING a language — REMOVING one arms
+# it too, and the cleanup does not live in this repository. Any change to the
+# matrix must be paired with a look at that page.
 on:
   push:
     branches: [ "main" ]
@@ -67,16 +68,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-        # `actions` covers the ADW's own workflows. `rust` returns here because
-        # the condition the checklist named has been met: 14d7377 landed the
-        # workspace, so a scan no longer finds nothing and fails. Leaving it out
-        # after that was not neutral — the configuration stayed registered on
-        # main while the matrix stopped producing it, which is what turned every
-        # PR's code-scanning check neutral and wedged #112.
+        # `actions` covers the ADW's own workflows, and is deliberately the only
+        # entry. The stale `language:rust` configuration that wedged #112 was
+        # deleted on the tool status page rather than revived here: the seven
+        # production crates are 34 lines of stubs, and the original reason for
+        # dropping rust — a scan with nothing to analyse fails — is not clearly
+        # retired by stubs. Re-adding it on that evidence risked a red scan on
+        # every PR, which is the same deadlock from the other side.
         #
-        # RE-ADD CHECKLIST (production Rust landed 2026-07-25; no site/ yet):
-        #   - Production Rust → DONE, below. CodeQL's Rust extractor is
-        #     source-based, so `build-mode: none` needs no compiling workspace.
+        # RE-ADD CHECKLIST (as of 2026-07-25):
+        #   - The crates carry real code → add `- language: rust` with
+        #     `build-mode: none` (the Rust extractor is source-based, so the
+        #     workspace need not compile), and confirm the scan is green on main
+        #     BEFORE relying on it.
         #   - `site/` (Astro) lands → add `- language: javascript-typescript`.
         #     Note its extractor only partially parses `.astro` SFCs (embedded
         #     JS, not the template DSL); DevSkim + npm-audit/Dependabot carry the
@@ -87,8 +91,6 @@ jobs:
         #     neutral until it is deleted on the tool status page. Do that in the
         #     same change that edits this matrix. See #116, #17.
         - language: actions
-          build-mode: none
-        - language: rust
           build-mode: none
         # CodeQL supports the following values keywords for 'language': 'actions', 'c-cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby', 'rust', 'swift'
         # Use `c-cpp` to analyze code written in C, C++ or both
