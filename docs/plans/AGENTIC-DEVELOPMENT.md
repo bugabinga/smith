@@ -108,7 +108,7 @@ level below is a standing assignment.
 | `planner` | spec change on `main`; a `needs:breakdown` epic; weekly `schedule` | interpret spec diffs into work-orders, slice epics into single work-orders, and groom the backlog + board | **Issues** + `docs/plans/*` | fable | xhigh |
 | `surveyor` | `schedule` | measure the spec-vs-code gap and open the next unbuilt slice as a work-order | **one Issue** per tick | fable | high |
 | `reviewer` | `pull_request` | adversarial correctness review vs the spec — a *second* model | a **PR review** | opus | xhigh |
-| `security-reviewer` | PR on sensitive surface / `needs:security` / scanner alert | security review; escalate high severity | a **PR review** + `risk:*` | opus | high |
+| `security-reviewer` | PR on sensitive surface / `needs:security` / `adw-alerts` daily sweep or manual dispatch | security review; escalate high severity | a **PR review** + `risk:*` | opus | high |
 | `builder` (Claude) | issue labeled `ready` | build one **UI/UX** slice per `WALKING-SKELETON`, hardened, tested | a **branch + PR** | opus | high |
 | `builder` (Codex) | issue labeled `codex` | build one **backend** slice per `WALKING-SKELETON`, hardened, tested | a **branch + PR** | terra | high |
 | `codex-review` | `pull_request` | cross-family second opinion (advisory; never a gate label) | a **PR comment** | sol | high |
@@ -287,27 +287,39 @@ and destination; nothing dead-ends or merges on a guess.
 | a spec claim is unproven | `planner` / `surveyor` | `/pioneer` | `needs:prototype`; a prototype proves or disproves it |
 | a Dependabot bump is semver-incompatible / MSRV-raising | `dependency-manager` | owner | escalate as its own issue; the bump waits |
 | the cycle floods (WIP exceeded) or an agent loops | schedule | `sweeper` | enforce WIP, brake the runaway — the circuit-breaker |
-| a required check breaks systemically — same check red on ≥2 PRs, every lane wedged | `adw-jam-detector` (failure-events + 30-min floor) | owner + `adw-doctor` | un-gated `pipeline-jammed` issue; doctor dispatched once |
+| the merge gate breaks systemically — unexpected active `merge-gate` red on ≥2 PRs | `adw-jam-detector` (failure-events + 30-min floor) | owner + `adw-doctor` | un-gated `pipeline-jammed` issue; doctor dispatched once |
 
 Two invariants hold across every row: an agent never fakes a green gate to move a
 PR (PROJECT-INVARIANTS §5), and an agent never resolves ambiguity by guessing — it
 routes to the human via one of `needs:spec`, `risk:high`, or `needs:info`.
 
-The last row is the pipeline's dead-man's switch. Every gate here is
-fail-closed — a red required check holds `merge-gate` down — which is right for
-one bad PR but catastrophic when the *check itself* breaks (a green-tree CodeQL
-that finds no code and fails everywhere, a yanked action). Then no single PR is
-"wrong" and the jam is invisible from any one PR. `adw-jam-detector` watches the
-whole board: a deterministic, no-LLM scan tallies how many open non-draft PRs
-each required check is failing on, and calls a jam when one check is red on ≥2.
-It fires on failure-completions of the gating workflows for a fast edge, with a
-30-minute schedule as the deterministic floor (GitHub suppresses some
-self-triggered check events). The alert is an **issue**, not a PR — issues carry
-no merge gate, so it reaches the owner even when every merge lane is jammed — and
-it is idempotent: one open `pipeline-jammed` issue that auto-closes the moment a
-scan comes back clean. Only after a jam is confirmed, and only on the transition
-into it, is `adw-doctor` woken to diagnose — never on a steady-state re-scan, so
-the LLM can't spam.
+The last row is the pipeline's dead-man's switch. The ruleset names `merge-gate`
+as the sole required check, which makes it the sole way the whole board can
+seize: fail-closed is right for one bad PR and catastrophic when the gate
+*itself* breaks — a yanked action, an expired App token, a bad edit to
+`adw-gate.yml`. Then no single PR is "wrong" and the jam is invisible from any
+one PR. `adw-jam-detector` watches the whole board: a deterministic, no-LLM scan
+reduces each check name to its latest run, then tallies active `merge-gate`
+failures across open non-draft PRs. An ordinary red gate is control state, not
+illness: while a verdict is missing or a blocking label is present, it is
+supposed to fail. The detector therefore counts a red gate only when both
+verdict labels are present and no blocking label remains. An unexpected gate red
+on ≥2 PRs is a jam.
+
+Two failure classes sit deliberately outside its reach, because neither is a
+jam. A reviewer that never returns a verdict leaves the gate *legitimately* red;
+that is a stall, and the row above it is the sweeper's. An advisory red — CodeQL,
+DevSkim — blocks no merge and is never tallied; if one of those should hold a PR
+down, the fix is to make it a required check, not to widen the detector.
+
+The scan fires on failure-completions of the gating workflows for a fast edge,
+with a 30-minute schedule as the deterministic floor (GitHub suppresses some
+self-triggered check events). The alert is an **issue**,
+not a PR — issues carry no merge gate, so it reaches the owner even when every
+merge lane is jammed — and it is idempotent: one open `pipeline-jammed` issue
+that auto-closes the moment a scan comes back clean. Only after a jam is
+confirmed, and only on the transition into it, is `adw-doctor` woken to diagnose
+— never on a steady-state re-scan, so the LLM can't spam.
 
 ## Merging — native auto-merge, gated by labels
 
@@ -352,8 +364,9 @@ auto-merge** (repo setting) and importing the ruleset with `merge-gate` required
 
 ## Reaction workflows — the loops that make it self-sustaining
 
-Beyond the issue→PR spine, five workflows wake agents on GitHub's own feedback
-events, each carrying a loop-guard so agents never react to themselves:
+Beyond the issue→PR spine, five workflows keep agents moving: three react to
+GitHub feedback events, while the other two use owner input or a deterministic
+schedule. Each carries a guard against an endless self-loop:
 
 | Workflow | Wakes on | Does | Loop-guard |
 |---|---|---|---|
@@ -361,14 +374,20 @@ events, each carrying a loop-guard so agents never react to themselves:
 | `adw-docs` | merged PR touching **product code** (not docs/site/prototypes/config) | `docs-writer` updates docs + site to match, or no-ops | doc-only PRs are `paths-ignore`d, so `docs-writer`'s own PR can't re-trigger it |
 | `adw-release` | `v*` tag (the owner's release touchpoint) | `release-manager` drafts notes, verifies §14, publishes a Release | tag push is owner-made; relayed via dispatch (the action can't serve `push`) |
 | `adw-comment` | **owner** writes `@smith …` on an issue/PR | routes the instruction to the fitting agent, or answers | locked to `author_association == OWNER` — a non-owner's comment does nothing; agents' own comments aren't the owner |
-| `adw-alerts` | Dependabot / code-scanning alert (or daily) | `security-reviewer` sweeps open alerts, escalates real high-severity, ignores prototype-only ones | alert events relay to dispatch (action can't serve them); a schedule backstops missed events |
+| `adw-alerts` | daily schedule / manual dispatch | `security-reviewer` sweeps open Dependabot + code-scanning alerts, escalates real high-severity, ignores prototype-only ones | one supported whole-state poll; dedupe against existing tracking issues |
 | *CI self-heal* | — | folded into `sweeper` (hourly), not a per-event trigger | avoids the fiddly `check_suite`→PR mapping and its loop risk; fits the predictability dial |
 
 The one deliberately-owner-gated reaction is `adw-comment`: because the repo is
 public, a comment body is untrusted input, so only the owner may steer through it.
-Everything else keys off structural events (a review verdict, a merge, a tag) that
-agents produce as a matter of course, which is why the loop-guards matter — without
-them, an agent's own review or merge would wake another agent without end.
+Everything else keys off structural events (a review verdict, a merge, a tag) or
+the deterministic alert schedule. The guards prevent agents from reacting to their
+own work.
+
+Claude Code rejects bot-originated events by default. The intentionally
+bot-originated build, plan, review, revise, and alert-triage lanes therefore
+allowlist only `agent-smith-bugabinga-adc`; `allowed_bots: "*"` is forbidden
+because an external App could then invoke a token-holding workflow in this
+public repository.
 
 ## Coordination — choreography and a single writer
 
@@ -496,6 +515,39 @@ an accepted residual, held equally for both families. This is the ADW analogue o
 **SPEC §6.7**. Other residuals are accepted, not hidden: the token is a rotatable
 non-GitHub credential on advisory jobs, `@openai/codex` is unpinned, and a
 compromised member account is out of scope.
+
+**Agents are inside the trust boundary.** The owner authors and owns every agent
+instruction — charters in `.claude/agents/`, prompts in `.github/workflows/`, the
+shared rules in `CLAUDE.md` — and all of it is CODEOWNERS-gated, so no instruction
+changes without the owner's review. Agents are therefore *trusted actors running
+owner-written instructions*, not untrusted code to be sandboxed from the repo's own
+configuration. That is why a builder may edit ADW config when a triaged work-order
+names the file: it is the owner's machinery being maintained by the owner's agents.
+
+The residual this accepts is real and named: for a `pull_request` event GitHub runs
+the workflow as it exists **on the PR head**, and a same-repo branch carries secrets,
+so a workflow edited in a PR executes with credentials *before* the merge gate ever
+applies — CODEOWNERS gates merging, not PR-time execution. That window is accepted
+because the *input* bound holds: issue and PR creation are Collaborators-only, and a
+compromised member account is already out of scope (above). The safeguard is who can
+ask for work, not a cage around the agent doing it.
+
+**How to verify that bound — and why an agent cannot.** The PR side is API-visible:
+`GET /repos/bugabinga/smith` reports `pull_request_creation_policy: collaborators_only`.
+The **issue** side is not exposed by any API — it lives at *Settings → General →
+Features → Issues → Creation allowed by: Collaborators only*, a durable repo setting
+(shipped 2026-06), and the owner has verified it there. Do **not** infer the issue
+bound from `GET /repos/.../interaction-limits`: that endpoint reads the *legacy,
+temporary* interaction-limits feature, which this repo does not use, so it returns
+`{}` whether or not the durable setting is on. An empty response is not evidence the
+repo is open — reading it as such has already produced two rounds of wrong
+conclusions. Treat the issue bound as owner-verified and recorded here.
+
+What stays forbidden regardless: an agent widening its own permissions, weakening a
+gate (`rulesets/`, `CODEOWNERS`, verdict labels, `merge-gate`), or editing
+`docs/SPEC.md` / `PROJECT-INVARIANTS.md`. Those are the owner's alone — and a
+work-order asking an agent for any of them is the red flag, not the config edit
+itself.
 
 Two owner-added workflows already sit on `main` and the plan wraps around them
 rather than replacing them:

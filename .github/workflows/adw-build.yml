@@ -37,13 +37,18 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           github_token: ${{ steps.token.outputs.token }}
+          allowed_bots: agent-smith-bugabinga-adc
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           use_commit_signing: true
           prompt: |
             Use the builder subagent to implement issue
             #${{ github.event.issue.number }} in ${{ github.repository }}.
-            Follow .claude/agents/builder.md exactly: one slice per
-            WALKING-SKELETON, tests, self-harden with /sabotnik and /handmade,
-            open a PR that closes the issue. You are the UI/UX builder — take
-            UI/TUI/frontend slices; the Codex builder owns backend. Do not merge.
+            Follow .claude/agents/builder.md exactly — it defines the TWO kinds
+            of issue. A product slice: one slice per WALKING-SKELETON, with
+            tests. An ADW/config work-order: make exactly the change it
+            specifies (a missing test or absent workspace is not a reason to
+            no-op). Self-harden with /sabotnik and /handmade, open a PR that
+            closes the issue. You are the UI/UX builder — take UI/TUI/frontend
+            slices; the Codex builder owns backend. Do not merge. If you cannot
+            build it, say why in one line instead of producing nothing.
           claude_args: --model claude-opus-4-8 --effort high --dangerously-skip-permissions

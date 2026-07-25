@@ -3,9 +3,9 @@
 # only covers alerts present while a PR is open; this closes the gap the roster
 # always claimed security-reviewer owned but nothing wired.
 #
-# The alert events are automation-only (the action rejects them like `push`), so
-# they relay to a workflow_dispatch — the event the action serves. A daily
-# schedule is the backstop so nothing lingers even if an event is missed.
+# GitHub exposes alert activity as webhook events, but not as Actions workflow
+# triggers. Poll daily so the sweep is both supported and deterministic; manual
+# dispatch remains available for diagnosis.
 #
 # Needs the App to be granted "Dependabot alerts: read" and "Code scanning
 # alerts: read" (owner, #14) — without them the gh queries error (that error is
@@ -13,12 +13,8 @@
 name: adw-alerts
 
 on:
-  dependabot_alert:
-    types: [created, reopened, reintroduced]
-  code_scanning_alert:
-    types: [created, reopened, appeared_in_branch]
   schedule:
-    - cron: "41 6 * * *"        # daily backstop
+    - cron: "41 6 * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -44,9 +40,7 @@ jobs:
       - env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
         run: gh workflow run adw-alerts.yml -R ${{ github.repository }}
-
   triage:
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -58,13 +52,14 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           github_token: ${{ steps.token.outputs.token }}
+          allowed_bots: agent-smith-bugabinga-adc
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             Use the security-reviewer subagent on ${{ github.repository }} to sweep
             open security alerts that no PR is covering. Read Dependabot alerts
-            (`gh api /repos/${{ github.repository }}/dependabot/alerts?state=open`)
+            (`gh api --paginate /repos/${{ github.repository }}/dependabot/alerts?state=open`)
             and code-scanning alerts
-            (`gh api /repos/${{ github.repository }}/code-scanning/alerts?state=open`).
+            (`gh api --paginate /repos/${{ github.repository }}/code-scanning/alerts?state=open`).
             For each unresolved high/critical with no existing tracking issue, open
             ONE escalation issue labeled `needs:security` (and `risk:high`) for the
             owner. Alerts originating only from `prototypes/` are disposable

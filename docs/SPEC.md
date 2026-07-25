@@ -278,34 +278,27 @@ Nightly exception:
   product code to nightly.
 - Pup failure blocks commit, PR, and release.
 
-### 3.2 Rust Flags
+### 3.2 Lints
 
-`.cargo/config.toml`:
+**Zero warnings.** A warning is an error; nothing merges or releases with one
+(PROJECT-INVARIANTS §3).
 
-```toml
-[build]
-rustflags = [
-    "-D", "warnings",
-    "-D", "clippy::unwrap_used",
-    "-D", "clippy::expect_used",
-    "-D", "clippy::panic",
-    "-D", "clippy::todo",
-    "-D", "clippy::unimplemented",
-    "-D", "clippy::print_stdout",
-    "-D", "clippy::print_stderr",
-    "-D", "missing_docs",
-    "-D", "rustdoc::missing_crate_level_docs",
-    "-D", "rustdoc::broken_intra_doc_links",
-    "-W", "rustdoc::invalid_html_tags",
-    "-W", "rustdoc::bare_urls",
-]
+Denied for every workspace crate: the `clippy` **all / pedantic / suspicious /
+complexity / perf / style / correctness** groups; the restriction lints
+**`unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`,
+`print_stdout`, `print_stderr`**; and the documentation lints **`missing_docs`,
+`rustdoc::missing_crate_level_docs`, `rustdoc::broken_intra_doc_links`**.
+Warned, not denied: `clippy::nursery`, `rustdoc::invalid_html_tags`,
+`rustdoc::bare_urls`. Escape hatches follow §3.3.
 
-[registries.crates-io]
-protocol = "sparse"
-
-[target.aarch64-linux-android]
-rustflags = ["-C", "link-args=-lclang_rt.builtins-aarch64-android"]
-```
+**Enforcement is uniform across targets.** The wall applies identically to every
+target in the §14 matrix; no per-target build configuration may weaken it. This is
+a requirement, not a preference — the obvious encoding (global compiler flags) has
+the property that a target needing any flag of its own silently loses every lint,
+and a required release target needs exactly that. Whatever mechanism carries the
+wall must therefore be immune to per-target override, and must not impose smith's
+denials on third-party dependencies. `PROJECT-INVARIANTS` §3.2 records the
+encoding that satisfies this.
 
 Every library crate has:
 
@@ -2584,7 +2577,24 @@ Required targets:
 | Linux ARM64 glibc | `aarch64-unknown-linux-gnu` | required |
 | Linux x86_64 musl | `x86_64-unknown-linux-musl` | required |
 | Linux ARM64 musl | `aarch64-unknown-linux-musl` | required |
+| Android ARM64 | `aarch64-linux-android` | required |
+| Linux riscv64 glibc | `riscv64gc-unknown-linux-gnu` | best-effort |
+| Linux riscv64 musl | `riscv64gc-unknown-linux-musl` | best-effort |
+| FreeBSD x86_64 | `x86_64-unknown-freebsd` | best-effort |
 | OpenBSD x86_64 | `x86_64-unknown-openbsd` | best-effort |
+
+**Three libcs, not two.** glibc and musl cover the Linux rows; **Android is
+Bionic**, which is why it is its own row rather than a Linux variant. Bionic does
+not carry the compiler-rt builtins Rust expects to find, so the Android target
+links against them explicitly — the flag lives in `.cargo/config.toml` (§3.2) and
+is normative for this target, not a local workaround. A toolchain that cannot
+supply them cannot produce this artifact.
+
+**Required means release-blocking.** A required target that fails to build stops
+the release; a best-effort target that fails is reported in the release notes and
+skipped, and its absence is never a reason to hold the other artifacts. Android is
+required because a terminal-first coding agent is used on a phone, not only built
+for one — it is a shipping platform, not a development convenience.
 
 Artifacts:
 
@@ -2830,10 +2840,11 @@ run, and the policy for who may merge — lives outside this spec, in
 PROJECT-INVARIANTS §5 and `docs/plans/AGENTIC-DEVELOPMENT.md`. This section
 defines Smith's test artifacts, not who is allowed to run or merge them.
 
-Android/Termux (`aarch64-linux-android`) is a supported development
-environment, not a release target (§14): CI keeps a validation lane that
-smoke-builds vendored LuaJIT and syntastica for it; breakage there blocks
-source-compatibility fixes, not artifact publishing.
+Android/Termux (`aarch64-linux-android`) is both the environment smith is
+developed in and a **required release target** (§14): CI keeps a validation lane
+that smoke-builds vendored LuaJIT and syntastica for it, and because the artifact
+ships, breakage there blocks publishing like any other required target — not only
+source-compatibility fixes.
 
 ## 18. Prototype Policy
 
