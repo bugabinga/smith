@@ -117,11 +117,16 @@ jobs:
             the label is that nobody yet knows which it is.
 
             Whatever you do, comment on the issue and include the exact string
-            `Pioneer: #${{ github.event.issue.number }}` somewhere in that
-            comment. The workflow proves this run did something by finding it,
-            and every agent here posts under one App identity, so a comment
-            without it is indistinguishable from a reviewer's. It need not lead
-            the comment — the action prepends its own header — but it must be
+            `Pioneer: #${{ github.event.issue.number }} <VERDICT>` somewhere in
+            that comment, where <VERDICT> is exactly one of `PROVED`,
+            `DISPROVED` or `CANNOT-RUN`, after a single space. That word is this
+            run declaring which of the three outcomes below it took, and the
+            workflow checks a DIFFERENT thing for each — so it cannot be
+            guessed from labels, where `blocked` means both DISPROVED and
+            CANNOT-RUN and may already be set from an earlier attempt. Every
+            agent here posts under one App identity, so without the marker a
+            comment is indistinguishable from a reviewer's. It need not lead the
+            comment — the action prepends its own header — but it must be
             present verbatim.
 
             Then finish the issue. Open the PR the way the builder does — let the
@@ -142,10 +147,12 @@ jobs:
               "the spec is wrong", and the spec question outlives the slice. Open
               the PR without a closing keyword so the evidence lands either way.
               The owner decides; you do not work around a broken claim.
-            - CANNOT RUN IT — if the prototype needs a toolchain or device this
+            - CANNOT-RUN — if the prototype needs a toolchain or device this
               runner cannot provide, remove `needs:prototype`, add `blocked`, say
               in one line what is missing, and open no PR. An honest "not here"
-              beats a prototype that proves nothing.
+              beats a prototype that proves nothing. This is the only verdict
+              allowed to land no PR, which is exactly why it must be declared
+              rather than inferred.
 
             Remove `needs:prototype` on EVERY one of those paths. Nothing fires
             on a label that is already present, so leaving it does not queue a
@@ -170,14 +177,24 @@ jobs:
           ISSUE: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
           BOT: "agent-smith-bugabinga-adc[bot]"
+          APP_SLUG: "agent-smith-bugabinga-adc"
           MARKER: "Pioneer: #${{ github.event.issue.number }}"
         run: |
           set -euo pipefail
-          # The comment is the whole proof, because it is the one thing every
-          # outcome produces. An earlier version also looked for a PR on a branch
-          # this workflow named — but claude-code-action picks its own branch
-          # (`claude/issue-<n>-<timestamp>`) and refuses to switch, so that
-          # lookup could only ever return nothing.
+          # The comment carries the whole proof, because it is the one thing
+          # every outcome produces. An earlier version also looked for a PR on a
+          # branch this workflow named — but claude-code-action picks its own
+          # branch and refuses to switch, so that lookup could only ever return
+          # nothing.
+          #
+          # It also carries the VERDICT, which is the part labels cannot supply.
+          # The three outcomes need three different checks, and `blocked` marks
+          # two of them — so an earlier version ORed "a PR appeared" with "a
+          # blocked label was applied during this run" and got both directions
+          # wrong: a DISPROVED run that never landed its prototype passed on the
+          # label alone, while a CANNOT-RUN retry on an issue already carrying
+          # `blocked` emitted no `labeled` event and failed for doing everything
+          # right. An outcome only the run knows has to be declared by the run.
           #
           # Scoped to THIS run by time and author, since a rerun of a no-op would
           # otherwise pass on a comment the triager or sweeper happened to leave.
@@ -186,12 +203,22 @@ jobs:
           # reviewer's landing in the same window. The marker may sit anywhere in
           # the body: the action prepends its own header, so requiring the first
           # line would fail every honest run. Newlines and tabs are flattened so
-          # one comment stays one record.
-          commented=$(gh api "repos/$REPO/issues/$ISSUE/comments" --paginate \
-                        --jq '.[] | [.created_at, .user.login,
-                                     (.body | gsub("[\n\t]"; " "))] | @tsv' \
-                      | awk -F'\t' -v t="$STARTED_AT" -v b="$BOT" -v m="$MARKER" \
-                          '$2 == b && $1 >= t && index($3, m) > 0' | wc -l)
+          # one comment stays one record. The verdicts are matched anchored to
+          # the marker so DISPROVED is never read as PROVED, and the last one
+          # wins if a run somehow declared twice.
+          verdict=$(gh api "repos/$REPO/issues/$ISSUE/comments" --paginate \
+                      --jq '.[] | [.created_at, .user.login,
+                                   (.body | gsub("[\n\t]"; " "))] | @tsv' \
+                    | awk -F'\t' -v t="$STARTED_AT" -v b="$BOT" -v m="$MARKER" '
+                        $2 == b && $1 >= t {
+                          i = index($3, m)
+                          if (i > 0) {
+                            rest = substr($3, i + length(m))
+                            if (rest ~ /^ PROVED/)          print "PROVED"
+                            else if (rest ~ /^ DISPROVED/)  print "DISPROVED"
+                            else if (rest ~ /^ CANNOT-RUN/) print "CANNOT-RUN"
+                          }
+                        }' | tail -1)
 
           # Still parked is still broken, whatever else the run produced. A
           # marker comment saying "cannot run here" is a trace, and on its own it
@@ -209,43 +236,59 @@ jobs:
               exit 1 ;;
           esac
 
-          if [ "$commented" -eq 0 ]; then
+          if [ -z "$verdict" ]; then
             # A bare label change is deliberately not accepted as evidence. Every
             # defined outcome comments, so a label moving on its own means
             # something other than the pioneer moved it.
             echo "::error::pioneer produced nothing for #$ISSUE this run: no"\
-                 "comment from $BOT carrying '$MARKER' since $STARTED_AT"
+                 "comment from $BOT since $STARTED_AT carrying '$MARKER'"\
+                 "followed by PROVED, DISPROVED or CANNOT-RUN"
             exit 1
           fi
 
           # Commenting proves the run happened; it does not prove it produced
-          # evidence. Two of the three outcomes must land a prototype, so they
+          # evidence. Two of the three verdicts must land a prototype, so they
           # leave a PR referencing this issue. Matched by that reference rather
           # than a branch name, because the branch is the action's to choose —
           # prescribing one is what broke signing.
+          #
+          # `#$ISSUE` must not be followed by another digit, or issue #12 would
+          # accept any PR mentioning #120. The author is matched loosely by
+          # substring because gh renders App logins inconsistently (`app/` prefix,
+          # `[bot]` suffix) and an over-tight match here fails honest runs — it
+          # only has to exclude a human's PR that happens to cite the issue in
+          # the same window.
           pr=$(gh pr list --repo "$REPO" --state all --limit 50 \
-                 --json createdAt,body \
-               | jq -r --arg t "$STARTED_AT" --arg n "#$ISSUE" \
-                   '[.[] | select(.createdAt >= $t and (.body | contains($n)))]
+                 --json createdAt,body,author \
+               | jq -r --arg t "$STARTED_AT" --arg n "$ISSUE" --arg a "$APP_SLUG" \
+                   '[.[] | select(.createdAt >= $t
+                                  and (.author.login | ascii_downcase | contains($a))
+                                  and (.body | test("#" + $n + "([^0-9]|$)")))]
                     | length')
 
-          # `blocked` alone is not evidence: it is also the DISPROVED label, and
-          # an issue may have carried it before this run — either way an OR on
-          # its mere presence would accept a disproof that landed no prototype.
-          # Only a `blocked` applied DURING this run, with no PR, means "the
-          # runner cannot host this", which is the one outcome allowed to
-          # conclude without evidence.
-          declared=$(gh api "repos/$REPO/issues/$ISSUE/events" --paginate \
-                       --jq '.[] | select(.event == "labeled"
-                                          and .label.name == "blocked")
-                             | .created_at' \
-                     | awk -v t="$STARTED_AT" '$0 >= t' | wc -l)
-
-          if [ "$pr" -gt 0 ] || [ "$declared" -gt 0 ]; then
-            echo "pioneer concluded — prs=$pr blocked-this-run=$declared"
-            exit 0
-          fi
-          echo "::error::pioneer commented on #$ISSUE but landed no PR referencing"\
-               "it and did not mark it blocked during this run — the issue leaves"\
-               "dequeued with no evidence and no stated reason"
-          exit 1
+          case "$verdict" in
+            PROVED|DISPROVED)
+              # DISPROVED is not the escape hatch — it still owes the evidence
+              # that disproved the claim. Only the PR distinguishes it from a run
+              # that gave up, since it leaves the same `blocked` label as
+              # CANNOT-RUN.
+              if [ "$pr" -eq 0 ]; then
+                echo "::error::pioneer declared $verdict on #$ISSUE but landed no"\
+                     "PR referencing it — that verdict owes a prototype, and the"\
+                     "issue leaves dequeued with the evidence missing"
+                exit 1
+              fi ;;
+            CANNOT-RUN)
+              # The one verdict allowed to conclude without a prototype, so it
+              # must leave the hold a human can act on. Presence is enough here:
+              # a retry on an issue already `blocked` re-adds nothing and emits
+              # no event, and failing it for that would punish the honest path.
+              case ",$labels," in
+                *,blocked,*) ;;
+                *) echo "::error::pioneer declared CANNOT-RUN on #$ISSUE without"\
+                        "leaving it blocked — the issue drops out of every queue"\
+                        "with nothing holding it"
+                   exit 1 ;;
+              esac ;;
+          esac
+          echo "pioneer concluded — verdict=$verdict prs=$pr"
