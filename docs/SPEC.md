@@ -278,61 +278,31 @@ Nightly exception:
   product code to nightly.
 - Pup failure blocks commit, PR, and release.
 
-### 3.2 Rust Flags
+### 3.2 Lints
 
-`.cargo/config.toml`:
+**Zero warnings.** A warning is an error; nothing merges or releases with one
+(PROJECT-INVARIANTS §3).
 
-```toml
-[build]
-rustflags = [
-    "-D", "warnings",
-    "-D", "clippy::unwrap_used",
-    "-D", "clippy::expect_used",
-    "-D", "clippy::panic",
-    "-D", "clippy::todo",
-    "-D", "clippy::unimplemented",
-    "-D", "clippy::print_stdout",
-    "-D", "clippy::print_stderr",
-    "-D", "missing_docs",
-    "-D", "rustdoc::missing_crate_level_docs",
-    "-D", "rustdoc::broken_intra_doc_links",
-    "-W", "rustdoc::invalid_html_tags",
-    "-W", "rustdoc::bare_urls",
-]
+Denied for every workspace crate: the `clippy` **all / pedantic / suspicious /
+complexity / perf / style / correctness** groups; the restriction lints
+**`unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`,
+`print_stdout`, `print_stderr`**; and the documentation lints **`missing_docs`,
+`rustdoc::missing_crate_level_docs`, `rustdoc::broken_intra_doc_links`**.
+Warned, not denied: `clippy::nursery`, `rustdoc::invalid_html_tags`,
+`rustdoc::bare_urls`. Escape hatches follow §3.3.
 
-[registries.crates-io]
-protocol = "sparse"
+**Where they live: `[workspace.lints]` in the workspace root, inherited by every
+crate — not `rustflags`.** This is a correctness requirement, not a preference. A
+`[target.<triple>].rustflags` key *replaces* `[build].rustflags` rather than
+merging with it, so any target needing a flag of its own would silently build
+with the entire wall switched off — and Android needs exactly such a flag (§14).
+Lint tables are per-crate and target-independent, and they apply only to
+workspace crates instead of leaking denials into dependencies.
 
-# Cargo does NOT merge these with [build].rustflags — a target-specific
-# rustflags key REPLACES it entirely. The lint wall must therefore be repeated
-# here verbatim, or Android (a required release target, §14) would build with
-# every -D warning silently off. Keep this list byte-identical to [build] above
-# and append only the link flag: Bionic carries no compiler-rt builtins, so
-# vendored LuaJIT cannot link __clear_cache without them.
-[target.aarch64-linux-android]
-rustflags = [
-    "-D", "warnings",
-    "-D", "clippy::unwrap_used",
-    "-D", "clippy::expect_used",
-    "-D", "clippy::panic",
-    "-D", "clippy::todo",
-    "-D", "clippy::unimplemented",
-    "-D", "clippy::print_stdout",
-    "-D", "clippy::print_stderr",
-    "-D", "missing_docs",
-    "-D", "rustdoc::missing_crate_level_docs",
-    "-D", "rustdoc::broken_intra_doc_links",
-    "-W", "rustdoc::invalid_html_tags",
-    "-W", "rustdoc::bare_urls",
-    "-C", "link-args=-lclang_rt.builtins-aarch64-android",
-]
-```
+`.cargo/config.toml` therefore carries only what cannot be expressed as a lint —
+today the Android link flag for vendored LuaJIT's `__clear_cache` (§14) and the
+sparse registry protocol.
 
-The duplication is deliberate and load-bearing: it is the only way to keep the
-zero-warning invariant (PROJECT-INVARIANTS §3) on a target whose `rustflags`
-override the global set. `xtask arch` asserts the two lists agree apart from the
-trailing link flag, so a lint added to `[build]` and forgotten here fails the
-gate rather than silently weakening Android.
 
 Every library crate has:
 
