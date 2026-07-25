@@ -15,12 +15,13 @@ const CHECK_GATES: [Gate; 4] = [
             "clippy",
             "--workspace",
             "--all-targets",
+            "--all-features",
             "--",
             "-D",
             "warnings",
         ],
     ),
-    Gate::new("test", &["test", "--workspace"]),
+    Gate::new("test", &["nextest", "run", "--workspace"]),
     Gate::new("doc", &["test", "--doc", "--workspace"]),
 ];
 
@@ -70,7 +71,7 @@ impl fmt::Display for CheckError {
     }
 }
 
-#[allow(
+#[expect(
     clippy::print_stderr,
     reason = "A failed gate needs a concise diagnostic before xtask exits non-zero."
 )]
@@ -138,11 +139,12 @@ mod tests {
                 "clippy",
                 "--workspace",
                 "--all-targets",
+                "--all-features",
                 "--",
                 "-D",
                 "warnings",
             ],
-            &["test", "--workspace"],
+            &["nextest", "run", "--workspace"],
             &["test", "--doc", "--workspace"],
         ];
         assert_eq!(invocations, expected);
@@ -170,6 +172,7 @@ mod tests {
                 "clippy",
                 "--workspace",
                 "--all-targets",
+                "--all-features",
                 "--",
                 "-D",
                 "warnings",
