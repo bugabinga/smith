@@ -1,0 +1,42 @@
+// cargo-pup's source-level counterpart to xtask's stable metadata checks.
+(
+    lints: [
+        Module((
+            name: "hygienic-mod-files",
+            matches: Module(".*"),
+            rules: [MustHaveEmptyModFile(Error)],
+        )),
+        Module((
+            name: "no-wildcard-imports",
+            matches: Module(".*"),
+            rules: [NoWildcardImports(Error)],
+        )),
+        Module((
+            name: "smith-core-import-boundary",
+            matches: Module("^smith_core($|::.*)"),
+            rules: [RestrictImports(
+                allowed_only: None,
+                denied: Some(["^smith_ai($|::.*)", "^smith_tui($|::.*)", "^smith_harness($|::.*)", "^smith_cli($|::.*)"],),
+                severity: Error,
+            )],
+        )),
+        Module((
+            name: "smith-ai-import-boundary",
+            matches: Module("^smith_ai($|::.*)"),
+            rules: [RestrictImports(
+                allowed_only: None,
+                denied: Some(["^smith_core($|::.*)", "^smith_tui($|::.*)", "^smith_harness($|::.*)", "^smith_cli($|::.*)"],),
+                severity: Error,
+            )],
+        )),
+        Module((
+            name: "smith-tui-import-boundary",
+            matches: Module("^smith_tui($|::.*)"),
+            rules: [RestrictImports(
+                allowed_only: None,
+                denied: Some(["^smith_core($|::.*)", "^smith_ai($|::.*)", "^smith_harness($|::.*)", "^smith_cli($|::.*)"],),
+                severity: Error,
+            )],
+        )),
+    ],
+)
