@@ -47,7 +47,7 @@ jobs:
     if: github.event.label.name == 'needs:prototype'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - id: token
         uses: actions/create-github-app-token@v3
         with:
@@ -124,8 +124,10 @@ jobs:
             the comment — the action prepends its own header — but it must be
             present verbatim.
 
-            Then finish the issue (the action manages the branch; do not try to
-            switch it):
+            Then finish the issue. Agent mode does NOT create a branch for you —
+            the checkout sits on `main` — so create
+            `prototypes/issue-${{ github.event.issue.number }}` yourself, commit
+            there, and push it. Never commit to `main`:
             - PROVED — open a PR whose body begins `Closes #${{ github.event.issue.number }}`,
               so the merge retires the work-order rather than leaving it open for
               the sweeper to find and call stalled. Remove `needs:prototype`.
@@ -167,6 +169,7 @@ jobs:
           REPO: ${{ github.repository }}
           BOT: "agent-smith-bugabinga-adc[bot]"
           MARKER: "Pioneer: #${{ github.event.issue.number }}"
+          BRANCH: prototypes/issue-${{ github.event.issue.number }}
         run: |
           set -euo pipefail
           # The comment is the whole proof, because it is the one thing every
@@ -205,14 +208,34 @@ jobs:
               exit 1 ;;
           esac
 
-          if [ "$commented" -gt 0 ]; then
-            echo "pioneer left a trace this run — $commented marker comment(s)"
+          if [ "$commented" -eq 0 ]; then
+            # A bare label change is deliberately not accepted as evidence. Every
+            # defined outcome comments, so a label moving on its own means
+            # something other than the pioneer moved it.
+            echo "::error::pioneer produced nothing for #$ISSUE this run: no"\
+                 "comment from $BOT carrying '$MARKER' since $STARTED_AT"
+            exit 1
+          fi
+
+          # Commenting proves the run happened; it does not prove it produced
+          # evidence. Two of the three outcomes must land a prototype, so they
+          # leave a PR on the branch the prompt names — agent mode creates no
+          # branch, so that name is the workflow's to fix and safe to check. The
+          # third declares the runner cannot host the work and must leave
+          # `blocked`, which the planner's groom already walks. Without this, a
+          # run could comment "cannot run here", clear the hold, and dequeue the
+          # issue having produced nothing and having said nothing checkable.
+          pr=$(gh pr list --repo "$REPO" --head "$BRANCH" --state all \
+                 --json createdAt -q '.[].createdAt' \
+               | awk -v t="$STARTED_AT" '$0 >= t' | wc -l)
+          case ",$labels," in *,blocked,*) declared=yes ;; *) declared=no ;; esac
+
+          if [ "$pr" -gt 0 ] || [ "$declared" = yes ]; then
+            echo "pioneer concluded — pr=$pr blocked=$declared"
             exit 0
           fi
-          # A bare label change is deliberately not accepted as evidence. Every
-          # defined outcome comments, so a label moving on its own means
-          # something other than the pioneer moved it — and treating that as
-          # success is how the issue gets parked again.
-          echo "::error::pioneer produced nothing for #$ISSUE this run: no"\
-               "comment from $BOT carrying '$MARKER' since $STARTED_AT"
+          echo "::error::pioneer commented on #$ISSUE but landed no prototype PR"\
+               "on $BRANCH and did not mark it blocked — the issue leaves this run"\
+               "dequeued with no evidence and no stated reason"
+          exit 1
           exit 1
