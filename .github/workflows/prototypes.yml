@@ -43,7 +43,14 @@ jobs:
           echo "|-------|--------|---------|" >> "$GITHUB_STEP_SUMMARY"
           failed=""
           total=0
-          for d in prototypes/p*/; do
+          # Every prototype directory, not just `p*`: adw-pioneer names its
+          # output after the issue (`i<issue>-<slug>`) because two runs cannot
+          # see each other's unmerged branches to agree a sequential number. A
+          # glob that silently skips a whole naming scheme is worse than a
+          # failing test — the prototype looks covered and is never run. The
+          # Cargo.toml guard below is what actually decides; the glob only has
+          # to avoid excluding candidates.
+          for d in prototypes/*/; do
             [ -f "$d/Cargo.toml" ] || continue
             case "$d" in prototypes/p34-ci-pipeline/) continue;; esac
             name=$(basename "$d")

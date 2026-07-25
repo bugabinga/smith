@@ -135,22 +135,33 @@ jobs:
           ISSUE: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
           BRANCH: prototypes/issue-${{ github.event.issue.number }}
+          BOT: "agent-smith-bugabinga-adc[bot]"
         run: |
           set -euo pipefail
+          # Every clause is scoped to THIS run. A rerun of a no-op would
+          # otherwise pass on the previous run's PR, on a comment the triager or
+          # sweeper happened to leave, or on a label someone else removed —
+          # evidence that something once happened, not that this run did
+          # anything. Same reasoning as the reviewers' comment proof: recency
+          # and author together, never either alone.
           pr=$(gh pr list --repo "$REPO" --head "$BRANCH" --state all \
-                 --json number -q 'length')
+                 --json createdAt -q '.[].createdAt' \
+               | awk -v t="$STARTED_AT" '$0 >= t' | wc -l)
           commented=$(gh api "repos/$REPO/issues/$ISSUE/comments" --paginate \
-                        --jq '.[].created_at' \
-                      | awk -v t="$STARTED_AT" '$0 >= t' | wc -l)
-          labels=$(gh issue view "$ISSUE" --repo "$REPO" --json labels \
-                     -q '[.labels[].name] | join(",")')
-          case ",$labels," in *,needs:prototype,*) held=yes ;; *) held=no ;; esac
+                        --jq '.[] | [.created_at, .user.login] | @tsv' \
+                      | awk -F'\t' -v t="$STARTED_AT" -v b="$BOT" \
+                          '$2 == b && $1 >= t' | wc -l)
 
-          if [ "$pr" -gt 0 ] || [ "$commented" -gt 0 ] || [ "$held" = no ]; then
-            echo "pioneer left a trace — pr=$pr comments=$commented held=$held"
+          if [ "$pr" -gt 0 ] || [ "$commented" -gt 0 ]; then
+            echo "pioneer left a trace this run — pr=$pr comments=$commented"
             exit 0
           fi
-          echo "::error::pioneer produced nothing for #$ISSUE: no PR on $BRANCH,"\
-               "no comment this run, and needs:prototype still set — the issue is"\
-               "parked again with nothing scheduled to retry it"
+          # A bare label change is deliberately not accepted as evidence. Each of
+          # the three outcomes the prompt defines produces a PR or a comment, so
+          # a label moving on its own means something other than the pioneer did
+          # it — and treating that as success is how the issue gets parked again.
+          echo "::error::pioneer produced nothing for #$ISSUE this run: no PR"\
+               "opened on $BRANCH and no comment from $BOT since $STARTED_AT."\
+               "Nothing re-fires on a label already present, so the issue is"\
+               "parked with no wake-up scheduled"
           exit 1
