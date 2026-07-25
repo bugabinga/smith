@@ -129,12 +129,14 @@ jobs:
             comment — the action prepends its own header — but it must be
             present verbatim.
 
-            Then finish the issue. Open the PR the way the builder does — let the
-            action handle the branch and the signed commit rather than steering
-            it onto a branch of your own; `adw-build.yml` prescribes no branch
-            name and lands Verified commits, and that is the path known to work
-            here. Never commit to `main`. Reference this issue in the PR body so
-            the two are linked:
+            Then finish the issue. Supplying `prompt:` selects agent mode, which
+            creates NO branch and no tracking comment — the checkout sits on
+            `main`. So create `prototypes/issue-${{ github.event.issue.number }}`
+            yourself, commit there, and push it. Never commit to `main`.
+            Unsigned commits on a feature branch are fine: the merge is a
+            squash, which GitHub signs, and every `codex/*` PR in this repo
+            landed exactly that way. Reference this issue in the PR body so the
+            two are linked:
             - PROVED — open a PR whose body begins `Closes #${{ github.event.issue.number }}`,
               so the merge retires the work-order rather than leaving it open for
               the sweeper to find and call stalled. Remove `needs:prototype`.
@@ -276,12 +278,18 @@ jobs:
           # the claim is unresolved and the work-order outlives the evidence.
           # Any of GitHub's closing keywords counts, since any of them has that
           # effect on merge — checking only `Closes` would pass a PR that closes
-          # the issue by saying `Fixes`.
+          # the issue by saying `Fixes`. All three reference forms count for the
+          # same reason: `#N`, `owner/repo#N` and the issue URL all close on
+          # merge, so a DISPROVED PR using a qualified form would otherwise read
+          # as non-closing here and still retire the work-order once merged.
           closing=$(printf '%s' "$mine" \
                     | jq --arg n "$ISSUE" \
-                        '[.[] | select(.body
-                           | test("\\b(clos(e|es|ed)|fix(e[sd])?|resolve[sd]?)[ \t]+#"
-                                  + $n + "([^0-9]|$)"; "i"))] | length')
+                        '("\\b(clos(e|es|ed)|fix(e[sd])?|resolve[sd]?)[ \t]+") as $kw
+                         | [$kw + "([\\w.-]+/[\\w.-]+)?#" + $n + "([^0-9]|$)",
+                            $kw + "https?://[^ \t]+/issues/" + $n + "([^0-9]|$)"] as $pats
+                         | [.[] | select(.body as $b
+                             | $pats | any(. as $re | $b | test($re; "i")))]
+                         | length')
 
           case "$verdict" in
             PROVED)
