@@ -47,7 +47,12 @@ jobs:
     if: github.event.label.name == 'needs:prototype'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      # Token BEFORE checkout, so checkout can persist it. Checked out first and
+      # without a `token:`, the credential left in `.git/config` is the ambient
+      # GITHUB_TOKEN — which this workflow declares `contents: read` — and the
+      # agent's `git push` would authenticate read-only and fail. `adw-revise.yml`
+      # persists the App token for exactly this reason; it is the only lane here
+      # that demonstrably pushes.
       - id: token
         uses: actions/create-github-app-token@v3
         with:
@@ -63,6 +68,9 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
           permission-issues: write
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ steps.token.outputs.token }}
       # The event is a snapshot; the issue is not. A run can start minutes after
       # the label, behind a queue or a retry, by which time the owner may have
       # closed the issue or removed the label. Acting on the stale event would
@@ -93,7 +101,14 @@ jobs:
           github_token: ${{ steps.token.outputs.token }}
           allowed_bots: agent-smith-bugabinga-adc
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          use_commit_signing: true
+          # Deliberately NOT use_commit_signing. It routes writes through the
+          # commit API against the branch the action believes it is on, and in
+          # agent mode that is `main` — so signing would aim the prototype at a
+          # protected branch while the prompt builds a feature branch git-side,
+          # and the two would disagree about where the work went. Plain git on a
+          # feature branch is what every `codex/*` PR in this repo already does;
+          # the squash merge is signed by GitHub, so nothing unsigned reaches
+          # `main` either way.
           prompt: |
             Run the `/pioneer` skill against issue
             #${{ github.event.issue.number }} in ${{ github.repository }}.
