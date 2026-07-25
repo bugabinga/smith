@@ -124,10 +124,12 @@ jobs:
             the comment — the action prepends its own header — but it must be
             present verbatim.
 
-            Then finish the issue. Agent mode does NOT create a branch for you —
-            the checkout sits on `main` — so create
-            `prototypes/issue-${{ github.event.issue.number }}` yourself, commit
-            there, and push it. Never commit to `main`:
+            Then finish the issue. Open the PR the way the builder does — let the
+            action handle the branch and the signed commit rather than steering
+            it onto a branch of your own; `adw-build.yml` prescribes no branch
+            name and lands Verified commits, and that is the path known to work
+            here. Never commit to `main`. Reference this issue in the PR body so
+            the two are linked:
             - PROVED — open a PR whose body begins `Closes #${{ github.event.issue.number }}`,
               so the merge retires the work-order rather than leaving it open for
               the sweeper to find and call stalled. Remove `needs:prototype`.
@@ -169,7 +171,6 @@ jobs:
           REPO: ${{ github.repository }}
           BOT: "agent-smith-bugabinga-adc[bot]"
           MARKER: "Pioneer: #${{ github.event.issue.number }}"
-          BRANCH: prototypes/issue-${{ github.event.issue.number }}
         run: |
           set -euo pipefail
           # The comment is the whole proof, because it is the one thing every
@@ -219,23 +220,32 @@ jobs:
 
           # Commenting proves the run happened; it does not prove it produced
           # evidence. Two of the three outcomes must land a prototype, so they
-          # leave a PR on the branch the prompt names — agent mode creates no
-          # branch, so that name is the workflow's to fix and safe to check. The
-          # third declares the runner cannot host the work and must leave
-          # `blocked`, which the planner's groom already walks. Without this, a
-          # run could comment "cannot run here", clear the hold, and dequeue the
-          # issue having produced nothing and having said nothing checkable.
-          pr=$(gh pr list --repo "$REPO" --head "$BRANCH" --state all \
-                 --json createdAt -q '.[].createdAt' \
-               | awk -v t="$STARTED_AT" '$0 >= t' | wc -l)
-          case ",$labels," in *,blocked,*) declared=yes ;; *) declared=no ;; esac
+          # leave a PR referencing this issue. Matched by that reference rather
+          # than a branch name, because the branch is the action's to choose —
+          # prescribing one is what broke signing.
+          pr=$(gh pr list --repo "$REPO" --state all --limit 50 \
+                 --json createdAt,body \
+               | jq -r --arg t "$STARTED_AT" --arg n "#$ISSUE" \
+                   '[.[] | select(.createdAt >= $t and (.body | contains($n)))]
+                    | length')
 
-          if [ "$pr" -gt 0 ] || [ "$declared" = yes ]; then
-            echo "pioneer concluded — pr=$pr blocked=$declared"
+          # `blocked` alone is not evidence: it is also the DISPROVED label, and
+          # an issue may have carried it before this run — either way an OR on
+          # its mere presence would accept a disproof that landed no prototype.
+          # Only a `blocked` applied DURING this run, with no PR, means "the
+          # runner cannot host this", which is the one outcome allowed to
+          # conclude without evidence.
+          declared=$(gh api "repos/$REPO/issues/$ISSUE/events" --paginate \
+                       --jq '.[] | select(.event == "labeled"
+                                          and .label.name == "blocked")
+                             | .created_at' \
+                     | awk -v t="$STARTED_AT" '$0 >= t' | wc -l)
+
+          if [ "$pr" -gt 0 ] || [ "$declared" -gt 0 ]; then
+            echo "pioneer concluded — prs=$pr blocked-this-run=$declared"
             exit 0
           fi
-          echo "::error::pioneer commented on #$ISSUE but landed no prototype PR"\
-               "on $BRANCH and did not mark it blocked — the issue leaves this run"\
+          echo "::error::pioneer commented on #$ISSUE but landed no PR referencing"\
+               "it and did not mark it blocked during this run — the issue leaves"\
                "dequeued with no evidence and no stated reason"
-          exit 1
           exit 1
