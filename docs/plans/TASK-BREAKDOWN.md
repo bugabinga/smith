@@ -17,6 +17,8 @@ SM-003 (scaffolding) ── SM-005 (smith/) ──┬── SM-006 (smith-core/)
                                                         SM-011 (workspace)
                                                              │
                                                         SM-012 (testing)
+                                                             │
+                                                        SM-013 (release)
 ```
 
 The edges are the §2.2 boundary rules: `smith/` is the sole foundation;
@@ -32,6 +34,7 @@ Wave 2: SM-006 + SM-007 + SM-008  core / ai / tui (parallel)
 Wave 3: SM-009  smith-harness — wiring (after wave 2)
 Wave 4: SM-010 + SM-011  cli + workspace (parallel)
 Wave 5: SM-012  integration tests
+Wave 6: SM-013  release — §14 artifact matrix via `xtask release`
 ```
 
 ## Tasks
@@ -46,7 +49,8 @@ Wave 5: SM-012  integration tests
 | SM-009 | smith-harness/ | SM-006/007/008 | SM-010 |
 | SM-010 | smith-cli/ | SM-009 | SM-012 |
 | SM-011 | workspace | SM-009 | SM-012 |
-| SM-012 | testing | SM-010, SM-011 | — |
+| SM-012 | testing | SM-010, SM-011 | SM-013 |
+| SM-013 | release | SM-012 | — |
 
 What each crate owns and must not own is defined once in SPEC §2.2 — not
 repeated here, to avoid drift.
