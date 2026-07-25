@@ -1,0 +1,135 @@
+# ADW settings audit — read the repository configuration that no file in this
+# repo can prove.
+#
+# Two blind spots cost hours on #112. First, `.github/rulesets/main.json` is the
+# source of truth by convention only: it is applied through the UI by hand, so
+# what actually guards `main` may differ from what the file says, and every
+# diagnosis that trusts the file inherits the drift. Second, code scanning
+# remembers configurations it has seen on the base branch; one that stops
+# reporting goes stale rather than away, and a stale entry turns every PR's
+# code-scanning check neutral — visible nowhere in Actions, because nothing
+# fails.
+#
+# Strictly read-only. It prints what is; it changes nothing. Applying a ruleset
+# or deleting a stale configuration stays the owner's, on purpose: an agent that
+# could rewrite the rules judging it would undo what CODEOWNERS exists to
+# enforce.
+name: adw-settings-audit
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "41 6 * * 1"       # weekly — drift is slow, and this is a report
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - id: token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v5
+
+      - name: Applied rulesets vs the file
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Rulesets actually applied to \`main\`"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Needs Administration: read. Say so plainly rather than failing with a
+          # bare 403 — a missing scope and an empty ruleset list look identical
+          # in the output otherwise.
+          if ! rulesets=$(gh api "repos/$REPO/rulesets" 2>/dev/null); then
+            echo "Could not read rulesets — the App is missing **Administration: read**." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          count=$(printf '%s' "$rulesets" | jq 'length')
+          echo "$count ruleset(s) applied. The repo file describes one." >> "$GITHUB_STEP_SUMMARY"
+          echo >> "$GITHUB_STEP_SUMMARY"
+
+          printf '%s' "$rulesets" | jq -r '.[] | "\(.id)\t\(.name)\t\(.target)\t\(.enforcement)"' \
+          | while IFS=$'\t' read -r id name target enforcement; do
+              {
+                echo "### $name (id $id, $target, $enforcement)"
+                echo '```json'
+              } >> "$GITHUB_STEP_SUMMARY"
+              gh api "repos/$REPO/rulesets/$id" \
+                --jq '{rules: [.rules[] | {type, parameters}], bypass_actors}' \
+                >> "$GITHUB_STEP_SUMMARY"
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+            done
+
+          # The rule types the file claims, against the rule types actually live.
+          # A type present in one and not the other is the drift worth seeing;
+          # comparing full parameter trees would bury it in noise.
+          file_types=$(jq -r '[.rules[].type] | sort | join(", ")' .github/rulesets/main.json)
+          live_types=$(printf '%s' "$rulesets" | jq -r '[.[] | .id] | .[]' \
+            | while read -r id; do gh api "repos/$REPO/rulesets/$id" --jq '.rules[].type'; done \
+            | sort -u | paste -sd', ' -)
+          {
+            echo "### Rule types"
+            echo
+            echo "| source | types |"
+            echo "| --- | --- |"
+            echo "| \`main.json\` | $file_types |"
+            echo "| applied | $live_types |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Code scanning configurations, and which are stale
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          {
+            echo
+            echo "## Code scanning configurations on \`$BRANCH\`"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if ! analyses=$(gh api \
+                "repos/$REPO/code-scanning/analyses?ref=refs/heads/$BRANCH&per_page=100" \
+                2>/dev/null); then
+            echo "Could not read analyses — the App is missing **Code scanning alerts: read**." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          # One row per category, newest analysis first. A category whose newest
+          # analysis is old is the stale configuration GitHub still expects and
+          # the workflow no longer produces — the thing that makes the PR check
+          # neutral with "N configurations not found".
+          {
+            echo "| category | tool | latest analysis | age (days) |"
+            echo "| --- | --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          now=$(date -u +%s)
+          printf '%s' "$analyses" \
+          | jq -r 'group_by(.category)[] | max_by(.created_at)
+                   | [(.category // "(none)"), .tool.name, .created_at] | @tsv' \
+          | while IFS=$'\t' read -r category tool created; do
+              age=$(( (now - $(date -u -d "$created" +%s)) / 86400 ))
+              echo "| \`$category\` | $tool | $created | $age |" >> "$GITHUB_STEP_SUMMARY"
+            done
+
+          {
+            echo
+            echo "A category the current matrix no longer builds keeps its entry here."
+            echo "That is the stale configuration: delete it at"
+            echo "\`/security/code-scanning/tools\` — this job will not do it for you."
+          } >> "$GITHUB_STEP_SUMMARY"
