@@ -291,18 +291,14 @@ complexity / perf / style / correctness** groups; the restriction lints
 Warned, not denied: `clippy::nursery`, `rustdoc::invalid_html_tags`,
 `rustdoc::bare_urls`. Escape hatches follow §3.3.
 
-**Where they live: `[workspace.lints]` in the workspace root, inherited by every
-crate — not `rustflags`.** This is a correctness requirement, not a preference. A
-`[target.<triple>].rustflags` key *replaces* `[build].rustflags` rather than
-merging with it, so any target needing a flag of its own would silently build
-with the entire wall switched off — and Android needs exactly such a flag (§14).
-Lint tables are per-crate and target-independent, and they apply only to
-workspace crates instead of leaking denials into dependencies.
-
-`.cargo/config.toml` therefore carries only what cannot be expressed as a lint —
-today the Android link flag for vendored LuaJIT's `__clear_cache` (§14) and the
-sparse registry protocol.
-
+**Enforcement is uniform across targets.** The wall applies identically to every
+target in the §14 matrix; no per-target build configuration may weaken it. This is
+a requirement, not a preference — the obvious encoding (global compiler flags) has
+the property that a target needing any flag of its own silently loses every lint,
+and a required release target needs exactly that. Whatever mechanism carries the
+wall must therefore be immune to per-target override, and must not impose smith's
+denials on third-party dependencies. `PROJECT-INVARIANTS` §3.2 records the
+encoding that satisfies this.
 
 Every library crate has:
 
