@@ -34,7 +34,9 @@ Wave 2: SM-006 + SM-007 + SM-008  core / ai / tui (parallel)
 Wave 3: SM-009  smith-harness — wiring (after wave 2)
 Wave 4: SM-010 + SM-011  cli + workspace (parallel)
 Wave 5: SM-012  integration tests
-Wave 6: SM-013  release — §14 artifact matrix via `xtask release`
+Wave 6: SM-013  release — §14 artifact matrix via `xtask release`; the required
+                targets whose cross-build is unproven (Windows MSVC, Android)
+                need their §18 proofs before the matrix claims them
 ```
 
 ## Tasks
@@ -50,7 +52,7 @@ Wave 6: SM-013  release — §14 artifact matrix via `xtask release`
 | SM-010 | smith-cli/ | SM-009 | SM-012 |
 | SM-011 | workspace | SM-009 | SM-012 |
 | SM-012 | testing | SM-010, SM-011 | SM-013 |
-| SM-013 | release | SM-012 | — |
+| SM-013 | release | SM-012, §18 proofs (Windows MSVC, Android) | — |
 
 What each crate owns and must not own is defined once in SPEC §2.2 — not
 repeated here, to avoid drift.
