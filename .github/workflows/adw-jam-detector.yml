@@ -152,7 +152,7 @@ jobs:
           }
 
           for n in $prs; do
-            pr=$(gh pr view "$n" --repo "$REPO" --json labels,statusCheckRollup)
+            pr=$(gh pr view "$n" --repo "$REPO" --json labels,statusCheckRollup,commits)
             labels=$(printf '%s' "$pr" | jq -r '.labels[].name')
 
             if ! gate_should_be_green "$labels"; then
@@ -161,6 +161,17 @@ jobs:
 
             gate_label_transition=$(last_gate_label_transition "$n")
             if [ -z "$gate_label_transition" ]; then
+              continue
+            fi
+
+            # Labels older than the head are not a verdict on the head. adw-gate
+            # refuses on a push, and for the moments between that push and the
+            # reset stripping the previous verdicts, the PR reads as "should be
+            # green" while being correctly red. Counting that window would let a
+            # burst of pushes across two approved PRs raise a jam out of the
+            # machinery working — the exact false alarm this scan exists to stop.
+            head_committed=$(printf '%s' "$pr" | jq -r '.commits[-1].committedDate // ""')
+            if [ -n "$head_committed" ] && [ "$head_committed" \> "$gate_label_transition" ]; then
               continue
             fi
 

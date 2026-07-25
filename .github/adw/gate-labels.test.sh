@@ -129,10 +129,12 @@ check "a non-bot cannot forge the proof by using the prefix" \
 ruleset_governs() {
   printf '%s' "$1" | jq -r --arg ref "refs/heads/main" '
     select(.enforcement == "active" and .target == "branch")
-    | def matches($pats): any($pats[];
+    | def globre: gsub("\\."; "\\\\.")
+        | [splits("\\*\\*")] | map(gsub("\\*"; "[^/]*")) | join(".*");
+      def matches($pats): any($pats[];
         . as $p
         | $p == "~ALL" or $p == "~DEFAULT_BRANCH" or
-          ($ref | test("^" + ($p | gsub("\\."; "\\\\.") | gsub("\\*"; ".*")) + "$")));
+          ($ref | test("^" + ($p | globre) + "$")));
       if matches(.conditions.ref_name.include // [])
          and (matches(.conditions.ref_name.exclude // []) | not)
       then .rules[].type else empty end'
@@ -153,6 +155,12 @@ check "tag ruleset never governs a branch" \
   "$(ruleset_governs "$(rs active tag '["~ALL"]' '[]')")" ""
 check "disabled ruleset does not govern" \
   "$(ruleset_governs "$(rs disabled branch '["~ALL"]' '[]')")" ""
+# GitHub's fnmatch stops `*` at a slash; mapping it to `.*` would claim a
+# branch-glob ruleset governs refs it does not.
+check "single-star glob does not cross a slash" \
+  "$(ruleset_governs "$(rs active branch '["refs/heads/*/x"]' '[]')")" ""
+check "double-star glob does cross a slash" \
+  "$(ruleset_governs "$(rs active branch '["refs/heads/**"]' '[]')")" R
 
 # --- gh api's flags are not jq's --------------------------------------------
 # `gh api` accepts --jq but has no --arg, so a jq variable must be bound by a

@@ -104,13 +104,20 @@ jobs:
                 # the ref has to be bound on this side of the pipe.
                 gh api "repos/$REPO/rulesets/$id" \
                 | jq -r --arg ref "refs/heads/$BRANCH" '
+                  # GitHub matches refs with fnmatch, where `*` stops at a `/`
+                  # and `**` crosses it. Mapping both to `.*` would report
+                  # refs/heads/* as governing refs/heads/feature/x and overstate
+                  # which rules apply. splits() on `**` rather than a placeholder
+                  # string, because any placeholder can occur in a real pattern.
+                  def globre: gsub("\\."; "\\\\.")
+                    | [splits("\\*\\*")] | map(gsub("\\*"; "[^/]*")) | join(".*");
                   # $p is bound before the test: inside `$ref | test(...)` the
                   # dot would refer to $ref, so the pattern would compile to
                   # itself and match everything.
                   def matches($pats): any($pats[];
                     . as $p
                     | $p == "~ALL" or $p == "~DEFAULT_BRANCH" or
-                      ($ref | test("^" + ($p | gsub("\\."; "\\\\.") | gsub("\\*"; ".*")) + "$")));
+                      ($ref | test("^" + ($p | globre) + "$")));
                   if matches(.conditions.ref_name.include // [])
                      and (matches(.conditions.ref_name.exclude // []) | not)
                   then .rules[].type else empty end'

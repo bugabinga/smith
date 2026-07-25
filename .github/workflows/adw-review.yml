@@ -53,8 +53,14 @@ jobs:
           # So verify rather than assume. The reviewers depend on this job, so
           # failing here stops them running and leaves the gate red — a stale
           # verdict never gets the chance to authorise the new head.
-          remaining=$(gh pr view "$PR" --repo "$REPO" --json labels \
-                        -q '[.labels[].name] | join(",")')
+          # -e is off so an absent-label removal above can fail harmlessly, which
+          # means this read must be checked by hand: an unchecked failure leaves
+          # `remaining` empty and reports "cleared" on no evidence at all.
+          if ! remaining=$(gh pr view "$PR" --repo "$REPO" --json labels \
+                             -q '[.labels[].name] | join(",")'); then
+            echo "::error::could not read labels to confirm the reset"
+            exit 1
+          fi
           csv=",$remaining,"
           survived=""
           for l in $stripped; do
