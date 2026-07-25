@@ -11,9 +11,15 @@
 #
 name: "CodeQL Advanced"
 
-# Incremental scans run only when code or a workflow changes — a docs/config/
-# markdown PR has nothing for CodeQL to analyze. The weekly schedule is the
-# full-tree backstop.
+# Runs on EVERY push and pull request, with no path filter. Skipping a scan on a
+# docs-only PR saved a minute of runner time and cost far more than that: code
+# scanning compares a PR against the configurations present on the base branch,
+# and a configuration that produces no analysis — because the workflow was
+# path-skipped, or because the language left the matrix — is "not found" rather
+# than "fine". The check then goes NEUTRAL, which is not a failure and so appears
+# nowhere as one. Every configuration must report on every pull request.
+#
+# The weekly schedule stays as the full-tree backstop.
 #
 # The header used to argue this was safe "because CodeQL is not a required merge
 # check; only `merge-gate` is". Whatever the ruleset requires, dropping a
@@ -32,13 +38,8 @@ name: "CodeQL Advanced"
 on:
   push:
     branches: [ "main" ]
-    paths: &scan
-      - '**/*.rs'
-      - '!prototypes/**'          # disposable (SPEC §18) — excluded from analysis anyway; don't even trigger
-      - '.github/workflows/**'
   pull_request:
     branches: [ "main" ]
-    paths: *scan
   schedule:
     - cron: '27 23 * * 6'
 
@@ -66,16 +67,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-        # Only `actions` for now — it is the only code that exists (the ADW's own
-        # workflows). `rust` is dropped until production Rust lands: with the
-        # workspace absent and prototypes excluded, a rust scan finds nothing,
-        # FAILS, and (with code-scanning merge protection on) blocks every PR.
+        # `actions` covers the ADW's own workflows. `rust` returns here because
+        # the condition the checklist named has been met: 14d7377 landed the
+        # workspace, so a scan no longer finds nothing and fails. Leaving it out
+        # after that was not neutral — the configuration stayed registered on
+        # main while the matrix stopped producing it, which is what turned every
+        # PR's code-scanning check neutral and wedged #112.
         #
-        # RE-ADD CHECKLIST (as of 2026-07-22, no production Rust / no site/ yet):
-        #   - Production Rust lands → add `- language: rust` with `build-mode:
-        #     none` (CodeQL's Rust extractor is source-based; the workspace need
-        #     not compile). Confirm CodeQL Rust is GA — it has been in preview;
-        #     if still beta, coverage is thinner than the C/JS packs.
+        # RE-ADD CHECKLIST (production Rust landed 2026-07-25; no site/ yet):
+        #   - Production Rust → DONE, below. CodeQL's Rust extractor is
+        #     source-based, so `build-mode: none` needs no compiling workspace.
         #   - `site/` (Astro) lands → add `- language: javascript-typescript`.
         #     Note its extractor only partially parses `.astro` SFCs (embedded
         #     JS, not the template DSL); DevSkim + npm-audit/Dependabot carry the
@@ -86,6 +87,8 @@ jobs:
         #     neutral until it is deleted on the tool status page. Do that in the
         #     same change that edits this matrix. See #116, #17.
         - language: actions
+          build-mode: none
+        - language: rust
           build-mode: none
         # CodeQL supports the following values keywords for 'language': 'actions', 'c-cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby', 'rust', 'swift'
         # Use `c-cpp` to analyze code written in C, C++ or both
