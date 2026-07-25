@@ -53,6 +53,16 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          # Scoped to the three things the pioneer does: push a branch, open a
+          # PR, and label/comment its issue. An unscoped token carries the whole
+          # installation, which now spans nearly every permission — and this job
+          # hands it to an agent running with permissions skipped over an
+          # untrusted issue body, the widest exposure in the roster. The other
+          # workflows still mint unscoped tokens; this is where the convention
+          # should start changing, not a reason to match it.
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
       # The event is a snapshot; the issue is not. A run can start minutes after
       # the label, behind a queue or a retry, by which time the owner may have
       # closed the issue or removed the label. Acting on the stale event would

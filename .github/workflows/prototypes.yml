@@ -22,6 +22,13 @@ on:
       - "!prototypes/**/*.md"
       - "!prototypes/p34-ci-pipeline/**"
       - ".github/workflows/prototypes.yml"
+      # The root manifest decides whether a prototype can build at all: a
+      # package inside the workspace directory that is neither a member nor
+      # excluded is one Cargo refuses outright. That is precisely how all 28
+      # broke when the workspace landed, and a filter watching only
+      # `prototypes/**` would not have fired on the commit that did it.
+      - "Cargo.toml"
+      - "rust-toolchain.toml"
   pull_request:
     branches: ["main"]
     paths: *proto
