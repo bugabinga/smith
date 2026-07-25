@@ -141,7 +141,10 @@ jobs:
             - DISPROVED — this is the escape valve in
               docs/plans/AGENTIC-DEVELOPMENT.md, and it has a shape: open a NEW
               `needs:spec` issue carrying the contradiction, the SPEC anchor and
-              the disproof, then on THIS work-order remove `needs:prototype`, add
+              the disproof — cite `#${{ github.event.issue.number }}` in its
+              body, which is both what the workflow checks and how a human gets
+              from the spec question back to the slice that raised it — then on
+              THIS work-order remove `needs:prototype`, add
               `blocked`, and comment linking the new issue. Do not relabel the
               work-order `needs:spec` — that conflates "this slice is stuck" with
               "the spec is wrong", and the spec question outlives the slice. Open
@@ -258,31 +261,93 @@ jobs:
           # `[bot]` suffix) and an over-tight match here fails honest runs — it
           # only has to exclude a human's PR that happens to cite the issue in
           # the same window.
-          pr=$(gh pr list --repo "$REPO" --state all --limit 50 \
-                 --json createdAt,body,author \
-               | jq -r --arg t "$STARTED_AT" --arg n "$ISSUE" --arg a "$APP_SLUG" \
-                   '[.[] | select(.createdAt >= $t
-                                  and (.author.login | ascii_downcase | contains($a))
-                                  and (.body | test("#" + $n + "([^0-9]|$)")))]
-                    | length')
+          mine=$(gh pr list --repo "$REPO" --state all --limit 50 \
+                   --json createdAt,body,author \
+                 | jq -r --arg t "$STARTED_AT" --arg n "$ISSUE" --arg a "$APP_SLUG" \
+                     '[.[] | select(.createdAt >= $t
+                                    and (.author.login | ascii_downcase | contains($a))
+                                    and (.body | test("#" + $n + "([^0-9]|$)")))]')
+          pr=$(printf '%s' "$mine" | jq 'length')
+
+          # Whether the PR RETIRES the work-order, which is the difference
+          # between the two verdicts that both land one. PROVED must close it:
+          # a merged prototype that leaves its issue open is precisely what the
+          # sweeper later finds and calls stalled. DISPROVED must NOT close it:
+          # the claim is unresolved and the work-order outlives the evidence.
+          # Any of GitHub's closing keywords counts, since any of them has that
+          # effect on merge — checking only `Closes` would pass a PR that closes
+          # the issue by saying `Fixes`.
+          closing=$(printf '%s' "$mine" \
+                    | jq --arg n "$ISSUE" \
+                        '[.[] | select(.body
+                           | test("\\b(clos(e|es|ed)|fix(e[sd])?|resolve[sd]?)[ \t]+#"
+                                  + $n + "([^0-9]|$)"; "i"))] | length')
 
           case "$verdict" in
-            PROVED|DISPROVED)
-              # DISPROVED is not the escape hatch — it still owes the evidence
-              # that disproved the claim. Only the PR distinguishes it from a run
-              # that gave up, since it leaves the same `blocked` label as
-              # CANNOT-RUN.
+            PROVED)
               if [ "$pr" -eq 0 ]; then
-                echo "::error::pioneer declared $verdict on #$ISSUE but landed no"\
-                     "PR referencing it — that verdict owes a prototype, and the"\
-                     "issue leaves dequeued with the evidence missing"
+                echo "::error::pioneer declared PROVED on #$ISSUE but landed no PR"\
+                     "referencing it — a proof owes its prototype, and the issue"\
+                     "leaves dequeued with the evidence missing"
+                exit 1
+              fi
+              if [ "$closing" -eq 0 ]; then
+                echo "::error::pioneer proved #$ISSUE but its PR carries no closing"\
+                     "keyword — merging would leave the work-order open for the"\
+                     "sweeper to find and call stalled"
+                exit 1
+              fi ;;
+            DISPROVED)
+              # A disproof is not the escape hatch: it still owes the evidence
+              # that did the disproving, plus the two things that make it
+              # actionable — a hold on this slice, and the spec question raised
+              # where it outlives the slice. Without the escalation the
+              # contradiction dies with this run and the spec stays wrong.
+              if [ "$pr" -eq 0 ]; then
+                echo "::error::pioneer declared DISPROVED on #$ISSUE but landed no"\
+                     "PR referencing it — the disproof is the evidence and has to"\
+                     "land somewhere a human can read it"
+                exit 1
+              fi
+              if [ "$closing" -gt 0 ]; then
+                echo "::error::pioneer disproved #$ISSUE but its PR closes the"\
+                     "issue — the claim is unresolved, so merging the evidence"\
+                     "must not retire the work-order"
+                exit 1
+              fi
+              case ",$labels," in
+                *,blocked,*) ;;
+                *) echo "::error::pioneer disproved #$ISSUE without leaving it"\
+                        "blocked — a slice whose premise failed must not stay in"\
+                        "the ready queue"
+                   exit 1 ;;
+              esac
+              escalated=$(gh issue list --repo "$REPO" --label needs:spec \
+                            --state all --limit 50 --json createdAt,body,number \
+                          | jq -r --arg t "$STARTED_AT" --arg n "$ISSUE" \
+                              '[.[] | select(.createdAt >= $t
+                                             and (.number | tostring) != $n
+                                             and (.body | test("#" + $n + "([^0-9]|$)")))]
+                               | length')
+              if [ "$escalated" -eq 0 ]; then
+                echo "::error::pioneer disproved #$ISSUE but opened no needs:spec"\
+                     "issue citing it — the spec claim that failed is the owner's"\
+                     "to resolve and must outlive this slice"
                 exit 1
               fi ;;
             CANNOT-RUN)
-              # The one verdict allowed to conclude without a prototype, so it
-              # must leave the hold a human can act on. Presence is enough here:
-              # a retry on an issue already `blocked` re-adds nothing and emits
-              # no event, and failing it for that would punish the honest path.
+              # The one verdict allowed to conclude without a prototype — so it
+              # must genuinely be without one. A PR here contradicts the verdict
+              # itself, and whichever of the two is wrong, a human should look.
+              if [ "$pr" -gt 0 ]; then
+                echo "::error::pioneer declared CANNOT-RUN on #$ISSUE yet opened"\
+                     "$pr PR(s) referencing it — that verdict means no prototype"\
+                     "was possible, so either the verdict or the PR is wrong"
+                exit 1
+              fi
+              # Presence is enough for the hold: a retry on an issue already
+              # `blocked` re-adds nothing and emits no event, and failing it for
+              # that would punish the honest path.
               case ",$labels," in
                 *,blocked,*) ;;
                 *) echo "::error::pioneer declared CANNOT-RUN on #$ISSUE without"\
@@ -291,4 +356,4 @@ jobs:
                    exit 1 ;;
               esac ;;
           esac
-          echo "pioneer concluded — verdict=$verdict prs=$pr"
+          echo "pioneer concluded — verdict=$verdict prs=$pr closing=$closing"
