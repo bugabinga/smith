@@ -12,7 +12,15 @@
 | Linux ARM64 (glibc) | `aarch64-unknown-linux-gnu` | Tier 1 | Native or cross | Raspberry Pi 4/5, AWS Graviton |
 | Linux x86_64 (musl) | `x86_64-unknown-linux-musl` | Tier 2 | cargo-zigbuild | Static binary, Alpine/containers |
 | Linux ARM64 (musl) | `aarch64-unknown-linux-musl` | Tier 2 | cargo-zigbuild | Static ARM64, containers |
-| OpenBSD x86_64 | `x86_64-unknown-openbsd` | Tier 3 | Native build only | No cross-image available |
+| Android ARM64 (Bionic) | `aarch64-linux-android` | Tier 2 | NDK + `clang_rt.builtins` link flag (§6) | Android/Termux — required release artifact |
+| Linux riscv64 (glibc) | `riscv64gc-unknown-linux-gnu` | Tier 2 | cargo-zigbuild | Best-effort |
+| Linux riscv64 (musl) | `riscv64gc-unknown-linux-musl` | Tier 2 | cargo-zigbuild | Best-effort |
+| FreeBSD x86_64 | `x86_64-unknown-freebsd` | Tier 2 | cargo-zigbuild (experimental) | Best-effort |
+| OpenBSD x86_64 | `x86_64-unknown-openbsd` | Tier 3 | Native build only | No cross-image available — best-effort |
+
+The Rust-tier column above is upstream toolchain support; the release status in
+the Notes column (required vs best-effort) is canonical in SPEC §14. Android is a
+required release artifact there; riscv64, FreeBSD, and OpenBSD are best-effort.
 
 **OpenBSD is Tier 3** — Rust project does not build or test it automatically. `rustup target add` works but std may have bugs. No Docker cross-image from cross-rs. Must build natively or via zig (experimental).
 
@@ -83,6 +91,7 @@ smith-v0.1.0/
 ├── smith-aarch64-unknown-linux-gnu.tar.gz
 ├── smith-x86_64-unknown-linux-musl.tar.gz
 ├── smith-aarch64-unknown-linux-musl.tar.gz
+├── smith-aarch64-linux-android.tar.gz
 ├── smith-x86_64-unknown-openbsd.tar.gz
 └── checksums-sha256.txt
 ```
