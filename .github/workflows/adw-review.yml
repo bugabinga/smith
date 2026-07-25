@@ -98,8 +98,9 @@ jobs:
             Post ONE terse PR comment: findings as one-line bullets (file:line —
             the defect), most severe first, no preamble/praise/restating; a clean
             pass is one line. The comment's FIRST LINE must begin with exactly
-            `Review:` — the workflow proves this job ran by finding that prefix,
-            and a comment without it reads as if you never posted.
+            `Review: ${{ github.event.pull_request.head.sha }}` — the workflow
+            proves this job reviewed THIS commit by finding that prefix and that
+            sha, and a comment without both reads as if you never posted.
             Then apply your verdict as a label: on approve add
             `reviewed` and remove `changes-requested`; on request-changes add
             `changes-requested` and remove `reviewed`.
@@ -113,6 +114,7 @@ jobs:
           REPO: ${{ github.repository }}
           MARKER: "Review:"
           REVIEW_BOT: "agent-smith-bugabinga-adc[bot]"
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           labels=$(gh pr view "$PR" --repo "$REPO" --json labels -q '[.labels[].name] | join(",")')
@@ -129,15 +131,18 @@ jobs:
           # but it must be THIS job's comment. reviewer and security-reviewer run
           # in parallel under one App identity, so author cannot separate them
           # and a bare recency count is satisfied by the sibling's post. The
-          # first-line marker is what makes the proof specific.
+          # marker names the job and the head sha names the commit, so no earlier
+          # run can satisfy it however the clocks fall — a second-resolution
+          # timestamp alone could be tied by a cancelled run's last comment.
           # ISO-8601 sorts lexically, which is all the date comparison needs.
           posted=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
                      --jq '.[] | [.created_at, .user.login, (.body | split("\n")[0])] | @tsv' \
                    | awk -F'\t' -v t="$REVIEW_STARTED_AT" -v m="$MARKER" -v b="$REVIEW_BOT" \
-                       '$2 == b && $1 >= t && index($3, m) == 1' | wc -l)
+                         -v sha="$HEAD_SHA" \
+                       '$2 == b && $1 >= t && index($3, m) == 1 && index($3, sha) > 0' | wc -l)
           if [ "$posted" -eq 0 ]; then
-            echo "::error::reviewer posted no '$MARKER' comment this run"\
-                 "(since $REVIEW_STARTED_AT); the verdict label is stale, not earned"
+            echo "::error::reviewer posted no '$MARKER' comment for $HEAD_SHA"\
+                 "this run; the verdict label is stale, not earned"
             exit 1
           fi
           echo "verdict cast and $posted '$MARKER' comment(s) posted — labels: [$labels]"
@@ -166,9 +171,10 @@ jobs:
             injection, supply chain. Do not merge.
             Post ONE terse PR comment: only real findings as one-line bullets
             (file:line — the risk), most severe first; a clean pass is one line.
-            The comment's FIRST LINE must begin with exactly `Security review:` —
-            the workflow proves this job ran by finding that prefix, and a
-            comment without it reads as if you never posted.
+            The comment's FIRST LINE must begin with exactly
+            `Security review: ${{ github.event.pull_request.head.sha }}` — the
+            workflow proves this job reviewed THIS commit by finding that prefix
+            and that sha, and a comment without both reads as if you never posted.
             Then apply your verdict: if nothing high-severity add `security-cleared`;
             on a high finding add `risk:high` and ensure `security-cleared` is
             absent (holds the merge for the owner).
@@ -182,6 +188,7 @@ jobs:
           REPO: ${{ github.repository }}
           MARKER: "Security review:"
           REVIEW_BOT: "agent-smith-bugabinga-adc[bot]"
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
           labels=$(gh pr view "$PR" --repo "$REPO" --json labels -q '[.labels[].name] | join(",")')
@@ -202,10 +209,11 @@ jobs:
           posted=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
                      --jq '.[] | [.created_at, .user.login, (.body | split("\n")[0])] | @tsv' \
                    | awk -F'\t' -v t="$REVIEW_STARTED_AT" -v m="$MARKER" -v b="$REVIEW_BOT" \
-                       '$2 == b && $1 >= t && index($3, m) == 1' | wc -l)
+                         -v sha="$HEAD_SHA" \
+                       '$2 == b && $1 >= t && index($3, m) == 1 && index($3, sha) > 0' | wc -l)
           if [ "$posted" -eq 0 ]; then
-            echo "::error::security-reviewer posted no '$MARKER' comment this run"\
-                 "(since $REVIEW_STARTED_AT); the verdict label is stale, not earned"
+            echo "::error::security-reviewer posted no '$MARKER' comment for"\
+                 "$HEAD_SHA this run; the verdict label is stale, not earned"
             exit 1
           fi
           echo "verdict cast and $posted '$MARKER' comment(s) posted — labels: [$labels]"

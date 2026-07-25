@@ -93,15 +93,20 @@ check "security rejects a silent no-op"     "$(verdict 'reviewed' security-clear
 # Input mirrors the workflow's jq: created_at TAB first-line-of-body.
 proof() {
   printf '%b' "$2" \
-  | awk -F'\t' -v t="$1" -v m="$3" -v b="$BOT" \
-      '$2 == b && $1 >= t && index($3, m) == 1' | wc -l | tr -d ' '
+  | awk -F'\t' -v t="$1" -v m="$3" -v b="$BOT" -v sha="$SHA" \
+      '$2 == b && $1 >= t && index($3, m) == 1 && index($3, sha) > 0' \
+  | wc -l | tr -d ' '
 }
 BOT='agent-smith-bugabinga-adc[bot]'
+SHA=02a8366
 T=2026-07-25T12:00:00Z
-own="2026-07-25T12:01:00Z\t$BOT\tSecurity review: no findings.\n"
-sibling="2026-07-25T12:01:00Z\t$BOT\tReview: one blocker.\n"
-stale="2026-07-25T11:00:00Z\t$BOT\tSecurity review: no findings.\n"
-spoof="2026-07-25T12:01:00Z\tsome-human\tSecurity review: trust me.\n"
+own="2026-07-25T12:01:00Z\t$BOT\tSecurity review: $SHA no findings.\n"
+sibling="2026-07-25T12:01:00Z\t$BOT\tReview: $SHA one blocker.\n"
+stale="2026-07-25T11:00:00Z\t$BOT\tSecurity review: $SHA no findings.\n"
+spoof="2026-07-25T12:01:00Z\tsome-human\tSecurity review: $SHA trust me.\n"
+# A cancelled prior-head run whose last comment lands in the same second the new
+# job starts: recency alone cannot separate it, the sha can.
+prev_head="2026-07-25T12:00:00Z\t$BOT\tSecurity review: f217b4a no findings.\n"
 
 check "security proof accepts its own fresh comment" \
   "$(proof "$T" "$own" 'Security review:')" 1
@@ -118,7 +123,9 @@ check "sibling comment alone never proves the security run" \
 check "reviewer proof accepts its own fresh comment" \
   "$(proof "$T" "$sibling" 'Review:')" 1
 check "marker must match at the START of the line" \
-  "$(proof "$T" "2026-07-25T12:01:00Z\t$BOT\tRe: Security review: nope\n" 'Security review:')" 0
+  "$(proof "$T" "2026-07-25T12:01:00Z\t$BOT\tRe: Security review: $SHA nope\n" 'Security review:')" 0
+check "a same-second comment for the previous head does not prove this one" \
+  "$(proof "$T" "$prev_head" 'Security review:')" 0
 check "a non-bot cannot forge the proof by using the prefix" \
   "$(proof "$T" "$spoof" 'Security review:')" 0
 

@@ -87,6 +87,13 @@ jobs:
           # A type present in one and not the other is the drift worth seeing;
           # comparing full parameter trees would bury it in noise.
           #
+          # KNOWN LIMIT: types only. Swapping the required check away from
+          # merge-gate, turning off code-owner review, or widening bypass_actors
+          # all keep the type and change the meaning, and this table would call
+          # that agreement. Those parameters are printed verbatim per ruleset
+          # above, so the report carries the evidence even though the comparison
+          # does not judge it — read the JSON, not just this row.
+          #
           # Only rulesets that ACTUALLY govern the default branch may enter the
           # comparison. Unioning every defined ruleset would invent drift from a
           # disabled or other-branch rule, and — worse — could mask a missing

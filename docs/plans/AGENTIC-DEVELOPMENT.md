@@ -278,7 +278,7 @@ and destination; nothing dead-ends or merges on a guess.
 
 | When… | Detected by | Handled by | Routes to |
 |---|---|---|---|
-| CI is red | CI gates | `sweeper` (hourly) | re-kicks `builder` to self-heal; brakes `stalled` if no progress |
+| CI is red | CI gates | `sweeper` (hourly) | re-kicks `builder` to self-heal; `blocked` if no progress — `stalled` reports a stall, it does not hold the gate |
 | review requests changes | `reviewer` | `builder` via `adw-revise` | revise on the same branch → re-review on push |
 | PR green but unmerged / conflicted / `ready` with no branch | schedule | `sweeper` | re-kick if tractable, else label `stalled` with why |
 | change is high-risk / high-severity | `security-reviewer` | owner | `risk:high` → **touchpoint 3**; never auto-merges |
