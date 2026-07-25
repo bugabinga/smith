@@ -3,8 +3,7 @@
 use std::{
     env,
     error::Error,
-    fmt, fs, io,
-    path::{Path, PathBuf},
+    fmt, io,
     process::{Command, ExitCode},
 };
 
@@ -111,7 +110,7 @@ enum ArchError {
     Metadata(io::Error),
     MetadataFailed(String),
     InvalidMetadata(&'static str),
-    Source { path: PathBuf, source: io::Error },
+    Pup(GateError),
     Violations(Vec<String>),
 }
 
@@ -123,9 +122,7 @@ impl fmt::Display for ArchError {
             Self::InvalidMetadata(reason) => {
                 write!(formatter, "Cargo metadata was invalid: {reason}")
             }
-            Self::Source { path, source } => {
-                write!(formatter, "could not inspect {}: {source}", path.display())
-            }
+            Self::Pup(error) => write!(formatter, "cargo-pup {error}"),
             Self::Violations(violations) => write!(formatter, "{}", violations.join("\n")),
         }
     }
@@ -135,7 +132,7 @@ impl Error for ArchError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Metadata(error) => Some(error),
-            Self::Source { source, .. } => Some(source),
+            Self::Pup(error) => Some(error),
             Self::MetadataFailed(_) | Self::InvalidMetadata(_) | Self::Violations(_) => None,
         }
     }
@@ -143,8 +140,19 @@ impl Error for ArchError {
 
 struct Package {
     name: String,
-    dependencies: Vec<String>,
-    manifest_path: PathBuf,
+    dependencies: Vec<Dependency>,
+}
+
+struct Dependency {
+    name: String,
+    kind: DependencyKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DependencyKind {
+    Normal,
+    Development,
+    Build,
 }
 
 #[expect(
@@ -181,6 +189,13 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("print-modules") => match run_print_modules() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("xtask print-modules: {error}");
+                ExitCode::FAILURE
+            }
+        },
         _ => usage(),
     }
 }
@@ -190,7 +205,7 @@ fn main() -> ExitCode {
     reason = "Usage is an interactive command-line diagnostic."
 )]
 fn usage() -> ExitCode {
-    eprintln!("usage: cargo run -p xtask -- <check|arch|pup>");
+    eprintln!("usage: cargo run -p xtask -- <check|arch|pup|print-modules>");
     ExitCode::FAILURE
 }
 
@@ -211,6 +226,22 @@ fn run_pup() -> Result<(), GateError> {
     run_cargo(&[PINNED_NIGHTLY, "pup"])
 }
 
+#[expect(
+    clippy::print_stdout,
+    reason = "The command is a developer-facing module inventory."
+)]
+fn run_print_modules() -> Result<(), ArchError> {
+    for package in cargo_metadata()? {
+        println!("{}", crate_root_name(&package.name));
+    }
+
+    run_cargo(&[PINNED_NIGHTLY, "pup", "print-modules"]).map_err(ArchError::Pup)
+}
+
+fn crate_root_name(package_name: &str) -> String {
+    package_name.replace('-', "_")
+}
+
 fn run_cargo(arguments: &[&str]) -> Result<(), GateError> {
     let status = Command::new("cargo")
         .args(arguments)
@@ -226,11 +257,7 @@ fn run_cargo(arguments: &[&str]) -> Result<(), GateError> {
 
 fn run_arch() -> Result<(), ArchError> {
     let packages = cargo_metadata()?;
-    let mut violations = dependency_violations(&packages);
-
-    for package in packages {
-        violations.extend(source_violations(&package)?);
-    }
+    let violations = dependency_violations(&packages);
 
     if violations.is_empty() {
         Ok(())
@@ -261,15 +288,40 @@ fn parse_metadata(metadata: &str) -> Result<Vec<Package>, ArchError> {
         .map(|package| {
             let dependencies = json_array_field(package, "dependencies")?;
             Ok(Package {
-                name: json_string_field(package, "name")?.to_owned(),
+                name: json_string_field(package, "name")?,
                 dependencies: json_objects(dependencies)
                     .into_iter()
-                    .map(|dependency| json_string_field(dependency, "name").map(str::to_owned))
+                    .map(|dependency| {
+                        Ok(Dependency {
+                            name: json_string_field(dependency, "name")?,
+                            kind: dependency_kind(dependency)?,
+                        })
+                    })
                     .collect::<Result<_, _>>()?,
-                manifest_path: PathBuf::from(json_string_field(package, "manifest_path")?),
             })
         })
         .collect()
+}
+
+fn dependency_kind(dependency: &str) -> Result<DependencyKind, ArchError> {
+    let field_start = dependency
+        .find("\"kind\"")
+        .ok_or(ArchError::InvalidMetadata("dependency kind was absent"))?;
+    let value = dependency[field_start..]
+        .split_once(':')
+        .ok_or(ArchError::InvalidMetadata("dependency kind was malformed"))?
+        .1
+        .trim_start();
+
+    if value.starts_with("null") {
+        return Ok(DependencyKind::Normal);
+    }
+
+    match decode_json_string(value)?.as_str() {
+        "dev" => Ok(DependencyKind::Development),
+        "build" => Ok(DependencyKind::Build),
+        _ => Err(ArchError::InvalidMetadata("dependency kind was unknown")),
+    }
 }
 
 fn json_array_field<'a>(object: &'a str, field: &str) -> Result<&'a str, ArchError> {
@@ -283,7 +335,7 @@ fn json_array_field<'a>(object: &'a str, field: &str) -> Result<&'a str, ArchErr
     json_balanced(object, value_start, b'[', b']')
 }
 
-fn json_string_field<'a>(object: &'a str, field: &str) -> Result<&'a str, ArchError> {
+fn json_string_field(object: &str, field: &str) -> Result<String, ArchError> {
     let field_start = object
         .find(&format!("\"{field}\""))
         .ok_or(ArchError::InvalidMetadata("required field was absent"))?;
@@ -292,20 +344,51 @@ fn json_string_field<'a>(object: &'a str, field: &str) -> Result<&'a str, ArchEr
         .map(|offset| field_start + offset + 1)
         .ok_or(ArchError::InvalidMetadata("string field was malformed"))?;
     let value = object[value_start..].trim_start();
+    decode_json_string(value)
+}
+
+fn decode_json_string(value: &str) -> Result<String, ArchError> {
     let value = value
         .strip_prefix('"')
         .ok_or(ArchError::InvalidMetadata("string field was not a string"))?;
-    let value_end = value
-        .find('"')
-        .ok_or(ArchError::InvalidMetadata("string field was unterminated"))?;
+    let mut characters = value.chars();
+    let mut decoded = String::new();
 
-    if value[..value_end].contains('\\') {
-        return Err(ArchError::InvalidMetadata(
-            "escaped JSON strings are not supported by the metadata reader",
-        ));
+    while let Some(character) = characters.next() {
+        match character {
+            '"' => return Ok(decoded),
+            '\\' => match characters
+                .next()
+                .ok_or(ArchError::InvalidMetadata("string escape was unterminated"))?
+            {
+                '"' => decoded.push('"'),
+                '\\' => decoded.push('\\'),
+                '/' => decoded.push('/'),
+                'b' => decoded.push('\u{0008}'),
+                'f' => decoded.push('\u{000c}'),
+                'n' => decoded.push('\n'),
+                'r' => decoded.push('\r'),
+                't' => decoded.push('\t'),
+                'u' => decoded.push(decode_json_codepoint(&mut characters)?),
+                _ => return Err(ArchError::InvalidMetadata("string escape was invalid")),
+            },
+            _ => decoded.push(character),
+        }
     }
 
-    Ok(&value[..value_end])
+    Err(ArchError::InvalidMetadata("string field was unterminated"))
+}
+
+fn decode_json_codepoint(characters: &mut std::str::Chars<'_>) -> Result<char, ArchError> {
+    let digits = characters.by_ref().take(4).collect::<String>();
+    if digits.len() != 4 {
+        return Err(ArchError::InvalidMetadata(
+            "unicode escape was unterminated",
+        ));
+    }
+    let codepoint = u32::from_str_radix(&digits, 16)
+        .map_err(|_| ArchError::InvalidMetadata("unicode escape was invalid"))?;
+    char::from_u32(codepoint).ok_or(ArchError::InvalidMetadata("unicode escape was invalid"))
 }
 
 fn json_balanced(value: &str, start: usize, opening: u8, closing: u8) -> Result<&str, ArchError> {
@@ -371,111 +454,25 @@ fn dependency_violations(packages: &[Package]) -> Vec<String> {
     packages
         .iter()
         .filter_map(|package| {
-            let rule = ARCHITECTURE.iter().find(|rule| rule.name == package.name)?;
+            let Some(rule) = ARCHITECTURE.iter().find(|rule| rule.name == package.name) else {
+                return Some(format!(
+                    "ARCH VIOLATION: {} has no dependency rule in SPEC §2.2",
+                    package.name
+                ));
+            };
             let forbidden = package.dependencies.iter().find(|dependency| {
-                ARCHITECTURE
-                    .iter()
-                    .any(|rule| rule.name == dependency.as_str())
+                dependency.kind == DependencyKind::Normal
+                    && ARCHITECTURE.iter().any(|rule| rule.name == dependency.name)
                     && !rule
                         .allowed_internal_dependencies
-                        .contains(&dependency.as_str())
+                        .contains(&dependency.name.as_str())
             })?;
             Some(format!(
-                "ARCH VIOLATION: {} -> {forbidden} is forbidden by SPEC §2.2",
-                package.name
+                "ARCH VIOLATION: {} -> {} is forbidden by SPEC §2.2",
+                package.name, forbidden.name
             ))
         })
         .collect()
-}
-
-fn source_violations(package: &Package) -> Result<Vec<String>, ArchError> {
-    let source_root = package
-        .manifest_path
-        .parent()
-        .ok_or(ArchError::InvalidMetadata("manifest path had no parent"))?
-        .join("src");
-    let mut source_files = Vec::new();
-    collect_rust_files(&source_root, &mut source_files)?;
-
-    let mut violations = Vec::new();
-    for path in source_files {
-        let source = fs::read_to_string(&path).map_err(|source| ArchError::Source {
-            path: path.clone(),
-            source,
-        })?;
-        let display_path = path.display();
-
-        if path.file_name().is_some_and(|name| name == "mod.rs") && !is_hygienic_mod_file(&source) {
-            violations.push(format!(
-                "ARCH VIOLATION: {display_path} contains more than module declarations and re-exports"
-            ));
-        }
-        if contains_wildcard_import(&source) {
-            violations.push(format!(
-                "ARCH VIOLATION: {display_path} contains a wildcard import"
-            ));
-        }
-        if contains_public_module(&source) {
-            violations.push(format!(
-                "ARCH VIOLATION: {display_path} exposes an implementation module with `pub mod`"
-            ));
-        }
-    }
-
-    Ok(violations)
-}
-
-fn collect_rust_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), ArchError> {
-    if !directory.exists() {
-        return Ok(());
-    }
-
-    let entries = fs::read_dir(directory).map_err(|source| ArchError::Source {
-        path: directory.to_path_buf(),
-        source,
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|source| ArchError::Source {
-            path: directory.to_path_buf(),
-            source,
-        })?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_rust_files(&path, files)?;
-        } else if path.extension().is_some_and(|extension| extension == "rs") {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
-fn is_hygienic_mod_file(source: &str) -> bool {
-    source.lines().all(|line| {
-        let line = line.trim();
-        line.is_empty()
-            || line.starts_with("//")
-            || line.starts_with("#![")
-            || line.starts_with("#[")
-            || (line.ends_with(';')
-                && (line.starts_with("mod ")
-                    || line.starts_with("pub mod ")
-                    || line.starts_with("pub(crate) mod ")
-                    || line.starts_with("pub use ")
-                    || line.starts_with("pub(crate) use ")))
-    })
-}
-
-fn contains_wildcard_import(source: &str) -> bool {
-    source.split(';').map(str::trim_start).any(|statement| {
-        (statement.starts_with("use ") || statement.starts_with("pub use "))
-            && statement.contains('*')
-    })
-}
-
-fn contains_public_module(source: &str) -> bool {
-    source
-        .lines()
-        .any(|line| line.trim_start().starts_with("pub mod "))
 }
 
 #[cfg(test)]
@@ -485,16 +482,9 @@ fn contains_public_module(source: &str) -> bool {
 )]
 mod tests {
     use super::{
-        ARCHITECTURE, ArchError, GateError, Package, dependency_violations, parse_metadata,
-        run_check, source_violations,
+        ARCHITECTURE, ArchError, Dependency, DependencyKind, GateError, Package, crate_root_name,
+        dependency_violations, parse_metadata, run_check,
     };
-    use std::{
-        env, fs,
-        path::PathBuf,
-        process,
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
     #[test]
     fn check_runs_architecture_gates_in_order() {
         let mut invocations = Vec::new();
@@ -505,8 +495,26 @@ mod tests {
         });
 
         assert!(result.is_ok());
-        assert_eq!(invocations[2], ["run", "-p", "xtask", "--", "arch"]);
-        assert_eq!(invocations[3], ["run", "-p", "xtask", "--", "pup"]);
+        assert_eq!(
+            invocations,
+            [
+                ["fmt", "--check"].as_slice(),
+                [
+                    "clippy",
+                    "--workspace",
+                    "--all-targets",
+                    "--all-features",
+                    "--",
+                    "-D",
+                    "warnings",
+                ]
+                .as_slice(),
+                ["run", "-p", "xtask", "--", "arch"].as_slice(),
+                ["run", "-p", "xtask", "--", "pup"].as_slice(),
+                ["nextest", "run", "--workspace"].as_slice(),
+                ["test", "--doc", "--workspace"].as_slice(),
+            ]
+        );
     }
 
     #[test]
@@ -530,20 +538,41 @@ mod tests {
 
     #[test]
     fn metadata_parser_finds_direct_dependencies() {
-        let metadata = r#"{"packages":[{"name":"smith-core","dependencies":[{"name":"smith"}],"manifest_path":"/tmp/smith-core/Cargo.toml"}]}"#;
+        let metadata = r#"{"packages":[{"name":"smith-core","dependencies":[{"name":"smith","kind":null}],"manifest_path":"C:\\smith-core\\Cargo.toml"}]}"#;
 
         let packages = parse_metadata(metadata).unwrap();
 
         assert_eq!(packages[0].name, "smith-core");
-        assert_eq!(packages[0].dependencies, ["smith"]);
+        assert_eq!(packages[0].dependencies[0].name, "smith");
+        assert_eq!(packages[0].dependencies[0].kind, DependencyKind::Normal);
+    }
+
+    #[test]
+    fn metadata_parser_preserves_non_normal_dependency_kinds() {
+        let metadata = r#"{"packages":[{"name":"smith-core","dependencies":[{"name":"smith-ai","kind":"dev"},{"name":"smith-ai","kind":"build"}]}]}"#;
+
+        let packages = parse_metadata(metadata).unwrap();
+
+        assert_eq!(
+            packages[0].dependencies[0].kind,
+            DependencyKind::Development
+        );
+        assert_eq!(packages[0].dependencies[1].kind, DependencyKind::Build);
+    }
+
+    #[test]
+    fn module_inventory_uses_rust_crate_names() {
+        assert_eq!(crate_root_name("smith-core"), "smith_core");
     }
 
     #[test]
     fn arch_rejects_forbidden_internal_dependency() {
         let package = Package {
             name: "smith-core".to_owned(),
-            dependencies: vec!["smith-ai".to_owned()],
-            manifest_path: PathBuf::from("/tmp/smith-core/Cargo.toml"),
+            dependencies: vec![Dependency {
+                name: "smith-ai".to_owned(),
+                kind: DependencyKind::Normal,
+            }],
         };
 
         assert_eq!(ARCHITECTURE.len(), 7);
@@ -554,45 +583,34 @@ mod tests {
     }
 
     #[test]
-    fn arch_rejects_source_forbidden_list() {
-        let directory = temporary_directory();
-        let source_directory = directory.join("src");
-        fs::create_dir_all(&source_directory).unwrap();
-        fs::write(
-            source_directory.join("mod.rs"),
-            "pub mod child;\nfn hidden() {}\n",
-        )
-        .unwrap();
-        fs::write(
-            source_directory.join("lib.rs"),
-            "use dependency::*;\npub mod implementation;\n",
-        )
-        .unwrap();
+    fn arch_allows_dev_and_build_dependencies() {
         let package = Package {
-            name: "smith".to_owned(),
-            dependencies: Vec::new(),
-            manifest_path: directory.join("Cargo.toml"),
+            name: "smith-core".to_owned(),
+            dependencies: vec![
+                Dependency {
+                    name: "smith-ai".to_owned(),
+                    kind: DependencyKind::Development,
+                },
+                Dependency {
+                    name: "smith-ai".to_owned(),
+                    kind: DependencyKind::Build,
+                },
+            ],
         };
 
-        let result = source_violations(&package);
-        fs::remove_dir_all(&directory).unwrap();
+        assert!(dependency_violations(&[package]).is_empty());
+    }
 
-        let violations = result.unwrap();
-        assert_eq!(violations.len(), 4);
-        assert!(
-            violations
-                .iter()
-                .any(|violation| violation.contains("mod.rs"))
-        );
-        assert!(
-            violations
-                .iter()
-                .any(|violation| violation.contains("wildcard import"))
-        );
-        assert!(
-            violations
-                .iter()
-                .any(|violation| violation.contains("pub mod"))
+    #[test]
+    fn arch_rejects_an_unlisted_workspace_package() {
+        let package = Package {
+            name: "new-workspace-package".to_owned(),
+            dependencies: Vec::new(),
+        };
+
+        assert_eq!(
+            dependency_violations(&[package]),
+            ["ARCH VIOLATION: new-workspace-package has no dependency rule in SPEC §2.2"]
         );
     }
 
@@ -602,15 +620,5 @@ mod tests {
             parse_metadata("{}"),
             Err(ArchError::InvalidMetadata(_))
         ));
-    }
-
-    fn temporary_directory() -> PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let directory = env::temp_dir().join(format!("smith-xtask-{nonce}-{}", process::id()));
-        fs::create_dir(&directory).unwrap();
-        directory
     }
 }
