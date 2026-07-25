@@ -32,3 +32,8 @@ rustflags = [
 
 [registries.crates-io]
 protocol = "sparse"
+
+# Bionic lacks the compiler-rt builtins Rust expects; vendored LuaJIT needs
+# __clear_cache. Normative for this target — see SPEC §3.2 and §14.
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-args=-lclang_rt.builtins-aarch64-android"]

@@ -399,9 +399,22 @@ Benchmarks tracked with criterion. Baselines stored in `target/criterion/`. Regr
 | Linux ARM64 (glibc) | `aarch64-unknown-linux-gnu` | Tier 1 | Required |
 | Linux x86_64 (musl) | `x86_64-unknown-linux-musl` | Tier 2 | Required (static) |
 | Linux ARM64 (musl) | `aarch64-unknown-linux-musl` | Tier 2 | Required (static) |
+| Android ARM64 (Bionic) | `aarch64-linux-android` | Tier 2 | Required |
+| Linux riscv64 (glibc) | `riscv64gc-unknown-linux-gnu` | Tier 2 | Best-effort |
+| Linux riscv64 (musl) | `riscv64gc-unknown-linux-musl` | Tier 2 | Best-effort |
+| FreeBSD x86_64 | `x86_64-unknown-freebsd` | Tier 2 | Best-effort |
 | OpenBSD x86_64 | `x86_64-unknown-openbsd` | Tier 3 | Best-effort |
 
-**Development environment note:** Android/Termux on `aarch64-linux-android` is a supported development environment, not a release artifact target. Vendored LuaJIT requires compiler-rt builtins linked for `__clear_cache`; see `.cargo/config.toml`.
+**Android is a shipping platform, not only a development one** (owner decision,
+2026-07-25). Android/Termux on `aarch64-linux-android` is both the environment smith
+is developed in *and* a required release artifact: a terminal-first coding agent is
+used on a phone, not merely built for one. It is a third libc — **Bionic**, beside
+glibc and musl — which is why it gets its own row rather than a Linux variant.
+Bionic does not carry the compiler-rt builtins Rust expects, so vendored LuaJIT
+fails to link `__clear_cache` unless they are linked explicitly; that flag lives in
+`.cargo/config.toml` and is normative for this target, not a local workaround. This
+table and `docs/SPEC.md` §14 must agree — a target listed in one and absent from the
+other is drift.
 
 ### Artifact Format
 
