@@ -334,8 +334,18 @@ auto-merge**, armed for every agent PR and released by the ruleset's gate:
    job that reads the PR's labels and is green only when both review verdicts are
    in (`reviewed` + `security-cleared`) and no blocking label
    (`risk:high`, `blocked`, `changes-requested`, `needs:info`, `needs:spec`,
-   `needs:prototype`, `stalled`) is present — the exact set `adw-gate.yml` holds
-   on. CI checks join this list once the workspace CI lands.
+   `needs:prototype`) is present. The set lives in `.github/adw/gate-labels.sh`,
+   which the gate and the jam detector both read, so the two cannot drift apart.
+   CI checks join this list once the workspace CI lands.
+
+   `stalled` is deliberately **not** in that set. It is the sweeper's diagnosis
+   that a PR has stopped moving — a report, not a veto — and blocking on it made
+   the sweeper the reason its own subject could not merge: the hourly pass
+   labelled a waiting PR, the label turned the gate red, the red gate kept it
+   waiting, and the next pass labelled it again. Every blocker above is something
+   a PR clears by *being correct*; a stall is cleared by moving, which is what
+   the label reports. When the sweeper needs to genuinely freeze a runaway it
+   applies `blocked`, which holds.
 3. The reviewers cast their verdict **as labels**, not approvals — deliberately.
    `builder`, `reviewer`, and `security-reviewer` are one GitHub identity (the
    App), and GitHub forbids approving your own PR, so a required *approval* could

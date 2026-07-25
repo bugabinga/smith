@@ -85,10 +85,25 @@ jobs:
           # The rule types the file claims, against the rule types actually live.
           # A type present in one and not the other is the drift worth seeing;
           # comparing full parameter trees would bury it in noise.
+          #
+          # Only rulesets that ACTUALLY govern the default branch may enter the
+          # comparison. Unioning every defined ruleset would invent drift from a
+          # disabled or other-branch rule, and — worse — could mask a missing
+          # main rule behind an identical type defined elsewhere. Enforcement and
+          # ref conditions are both part of "does this judge main".
           file_types=$(jq -r '[.rules[].type] | sort | join(", ")' .github/rulesets/main.json)
-          live_types=$(printf '%s' "$rulesets" | jq -r '[.[] | .id] | .[]' \
-            | while read -r id; do gh api "repos/$REPO/rulesets/$id" --jq '.rules[].type'; done \
+          live_types=$(printf '%s' "$rulesets" \
+            | jq -r '.[] | select(.enforcement == "active") | .id' \
+            | while read -r id; do
+                gh api "repos/$REPO/rulesets/$id" --jq '
+                  (.conditions.ref_name.include // []) as $inc
+                  | (.conditions.ref_name.exclude // []) as $exc
+                  | if ($inc | any(. == "~ALL" or . == "~DEFAULT_BRANCH" or . == "refs/heads/main"))
+                       and ($exc | any(. == "refs/heads/main") | not)
+                    then .rules[].type else empty end'
+              done \
             | sort -u | paste -sd', ' -)
+          [ -n "$live_types" ] || live_types="(none governing the default branch)"
           {
             echo "### Rule types"
             echo

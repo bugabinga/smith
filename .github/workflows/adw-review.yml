@@ -69,7 +69,10 @@ jobs:
             the spec, craft lenses. Do not merge.
             Post ONE terse PR comment: findings as one-line bullets (file:line —
             the defect), most severe first, no preamble/praise/restating; a clean
-            pass is one line. Then apply your verdict as a label: on approve add
+            pass is one line. The comment's FIRST LINE must begin with exactly
+            `Review:` — the workflow proves this job ran by finding that prefix,
+            and a comment without it reads as if you never posted.
+            Then apply your verdict as a label: on approve add
             `reviewed` and remove `changes-requested`; on request-changes add
             `changes-requested` and remove `reviewed`.
             You are a mission-critical gate.
@@ -80,6 +83,7 @@ jobs:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          MARKER: "Review:"
         run: |
           set -euo pipefail
           labels=$(gh pr view "$PR" --repo "$REPO" --json labels -q '[.labels[].name] | join(",")')
@@ -92,17 +96,22 @@ jobs:
           esac
           # A label can outlive the run that set it, so label presence alone
           # cannot prove this run did anything. The charter requires one comment
-          # per review, so a comment newer than the job start is the evidence.
-          # ISO-8601 sorts lexically, which is all the comparison needs.
+          # per review, so a comment newer than the job start is the evidence —
+          # but it must be THIS job's comment. reviewer and security-reviewer run
+          # in parallel under one App identity, so author cannot separate them
+          # and a bare recency count is satisfied by the sibling's post. The
+          # first-line marker is what makes the proof specific.
+          # ISO-8601 sorts lexically, which is all the date comparison needs.
           posted=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-                     --jq '.[].created_at' \
-                   | awk -v t="$REVIEW_STARTED_AT" '$0 >= t' | wc -l)
+                     --jq '.[] | [.created_at, (.body | split("\n")[0])] | @tsv' \
+                   | awk -F'\t' -v t="$REVIEW_STARTED_AT" -v m="$MARKER" \
+                       '$1 >= t && index($2, m) == 1' | wc -l)
           if [ "$posted" -eq 0 ]; then
-            echo "::error::reviewer posted no comment this run (since $REVIEW_STARTED_AT);"\
-                 "the verdict label is stale, not earned"
+            echo "::error::reviewer posted no '$MARKER' comment this run"\
+                 "(since $REVIEW_STARTED_AT); the verdict label is stale, not earned"
             exit 1
           fi
-          echo "verdict cast and $posted comment(s) posted — labels: [$labels]"
+          echo "verdict cast and $posted '$MARKER' comment(s) posted — labels: [$labels]"
 
   security-reviewer:
     needs: reset
@@ -128,6 +137,9 @@ jobs:
             injection, supply chain. Do not merge.
             Post ONE terse PR comment: only real findings as one-line bullets
             (file:line — the risk), most severe first; a clean pass is one line.
+            The comment's FIRST LINE must begin with exactly `Security review:` —
+            the workflow proves this job ran by finding that prefix, and a
+            comment without it reads as if you never posted.
             Then apply your verdict: if nothing high-severity add `security-cleared`;
             on a high finding add `risk:high` and ensure `security-cleared` is
             absent (holds the merge for the owner).
@@ -139,6 +151,7 @@ jobs:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          MARKER: "Security review:"
         run: |
           set -euo pipefail
           labels=$(gh pr view "$PR" --repo "$REPO" --json labels -q '[.labels[].name] | join(",")')
@@ -152,14 +165,17 @@ jobs:
           # `risk:high` deliberately survives the reset, so on this path the
           # label check alone is satisfiable by a sticky label from an earlier
           # run — a no-op review would pass green, which is exactly the bug this
-          # assertion exists to catch. A comment newer than the job start is the
-          # evidence that this run actually reviewed anything.
+          # assertion exists to catch. The evidence must therefore be this job's
+          # own comment: both reviewers post under one App identity and run in
+          # parallel, so a bare recency count would accept the sibling's comment
+          # and leave the hole open on precisely the path that needs it closed.
           posted=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-                     --jq '.[].created_at' \
-                   | awk -v t="$REVIEW_STARTED_AT" '$0 >= t' | wc -l)
+                     --jq '.[] | [.created_at, (.body | split("\n")[0])] | @tsv' \
+                   | awk -F'\t' -v t="$REVIEW_STARTED_AT" -v m="$MARKER" \
+                       '$1 >= t && index($2, m) == 1' | wc -l)
           if [ "$posted" -eq 0 ]; then
-            echo "::error::security-reviewer posted no comment this run (since $REVIEW_STARTED_AT);"\
-                 "the verdict label is stale, not earned"
+            echo "::error::security-reviewer posted no '$MARKER' comment this run"\
+                 "(since $REVIEW_STARTED_AT); the verdict label is stale, not earned"
             exit 1
           fi
-          echo "verdict cast and $posted comment(s) posted — labels: [$labels]"
+          echo "verdict cast and $posted '$MARKER' comment(s) posted — labels: [$labels]"

@@ -19,9 +19,15 @@ name: adw-automerge
 # PR mergeable is a blocker being REMOVED — the planner dropping `blocked`, a
 # reviewer clearing `changes-requested`. Arming only on addition would miss the
 # event that actually unblocks.
+#
+# `synchronize` is deliberately absent. A push races adw-review's reset: both
+# fire on the same event, and if merge-gate reads labels before reset strips the
+# previous head's verdicts, it goes green on a review that never saw this code.
+# Arming there would let that race merge an unreviewed head. Every path to
+# mergeable ends in a label event anyway, which is where the arming belongs.
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review, labeled, unlabeled, synchronize]
+    types: [opened, reopened, ready_for_review, labeled, unlabeled]
 
 permissions:
   contents: write

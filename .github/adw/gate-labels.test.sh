@@ -86,6 +86,37 @@ check "security accepts a clearance"        "$(verdict 'reviewed,security-cleare
 check "security accepts an escalation"      "$(verdict 'risk:high' security-cleared risk:high)" accept
 check "security rejects a silent no-op"     "$(verdict 'reviewed' security-cleared risk:high)" reject
 
+# --- the "this job actually posted" proof ------------------------------------
+# Both reviewers post under one App identity and run concurrently, so recency
+# alone accepts the sibling's comment and leaves the sticky-`risk:high` hole
+# open. The first-line marker is what makes the proof specific to one job.
+# Input mirrors the workflow's jq: created_at TAB first-line-of-body.
+proof() {
+  printf '%b' "$2" \
+  | awk -F'\t' -v t="$1" -v m="$3" '$1 >= t && index($2, m) == 1' | wc -l | tr -d ' '
+}
+T=2026-07-25T12:00:00Z
+own="2026-07-25T12:01:00Z\tSecurity review: no findings.\n"
+sibling="2026-07-25T12:01:00Z\tReview: one blocker.\n"
+stale="2026-07-25T11:00:00Z\tSecurity review: no findings.\n"
+
+check "security proof accepts its own fresh comment" \
+  "$(proof "$T" "$own" 'Security review:')" 1
+check "security proof rejects the sibling reviewer's comment" \
+  "$(proof "$T" "$sibling" 'Security review:')" 0
+check "security proof rejects its own stale comment" \
+  "$(proof "$T" "$stale" 'Security review:')" 0
+check "security proof rejects silence" \
+  "$(proof "$T" "" 'Security review:')" 0
+# The regression: sticky risk:high satisfies the label check, so if the sibling's
+# comment also satisfied the freshness check a silent security run would pass.
+check "sibling comment alone never proves the security run" \
+  "$(proof "$T" "$sibling$stale" 'Security review:')" 0
+check "reviewer proof accepts its own fresh comment" \
+  "$(proof "$T" "$sibling" 'Review:')" 1
+check "marker must match at the START of the line" \
+  "$(proof "$T" "2026-07-25T12:01:00Z\tRe: Security review: nope\n" 'Security review:')" 0
+
 if [ "$failures" -ne 0 ]; then
   printf '\n%d check(s) failed\n' "$failures"
   exit 1
