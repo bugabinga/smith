@@ -32,6 +32,3 @@ rustflags = [
 
 [registries.crates-io]
 protocol = "sparse"
-
-[target.aarch64-linux-android]
-rustflags = ["-C", "link-args=-lclang_rt.builtins-aarch64-android"]
