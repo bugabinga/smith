@@ -109,6 +109,7 @@ impl fmt::Display for CheckError {
 enum ArchError {
     Metadata(io::Error),
     MetadataFailed(String),
+    MetadataDecode(serde_json::Error),
     InvalidMetadata(&'static str),
     Pup(GateError),
     Violations(Vec<String>),
@@ -119,6 +120,9 @@ impl fmt::Display for ArchError {
         match self {
             Self::Metadata(error) => write!(formatter, "could not read Cargo metadata: {error}"),
             Self::MetadataFailed(error) => write!(formatter, "Cargo metadata failed: {error}"),
+            Self::MetadataDecode(error) => {
+                write!(formatter, "could not decode Cargo metadata: {error}")
+            }
             Self::InvalidMetadata(reason) => {
                 write!(formatter, "Cargo metadata was invalid: {reason}")
             }
@@ -132,6 +136,7 @@ impl Error for ArchError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Metadata(error) => Some(error),
+            Self::MetadataDecode(error) => Some(error),
             Self::Pup(error) => Some(error),
             Self::MetadataFailed(_) | Self::InvalidMetadata(_) | Self::Violations(_) => None,
         }
@@ -285,18 +290,37 @@ fn cargo_metadata() -> Result<Vec<Package>, ArchError> {
 }
 
 fn parse_metadata(metadata: &str) -> Result<Vec<Package>, ArchError> {
-    let packages = json_array_field(metadata, "packages")?;
-    json_objects(packages)
-        .into_iter()
+    let metadata: serde_json::Value =
+        serde_json::from_str(metadata).map_err(ArchError::MetadataDecode)?;
+    let packages = metadata
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(ArchError::InvalidMetadata("packages were absent"))?;
+
+    packages
+        .iter()
         .map(|package| {
-            let dependencies = json_array_field(package, "dependencies")?;
+            let dependencies = package
+                .get("dependencies")
+                .and_then(serde_json::Value::as_array)
+                .ok_or(ArchError::InvalidMetadata(
+                    "package dependencies were absent",
+                ))?;
             Ok(Package {
-                name: json_string_field(package, "name")?,
-                dependencies: json_objects(dependencies)
-                    .into_iter()
+                name: package
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(ArchError::InvalidMetadata("package name was absent"))?
+                    .to_owned(),
+                dependencies: dependencies
+                    .iter()
                     .map(|dependency| {
                         Ok(Dependency {
-                            name: json_string_field(dependency, "name")?,
+                            name: dependency
+                                .get("name")
+                                .and_then(serde_json::Value::as_str)
+                                .ok_or(ArchError::InvalidMetadata("dependency name was absent"))?
+                                .to_owned(),
                             kind: dependency_kind(dependency)?,
                         })
                     })
@@ -306,151 +330,16 @@ fn parse_metadata(metadata: &str) -> Result<Vec<Package>, ArchError> {
         .collect()
 }
 
-fn dependency_kind(dependency: &str) -> Result<DependencyKind, ArchError> {
-    let field_start = dependency
-        .find("\"kind\"")
-        .ok_or(ArchError::InvalidMetadata("dependency kind was absent"))?;
-    let value = dependency[field_start..]
-        .split_once(':')
-        .ok_or(ArchError::InvalidMetadata("dependency kind was malformed"))?
-        .1
-        .trim_start();
-
-    if value.starts_with("null") {
-        return Ok(DependencyKind::Normal);
+fn dependency_kind(dependency: &serde_json::Value) -> Result<DependencyKind, ArchError> {
+    match dependency.get("kind") {
+        Some(serde_json::Value::Null) | None => Ok(DependencyKind::Normal),
+        Some(serde_json::Value::String(kind)) => match kind.as_str() {
+            "dev" => Ok(DependencyKind::Development),
+            "build" => Ok(DependencyKind::Build),
+            _ => Err(ArchError::InvalidMetadata("dependency kind was unknown")),
+        },
+        Some(_) => Err(ArchError::InvalidMetadata("dependency kind was invalid")),
     }
-
-    match decode_json_string(value)?.as_str() {
-        "dev" => Ok(DependencyKind::Development),
-        "build" => Ok(DependencyKind::Build),
-        _ => Err(ArchError::InvalidMetadata("dependency kind was unknown")),
-    }
-}
-
-fn json_array_field<'a>(object: &'a str, field: &str) -> Result<&'a str, ArchError> {
-    let field_start = object
-        .find(&format!("\"{field}\""))
-        .ok_or(ArchError::InvalidMetadata("required field was absent"))?;
-    let value_start = object[field_start..]
-        .find('[')
-        .map(|offset| field_start + offset)
-        .ok_or(ArchError::InvalidMetadata("array field was malformed"))?;
-    json_balanced(object, value_start, b'[', b']')
-}
-
-fn json_string_field(object: &str, field: &str) -> Result<String, ArchError> {
-    let field_start = object
-        .find(&format!("\"{field}\""))
-        .ok_or(ArchError::InvalidMetadata("required field was absent"))?;
-    let value_start = object[field_start..]
-        .find(':')
-        .map(|offset| field_start + offset + 1)
-        .ok_or(ArchError::InvalidMetadata("string field was malformed"))?;
-    let value = object[value_start..].trim_start();
-    decode_json_string(value)
-}
-
-fn decode_json_string(value: &str) -> Result<String, ArchError> {
-    let value = value
-        .strip_prefix('"')
-        .ok_or(ArchError::InvalidMetadata("string field was not a string"))?;
-    let mut characters = value.chars();
-    let mut decoded = String::new();
-
-    while let Some(character) = characters.next() {
-        match character {
-            '"' => return Ok(decoded),
-            '\\' => match characters
-                .next()
-                .ok_or(ArchError::InvalidMetadata("string escape was unterminated"))?
-            {
-                '"' => decoded.push('"'),
-                '\\' => decoded.push('\\'),
-                '/' => decoded.push('/'),
-                'b' => decoded.push('\u{0008}'),
-                'f' => decoded.push('\u{000c}'),
-                'n' => decoded.push('\n'),
-                'r' => decoded.push('\r'),
-                't' => decoded.push('\t'),
-                'u' => decoded.push(decode_json_codepoint(&mut characters)?),
-                _ => return Err(ArchError::InvalidMetadata("string escape was invalid")),
-            },
-            _ => decoded.push(character),
-        }
-    }
-
-    Err(ArchError::InvalidMetadata("string field was unterminated"))
-}
-
-fn decode_json_codepoint(characters: &mut std::str::Chars<'_>) -> Result<char, ArchError> {
-    let digits = characters.by_ref().take(4).collect::<String>();
-    if digits.len() != 4 {
-        return Err(ArchError::InvalidMetadata(
-            "unicode escape was unterminated",
-        ));
-    }
-    let codepoint = u32::from_str_radix(&digits, 16)
-        .map_err(|_| ArchError::InvalidMetadata("unicode escape was invalid"))?;
-    char::from_u32(codepoint).ok_or(ArchError::InvalidMetadata("unicode escape was invalid"))
-}
-
-fn json_balanced(value: &str, start: usize, opening: u8, closing: u8) -> Result<&str, ArchError> {
-    let bytes = value.as_bytes();
-    let mut depth = 0;
-    let mut in_string = false;
-    let mut escaped = false;
-
-    for (offset, byte) in bytes[start..].iter().enumerate() {
-        match *byte {
-            b'\\' if in_string => escaped = !escaped,
-            b'"' if !escaped => in_string = !in_string,
-            byte if !in_string && byte == opening => depth += 1,
-            byte if !in_string && byte == closing => {
-                depth -= 1;
-                if depth == 0 {
-                    return Ok(&value[start + 1..start + offset]);
-                }
-            }
-            _ => escaped = false,
-        }
-    }
-
-    Err(ArchError::InvalidMetadata(
-        "JSON collection was unterminated",
-    ))
-}
-
-fn json_objects(array: &str) -> Vec<&str> {
-    let mut objects = Vec::new();
-    let bytes = array.as_bytes();
-    let mut start = None;
-    let mut depth = 0;
-    let mut in_string = false;
-    let mut escaped = false;
-
-    for (offset, byte) in bytes.iter().enumerate() {
-        match *byte {
-            b'\\' if in_string => escaped = !escaped,
-            b'"' if !escaped => in_string = !in_string,
-            b'{' if !in_string => {
-                if depth == 0 {
-                    start = Some(offset + 1);
-                }
-                depth += 1;
-            }
-            b'}' if !in_string => {
-                depth -= 1;
-                if depth == 0
-                    && let Some(start) = start
-                {
-                    objects.push(&array[start..offset]);
-                }
-            }
-            _ => escaped = false,
-        }
-    }
-
-    objects
 }
 
 fn dependency_violations(packages: &[Package]) -> Vec<String> {
@@ -578,6 +467,15 @@ mod tests {
     }
 
     #[test]
+    fn metadata_parser_reads_fields_by_json_structure() {
+        let metadata = r#"{"packages":[{"name":"smith-core","description":"\"dependencies\": []","dependencies":[{"name":"smith","kind":null}]}]}"#;
+
+        let packages = parse_metadata(metadata).unwrap();
+
+        assert_eq!(packages[0].dependencies[0].name, "smith");
+    }
+
+    #[test]
     fn metadata_parser_preserves_non_normal_dependency_kinds() {
         let metadata = r#"{"packages":[{"name":"smith-core","dependencies":[{"name":"smith-ai","kind":"dev"},{"name":"smith-ai","kind":"build"}]}]}"#;
 
@@ -678,6 +576,11 @@ mod tests {
         assert!(matches!(
             parse_metadata("{}"),
             Err(ArchError::InvalidMetadata(_))
+        ));
+
+        assert!(matches!(
+            parse_metadata("{"),
+            Err(ArchError::MetadataDecode(_))
         ));
     }
 }
