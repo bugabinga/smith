@@ -13,8 +13,18 @@ name: "CodeQL Advanced"
 
 # Incremental scans run only when code or a workflow changes — a docs/config/
 # markdown PR has nothing for CodeQL to analyze. The weekly schedule is the
-# full-tree backstop. (Safe: CodeQL is not a required merge check; only
-# `merge-gate` is, so a path-skipped run can't wedge a PR.)
+# full-tree backstop.
+#
+# This used to claim the arrangement was safe "because CodeQL is not a required
+# merge check; only `merge-gate` is". That is wrong, and it wedged the board:
+# code-scanning MERGE PROTECTION is a separate mechanism from the ruleset's
+# required_status_checks, so keeping CodeQL out of the ruleset does not keep it
+# out of the merge decision. With protection on, GitHub posts a
+# "Code scanning results / CodeQL" check and treats a NEUTRAL result as
+# not-passed — and "N configurations not found" is neutral. Every PR then reads
+# "All checks have passed" and "Unable to merge — some checks did not pass" at
+# the same time, which is what #112 showed. The deadlock the RE-ADD CHECKLIST
+# below warns about was therefore already live, not merely a future risk.
 on:
   push:
     branches: [ "main" ]
@@ -66,10 +76,11 @@ jobs:
         #     Note its extractor only partially parses `.astro` SFCs (embedded
         #     JS, not the template DSL); DevSkim + npm-audit/Dependabot carry the
         #     site's real coverage.
-        #   - Each language added changes the produced result-count. Keep code
-        #     scanning ALERTS-ONLY (never a required merge check — only
-        #     `merge-gate` is required) or every such change re-creates the
-        #     "expecting N results" merge deadlock. See #17.
+        #   - Each language added changes the produced result-count. Keeping
+        #     CodeQL out of the ruleset is NOT enough to make it alerts-only:
+        #     code-scanning merge protection must be off in the repository's
+        #     code-security settings, or the configuration count itself becomes a
+        #     merge gate. See #17.
         - language: actions
           build-mode: none
         # CodeQL supports the following values keywords for 'language': 'actions', 'c-cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby', 'rust', 'swift'
