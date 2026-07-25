@@ -22,7 +22,15 @@ The established campaign practice (see `prototypes/PLAN.md`):
 
 1. Add a plan section for the prototype: claims, risk, minimal artifact,
    verify commands, pass evidence, SPEC impact.
-2. Implement under `prototypes/pNN-<name>/` — tiny, one claim per prototype.
+2. Implement under a directory named for how you were invoked — tiny, one claim
+   per prototype:
+   - **`prototypes/pNN-<name>/`** when you pick the number yourself, in a manual
+     campaign where you can see every existing prototype and choose the next.
+   - **`prototypes/i<issue>-<slug>/`** when an issue drove you (the
+     `needs:prototype` label, via `adw-pioneer.yml`). Two runs started together
+     cannot see each other's unmerged branches, so they would both read the same
+     highest `pNN` and claim it; the issue number is unique without any
+     coordination. `prototypes.yml` tests both schemes.
 3. Every prototype has verify commands that exit 0 with PASS lines.
 4. Record a result block in `prototypes/PLAN.md` and report spec defects
    from evidence, not taste.

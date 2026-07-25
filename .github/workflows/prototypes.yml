@@ -9,14 +9,22 @@
 # ci-prototype.yml instead.
 name: prototypes
 
+# The branch filter used to name a single feature branch, which has since
+# merged — so this guard ran nowhere. A bit-rot guard that only fires on a dead
+# branch protects nothing, and the prototypes it watches are the evidence base
+# for SPEC claims. It now runs where the evidence can actually change: pull
+# requests that touch a prototype, and `main` after they land.
 on:
   push:
-    branches: ["claude/specs-progress-n5u27n"]
-    paths:
+    branches: ["main"]
+    paths: &proto
       - "prototypes/**"
       - "!prototypes/**/*.md"
       - "!prototypes/p34-ci-pipeline/**"
       - ".github/workflows/prototypes.yml"
+  pull_request:
+    branches: ["main"]
+    paths: *proto
   workflow_dispatch: {}
 
 permissions:
