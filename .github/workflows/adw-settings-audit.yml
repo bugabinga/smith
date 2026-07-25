@@ -100,7 +100,10 @@ jobs:
           live_types=$(printf '%s' "$rulesets" \
             | jq -r '.[] | select(.enforcement == "active" and .target == "branch") | .id' \
             | while read -r id; do
-                gh api "repos/$REPO/rulesets/$id" --arg ref "refs/heads/$BRANCH" --jq '
+                # Piped to a real jq: `gh api` accepts --jq but has no --arg, so
+                # the ref has to be bound on this side of the pipe.
+                gh api "repos/$REPO/rulesets/$id" \
+                | jq -r --arg ref "refs/heads/$BRANCH" '
                   # $p is bound before the test: inside `$ref | test(...)` the
                   # dot would refer to $ref, so the pattern would compile to
                   # itself and match everything.

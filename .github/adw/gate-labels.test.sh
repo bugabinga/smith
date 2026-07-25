@@ -154,6 +154,18 @@ check "tag ruleset never governs a branch" \
 check "disabled ruleset does not govern" \
   "$(ruleset_governs "$(rs disabled branch '["~ALL"]' '[]')")" ""
 
+# --- gh api's flags are not jq's --------------------------------------------
+# `gh api` accepts --jq but has no --arg, so a jq variable must be bound by a
+# real jq on the far side of a pipe. Passing --arg to gh api fails only at the
+# moment the command actually runs, which for a scheduled audit can be long
+# after the change that broke it — and fixture-testing the filter alone cannot
+# catch it, because the filter is fine.
+bad=$(for f in .github/workflows/*.yml; do
+        grep -n -- '--arg' "$f" | grep 'gh api' | grep -vE '^[0-9]+:[[:space:]]*#' \
+        | sed "s|^|$f:|"
+      done)
+check "no workflow passes --arg to gh api" "${bad:-none}" none
+
 if [ "$failures" -ne 0 ]; then
   printf '\n%d check(s) failed\n' "$failures"
   exit 1
