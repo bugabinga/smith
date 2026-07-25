@@ -287,28 +287,34 @@ and destination; nothing dead-ends or merges on a guess.
 | a spec claim is unproven | `planner` / `surveyor` | `/pioneer` | `needs:prototype`; a prototype proves or disproves it |
 | a Dependabot bump is semver-incompatible / MSRV-raising | `dependency-manager` | owner | escalate as its own issue; the bump waits |
 | the cycle floods (WIP exceeded) or an agent loops | schedule | `sweeper` | enforce WIP, brake the runaway — the circuit-breaker |
-| a merge-critical check breaks systemically — same active, unexpected failure on ≥2 PRs | `adw-jam-detector` (failure-events + 30-min floor) | owner + `adw-doctor` | un-gated `pipeline-jammed` issue; doctor dispatched once |
+| the merge gate breaks systemically — unexpected active `merge-gate` red on ≥2 PRs | `adw-jam-detector` (failure-events + 30-min floor) | owner + `adw-doctor` | un-gated `pipeline-jammed` issue; doctor dispatched once |
 
 Two invariants hold across every row: an agent never fakes a green gate to move a
 PR (PROJECT-INVARIANTS §5), and an agent never resolves ambiguity by guessing — it
 routes to the human via one of `needs:spec`, `risk:high`, or `needs:info`.
 
-The last row is the pipeline's dead-man's switch. Every gate here is
-fail-closed — a red required check holds `merge-gate` down — which is right for
-one bad PR but catastrophic when the *check itself* breaks (a green-tree CodeQL
-that finds no code and fails everywhere, a yanked action). Then no single PR is
-"wrong" and the jam is invisible from any one PR. `adw-jam-detector` watches the
-whole board: a deterministic, no-LLM scan reduces each check name to its latest
-run, then tallies active failures across open non-draft PRs. An ordinary red
-`merge-gate` is control state, not illness: while a verdict is missing or a
-blocking label is present, the gate is supposed to fail. The detector therefore
-counts `merge-gate` only when both verdict labels are present and no blocking
-label remains — and `merge-gate` is the only check it counts at all, because the
-ruleset makes it the sole required one, so anything that genuinely blocks a
-merge surfaces as a red gate. An unexpected gate red on ≥2 PRs is a jam. It
-fires on failure-completions of the gating workflows for a fast edge, with a
-30-minute schedule as the deterministic floor
-(GitHub suppresses some self-triggered check events). The alert is an **issue**,
+The last row is the pipeline's dead-man's switch. The ruleset names `merge-gate`
+as the sole required check, which makes it the sole way the whole board can
+seize: fail-closed is right for one bad PR and catastrophic when the gate
+*itself* breaks — a yanked action, an expired App token, a bad edit to
+`adw-gate.yml`. Then no single PR is "wrong" and the jam is invisible from any
+one PR. `adw-jam-detector` watches the whole board: a deterministic, no-LLM scan
+reduces each check name to its latest run, then tallies active `merge-gate`
+failures across open non-draft PRs. An ordinary red gate is control state, not
+illness: while a verdict is missing or a blocking label is present, it is
+supposed to fail. The detector therefore counts a red gate only when both
+verdict labels are present and no blocking label remains. An unexpected gate red
+on ≥2 PRs is a jam.
+
+Two failure classes sit deliberately outside its reach, because neither is a
+jam. A reviewer that never returns a verdict leaves the gate *legitimately* red;
+that is a stall, and the row above it is the sweeper's. An advisory red — CodeQL,
+DevSkim — blocks no merge and is never tallied; if one of those should hold a PR
+down, the fix is to make it a required check, not to widen the detector.
+
+The scan fires on failure-completions of the gating workflows for a fast edge,
+with a 30-minute schedule as the deterministic floor (GitHub suppresses some
+self-triggered check events). The alert is an **issue**,
 not a PR — issues carry no merge gate, so it reaches the owner even when every
 merge lane is jammed — and it is idempotent: one open `pipeline-jammed` issue
 that auto-closes the moment a scan comes back clean. Only after a jam is
