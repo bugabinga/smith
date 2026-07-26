@@ -1,0 +1,92 @@
+# Workspace CI — the one gate that compiles and tests the product. `merge-gate`
+# reads labels only (#17), so until this check is in the ruleset's required set
+# a PR can carry two LLM verdicts and still not build. This workflow publishes
+# the stable context that closes that hole; adding it to
+# `.github/rulesets/main.json` is the owner's step, not this file's.
+#
+# It holds no build logic. PROJECT-INVARIANTS §1 makes cargo the sole build
+# system and xtask its only extension point, so CI installs toolchains and calls
+# `cargo run -p xtask -- check` — the same command a developer runs. Whatever
+# that command gates, CI gates; the two cannot drift because there is only one
+# definition (xtask/src/main.rs, CHECK_GATES).
+#
+# The pinned nightly and cargo-pup exist for one of those six gates. §2.2's
+# source-level architecture rules run under cargo-pup, which needs rustc-dev
+# components that only a pinned nightly carries. Installing them is the cost of
+# not dropping a gate: a check job that silently skipped `pup` would report the
+# architecture as enforced while it was not.
+#
+# One named gate is absent and is recorded here rather than quietly omitted.
+# SPEC §2.3 lists `cargo deny` among the gates a dependency change rides, but
+# the repository has no `deny.toml` and `xtask check` has no `deny` gate, so
+# there is no policy for this workflow to run. Adding one means deciding which
+# licences and advisories are acceptable — a policy call, not a CI wiring
+# detail. Until that exists, dependency review here is what the reviewers do by
+# reading the §2.3 registry, and this comment is the marker that a specified
+# gate is not yet enforced.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # A failed gate should report the failure, not a backtrace-less panic.
+  RUST_BACKTRACE: 1
+
+jobs:
+  # The job name is the check-run context #17 adds to the ruleset. Renaming it
+  # silently un-requires the check, so it is deliberately plain and stable.
+  check:
+    name: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: stable toolchain
+        run: |
+          rustup default stable
+          rustup component add rustfmt clippy
+          rustc -V && cargo -V
+
+      - name: pinned nightly for the cargo-pup gate
+        run: |
+          rustup toolchain install nightly-2026-01-22 --profile minimal
+          rustup component add --toolchain nightly-2026-01-22 \
+            rust-src rustc-dev llvm-tools-preview
+
+      # cargo-pup and nextest are built from source, which dominates a cold run.
+      # Keyed on the lockfile and the pinned nightly date so a toolchain bump
+      # rebuilds them rather than restoring binaries built against the old
+      # rustc-dev — a stale cargo-pup fails in ways that read as a code fault.
+      - name: cache gate tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: gate-tools-${{ runner.os }}-nightly-2026-01-22-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            gate-tools-${{ runner.os }}-nightly-2026-01-22-
+
+      - name: install gate tools
+        run: |
+          # `cargo install` re-installs unconditionally; --locked keeps the
+          # tools' own dependency trees pinned, and the guards keep a warm cache
+          # from paying the build cost again on every run.
+          command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
+          command -v cargo-pup >/dev/null || cargo +nightly-2026-01-22 install cargo_pup --locked
+
+      - name: cargo run -p xtask -- check
+        run: cargo run -p xtask -- check
