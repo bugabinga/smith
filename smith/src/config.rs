@@ -13,8 +13,14 @@ use serde::{Deserialize, Serialize};
 /// Deliberately two fields. Every key here is one the walking skeleton reads to
 /// run a turn; anything broader would be schema written ahead of a consumer,
 /// which is what the §5.6 cascade would then have to keep honest for no gain.
+/// Unknown top-level keys are tolerated rather than rejected. §5.6 says they
+/// *warn* in the top-level schema context and *fail* only in strict contexts
+/// (`models.*`, `compaction.*`), and this slice defines neither a strict
+/// context nor the diagnostic channel a warning needs — both arrive with the
+/// config loader (§9.19). Denying them here would be stricter than the spec and
+/// would reject a valid wider config against this deliberately minimal schema.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct Config {
     /// The model to run, as a resolver name (§5.7) or a raw `provider/model`.
     pub model: String,
@@ -41,15 +47,16 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_key_is_rejected() {
-        // §5.6: a typo that silently changes behavior is the failure this
-        // guards. The skeleton's schema is small enough that every key is
-        // load-bearing, so unknown keys fail rather than warn.
-        let error = serde_json::from_str::<Config>(r#"{ "modle": "typo" }"#).unwrap_err();
-        assert!(
-            error.to_string().contains("modle"),
-            "the error must name the offending key: {error}"
-        );
+    fn an_unknown_top_level_key_does_not_reject_the_config() {
+        // §5.6 warns on unknown top-level keys rather than failing; failing is
+        // reserved for strict contexts. A wider config than this minimal schema
+        // knows about must therefore still load, with the keys it does know
+        // intact. Emitting the warning belongs to the loader (§9.19).
+        let config: Config = serde_json::from_str(
+            r#"{ "model": "anthropic/claude-sonnet-4", "theme": "catppuccin" }"#,
+        )
+        .unwrap();
+        assert_eq!(config.model, "anthropic/claude-sonnet-4");
     }
 
     #[test]
