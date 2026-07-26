@@ -145,6 +145,12 @@ The minimal system is four boring layers:
 
 No role should own bespoke auth setup, branch setup, verdict probing, or provider fallback. If a workflow needs those, it calls the shared runner/reducer. New instant triggers are added only when schedule-based reconciliation cannot preserve correctness.
 
+## Owner input policy
+
+Scheduled reconciliation is the default for owner GitHub input. The owner may create or edit issues, comment on issues or PRs, open PRs, review PRs, change labels, or change milestones without learning special commands. A scheduled reconciler scans those surfaces, compares them to ADW state, and either routes agent work or records a deliberate no-op.
+
+Immediate event triggers stay only where latency affects correctness: PR head changes reset/re-run reviews, required checks gate merge, security alerts escalate, and explicit `@smith` comments may still dispatch directly. Plain owner comments and edits do not need bespoke instant workflows if the scheduled reconciler can pick them up soon enough.
+
 ## Rollout
 
 1. Add provider matrix, shared setup, and reducer helpers.
