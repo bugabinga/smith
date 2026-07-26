@@ -22,7 +22,19 @@ flowing between events, and the brake if it runs away.
    freezing instead turns a free retry into work only the owner can clear. The
    failing job says which — a review that cast no verdict names itself in its
    annotation (`ended without a verdict label`), and the missing verdict label is
-   visible on the PR. Two more reds are not runaways either: a `merge-gate` that
+   visible on the PR.
+
+   **Re-kick a review only when its run's sha is the PR's current head.** GitHub
+   re-runs a job at the sha it originally ran on, not at head, so re-running a
+   review that sits behind head gets you a verdict for code nobody is merging: the
+   reviewer reads the old sha, posts `Review: <old sha>`, and applies `reviewed`.
+   `merge-gate` reads labels and never compares shas, so it then greens a head no
+   reviewer ever saw. The review workflow's reset and per-head assertion guard the
+   forward path, not a resurrected stale run — this charter is the only place that
+   guard can live. A moved head is not a re-kick; it is a fresh review, and the
+   push already ordered one.
+
+   Two more reds are not runaways either: a `merge-gate` that
    fired on a label change before the second verdict landed is a race, not a
    failure, and a PR waiting on a verdict is simply not finished. Never freeze on
    the shape of the history alone.
