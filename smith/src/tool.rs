@@ -211,18 +211,37 @@ mod tests {
 
     #[test]
     fn a_definition_flattens_through_cbor_too() {
-        // The flatten is otherwise only exercised through JSON, because that is
-        // the function-calling shape providers receive. CBOR is what §6.6
-        // persists and what the §6.11 trace codec will replay, and `flatten`
-        // serializes as a map rather than a struct, which not every
-        // self-describing format handles alike — so the format that stores this
-        // gets its own assertion rather than inheriting JSON's.
+        // Inspect the encoded bytes, not a round-trip. A round-trip is invariant
+        // to `#[serde(flatten)]`: drop the attribute and encoder and decoder
+        // still agree with each other — nested — so the test stays green while
+        // the wire shape has changed underneath it. Only the encoding says
+        // whether the spec's fields sit at the top level.
+        //
+        // CBOR gets its own assertion rather than inheriting the JSON one at
+        // :197 because CBOR is what §6.6 persists and what the §6.11 trace codec
+        // will replay, and `flatten` forces a map encoding that self-describing
+        // formats do not all treat alike.
         let definition = Echo.definition();
         let mut bytes = Vec::new();
         ciborium::into_writer(&definition, &mut bytes).unwrap();
+
+        let encoded: ciborium::value::Value = ciborium::from_reader(bytes.as_slice()).unwrap();
+        let map = encoded.as_map().unwrap();
+        let keys: Vec<&str> = map.iter().filter_map(|(key, _)| key.as_text()).collect();
+
+        assert!(
+            !keys.contains(&"spec"),
+            "the spec must flatten, not nest: {keys:?}"
+        );
+        for expected in ["name", "description", "parameters", "execution_mode"] {
+            assert!(
+                keys.contains(&expected),
+                "{expected} must sit at the top level: {keys:?}"
+            );
+        }
+
         let restored: ToolDefinition = ciborium::from_reader(bytes.as_slice()).unwrap();
         assert_eq!(restored, definition);
-        assert_eq!(restored.spec.execution_mode, ToolExecutionMode::Parallel);
     }
 
     #[test]

@@ -229,10 +229,28 @@ mod tests {
         assert_eq!(restored, events);
     }
 
+    /// Maps each variant to the `kind` string it must serialize as.
+    ///
+    /// Deliberately wildcard-free: an eighth `ProviderError` variant stops this
+    /// compiling, which is what forces a new kind through the wire-shape test
+    /// rather than letting it ship unpinned. A hand-written list would catch
+    /// renames but not additions.
+    fn expected_kind(error: &ProviderError) -> &'static str {
+        match error {
+            ProviderError::RateLimit(_) => "rate_limit",
+            ProviderError::AuthFailed(_) => "auth_failed",
+            ProviderError::Network(_) => "network",
+            ProviderError::ServerError(_) => "server_error",
+            ProviderError::InvalidRequest(_) => "invalid_request",
+            ProviderError::ModelNotFound(_) => "model_not_found",
+            ProviderError::Timeout(_) => "timeout",
+        }
+    }
+
     #[test]
     fn the_provider_error_wire_shape_is_pinned() {
         // §7.5's MuxProvider reads the `kind` string to decide failover, so a
-        // rename that both sides follow would keep every round-trip green while
+        // rename that both sides follow keeps every round-trip green while
         // silently turning classification into a default. Pinning the literal is
         // what makes such a rename visible: this asserts the wire form, not that
         // serialization is self-consistent.
@@ -243,28 +261,22 @@ mod tests {
             serde_json::json!({ "kind": "rate_limit", "message": "slow down" })
         );
 
-        // Every kind, so adding or renaming one has to come here first.
-        let kinds = [
-            (ProviderError::RateLimit(String::new()), "rate_limit"),
-            (ProviderError::AuthFailed(String::new()), "auth_failed"),
-            (ProviderError::Network(String::new()), "network"),
-            (ProviderError::ServerError(String::new()), "server_error"),
-            (
-                ProviderError::InvalidRequest(String::new()),
-                "invalid_request",
-            ),
-            (
-                ProviderError::ModelNotFound(String::new()),
-                "model_not_found",
-            ),
-            (ProviderError::Timeout(String::new()), "timeout"),
+        let all = [
+            ProviderError::RateLimit(String::new()),
+            ProviderError::AuthFailed(String::new()),
+            ProviderError::Network(String::new()),
+            ProviderError::ServerError(String::new()),
+            ProviderError::InvalidRequest(String::new()),
+            ProviderError::ModelNotFound(String::new()),
+            ProviderError::Timeout(String::new()),
         ];
-        for (error, expected) in kinds {
-            let encoded = serde_json::to_value(&error).unwrap();
+        for error in &all {
+            let encoded = serde_json::to_value(error).unwrap();
             assert_eq!(
                 encoded.get("kind").and_then(serde_json::Value::as_str),
-                Some(expected),
-                "{error:?} must stay on the wire as {expected}"
+                Some(expected_kind(error)),
+                "{error:?} must stay on the wire as {}",
+                expected_kind(error)
             );
         }
     }
