@@ -31,7 +31,7 @@ common contract to depend on. For a consumer of community extensions that is a
 mess, and the rational response is to give up and maintain your own — which is
 the outcome an extension system is supposed to prevent.
 
-Smith's answer is to make the plugin API the *only* API. Everything
+Smith's answer is to make the plugin API the *only* extension API. Everything
 user-visible — tools, slash commands, themes, keybindings, prompts, layouts,
 feature UI — is a Lua plugin, and the built-in tools are written against the
 same interface third-party plugins get (§9). An interface its own author must
@@ -85,8 +85,9 @@ specific spec claim (§18).
 
 ## Building
 
-Cargo is the only build system — there is no Makefile, justfile, or script to
-learn, and anything cargo does not do natively lives in `xtask`:
+Cargo is the only build system for the Rust workspace — there is no Makefile,
+justfile, or script to learn, and anything cargo does not do natively lives in
+`xtask`:
 
 ```sh
 cargo check
