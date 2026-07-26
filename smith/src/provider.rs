@@ -230,6 +230,46 @@ mod tests {
     }
 
     #[test]
+    fn the_provider_error_wire_shape_is_pinned() {
+        // §7.5's MuxProvider reads the `kind` string to decide failover, so a
+        // rename that both sides follow would keep every round-trip green while
+        // silently turning classification into a default. Pinning the literal is
+        // what makes such a rename visible: this asserts the wire form, not that
+        // serialization is self-consistent.
+        let encoded =
+            serde_json::to_value(ProviderError::RateLimit("slow down".to_owned())).unwrap();
+        assert_eq!(
+            encoded,
+            serde_json::json!({ "kind": "rate_limit", "message": "slow down" })
+        );
+
+        // Every kind, so adding or renaming one has to come here first.
+        let kinds = [
+            (ProviderError::RateLimit(String::new()), "rate_limit"),
+            (ProviderError::AuthFailed(String::new()), "auth_failed"),
+            (ProviderError::Network(String::new()), "network"),
+            (ProviderError::ServerError(String::new()), "server_error"),
+            (
+                ProviderError::InvalidRequest(String::new()),
+                "invalid_request",
+            ),
+            (
+                ProviderError::ModelNotFound(String::new()),
+                "model_not_found",
+            ),
+            (ProviderError::Timeout(String::new()), "timeout"),
+        ];
+        for (error, expected) in kinds {
+            let encoded = serde_json::to_value(&error).unwrap();
+            assert_eq!(
+                encoded.get("kind").and_then(serde_json::Value::as_str),
+                Some(expected),
+                "{error:?} must stay on the wire as {expected}"
+            );
+        }
+    }
+
+    #[test]
     fn provider_errors_carry_their_message() {
         // The classification drives failover; the message is what reaches the
         // user, so it must not be swallowed by the variant name.
