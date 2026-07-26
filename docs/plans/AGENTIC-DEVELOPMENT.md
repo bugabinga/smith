@@ -118,7 +118,7 @@ level below is a standing assignment.
 | `release-manager` | `v*` tag | draft notes, verify the §14 matrix, publish the Release | a **GitHub Release** | terra | medium |
 | `triager` | issue opened | triage a raw issue into a labeled, ranked, spec-anchored work-order related to the open backlog — routed to a builder, or `needs:breakdown` to the planner if it is an epic/meta issue | the **Issue** + board card | luna | medium |
 | `sweeper` | `schedule` | unstick stalls, enforce WIP, brake runaways | **Issues/PRs/board** labels | luna | low |
-| `pioneer` (skill) | `needs:prototype` | prove/disprove an unproven spec claim with a prototype | `prototypes/*` | — | — |
+| `pioneer` (skill) | issue labeled `needs:prototype` (`adw-pioneer.yml`) | prove/disprove an unproven spec claim with a prototype | `prototypes/*` + a **PR** | opus | high |
 
 **Two builders, by domain.** The `triager` routes each `ready`-able issue by
 surface: **UI/UX → the Claude builder** (`opus`, `ready`), **backend → the Codex
@@ -148,8 +148,13 @@ label, so an OpenAI outage can't deadlock a merge).
 The **authority** for each agent's mission and boundaries is its `.claude/agents/`
 charter; **model, effort, and tool access** are set by the workflow that runs it
 (this table is the map). Every agent runs at full access — bounded by its charter
-prose, not a frontmatter tool allow-list. `builder` and `reviewer` wield `/sabotnik` and `/handmade`; `pioneer`
-and `smith` stay owner/skill-invoked, since the spec is touchpoint 1.
+prose, not a frontmatter tool allow-list. `builder` and `reviewer` wield
+`/sabotnik` and `/handmade`. `smith` stays owner-invoked, since the spec is
+touchpoint 1 and only the owner writes it. `pioneer` no longer does: a
+`needs:prototype` label wakes it (`adw-pioneer.yml`), because an unproven claim
+is a gap the cycle finds on its own — the surveyor and planner both apply that
+label without the owner — and waiting for a manual invocation is what left four
+such issues parked with nothing running.
 
 ## How the cycle pushes Smith forward
 
