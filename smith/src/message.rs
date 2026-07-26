@@ -24,9 +24,11 @@ pub enum Role {
 
 /// One unit of model-visible content.
 ///
-/// Variants are externally tagged so that an unrecognized variant is
-/// well-formed CBOR with an unknown tag rather than a decode failure, which is
-/// what lets the session codec tell *unknown* from *corrupt* (§6.6).
+/// Variants are externally tagged, which keeps each one self-describing on the
+/// wire. Telling *unknown* from *corrupt* is not this tagging's doing — §6.6
+/// decides that at the entry level, by decoding raw CBOR first and typed
+/// second, so a well-formed entry carrying a variant this build has no name for
+/// is preserved rather than skipped.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContentBlock {

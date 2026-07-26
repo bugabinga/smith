@@ -67,10 +67,12 @@ impl ToolDefinition {
     }
 }
 
-/// Progress reported by a tool while it runs.
+/// Progress a tool recorded while it ran.
 ///
-/// A long tool that reported nothing until it finished would look hung; this
-/// is what lets the UI show motion without the tool owning any UI.
+/// §5.3 surfaces these only inside the completed [`AgentToolResult`], so they
+/// are a record of what happened rather than a live feed — nothing here moves a
+/// progress indicator mid-run. Whether a long tool should be able to report
+/// before it finishes is the open question on #132.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentToolUpdate {
     /// Human-readable progress.
