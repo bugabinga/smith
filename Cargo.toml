@@ -22,6 +22,18 @@ edition = "2024"
 version = "0.1.0"
 license = "Apache-2.0"
 
+# Versions are quoted from the SPEC §2.3 canonical dependency registry, which is
+# the only place a crate may be added or removed. Entries appear here as the
+# slices that need them land, so this table is a subset of the registry and
+# never a superset — a name absent from §2.3 must not appear below.
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v7"] }
+futures = "0.3"
+thiserror = "2"
+ciborium = "0.2"
+
 # The lint wall. It lives here, not in .cargo/config.toml rustflags, because a
 # [target.*] rustflags key REPLACES [build].rustflags rather than merging — so a
 # per-target stanza silently disabled every lint below for that target alone.

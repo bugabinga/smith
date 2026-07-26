@@ -7,5 +7,17 @@ license.workspace = true
 [lib]
 path = "src/lib.rs"
 
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+futures = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# The session codec is CBOR (§6.6), so the round-trip properties this crate
+# promises are asserted against the encoder that will actually carry them.
+ciborium = { workspace = true }
+
 [lints]
 workspace = true
