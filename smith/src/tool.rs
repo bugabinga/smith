@@ -210,6 +210,28 @@ mod tests {
     }
 
     #[test]
+    fn a_definition_serializes_flat_in_cbor() {
+        // Session entries use CBOR (§6.6), so the runtime definition must
+        // retain the provider-facing flat shape on that boundary as well.
+        let definition = Echo.definition();
+        let mut cbor = Vec::new();
+        ciborium::into_writer(&definition, &mut cbor).unwrap();
+
+        let value: serde_json::Value = ciborium::from_reader(cbor.as_slice()).unwrap();
+        assert_eq!(
+            value.get("name").and_then(serde_json::Value::as_str),
+            Some("echo")
+        );
+        assert!(
+            value.get("spec").is_none(),
+            "the spec must flatten: {value}"
+        );
+
+        let restored: ToolDefinition = ciborium::from_reader(cbor.as_slice()).unwrap();
+        assert_eq!(restored, definition);
+    }
+
+    #[test]
     fn tools_are_sequential_unless_they_say_otherwise() {
         assert_eq!(ToolExecutionMode::default(), ToolExecutionMode::Sequential);
     }
