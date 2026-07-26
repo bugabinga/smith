@@ -241,6 +241,46 @@ mod tests {
     }
 
     #[test]
+    fn provider_errors_serialize_as_adjacent_kind_and_message() {
+        // `kind` preserves failover classification while `message` keeps the
+        // human context; their adjacent JSON form is a wire contract.
+        let cases = [
+            (
+                ProviderError::RateLimit("try later".to_owned()),
+                r#"{"kind":"rate_limit","message":"try later"}"#,
+            ),
+            (
+                ProviderError::AuthFailed("bad token".to_owned()),
+                r#"{"kind":"auth_failed","message":"bad token"}"#,
+            ),
+            (
+                ProviderError::Network("connection reset".to_owned()),
+                r#"{"kind":"network","message":"connection reset"}"#,
+            ),
+            (
+                ProviderError::ServerError("overloaded".to_owned()),
+                r#"{"kind":"server_error","message":"overloaded"}"#,
+            ),
+            (
+                ProviderError::InvalidRequest("invalid tool".to_owned()),
+                r#"{"kind":"invalid_request","message":"invalid tool"}"#,
+            ),
+            (
+                ProviderError::ModelNotFound("missing model".to_owned()),
+                r#"{"kind":"model_not_found","message":"missing model"}"#,
+            ),
+            (
+                ProviderError::Timeout("deadline exceeded".to_owned()),
+                r#"{"kind":"timeout","message":"deadline exceeded"}"#,
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(serde_json::to_string(&error).unwrap(), expected);
+        }
+    }
+
+    #[test]
     fn a_request_omits_what_it_does_not_set() {
         let request = ProviderRequest::new(
             "anthropic",
