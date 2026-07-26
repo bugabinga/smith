@@ -8,6 +8,13 @@ members = [
     "smith-cli",
     "xtask",
 ]
+# Prototypes are disposable spec-validation crates (SPEC §18) with their own
+# locked dependencies, deliberately outside the product build. Without this,
+# Cargo sees a package inside the workspace directory that is neither a member
+# nor excluded and refuses to build it at all — which is what happened the
+# moment this workspace landed: all 28 prototypes stopped compiling, and the
+# guard that would have said so was pointed at a branch that no longer existed.
+exclude = ["prototypes"]
 resolver = "3"
 
 [workspace.package]

@@ -9,14 +9,29 @@
 # ci-prototype.yml instead.
 name: prototypes
 
+# The branch filter used to name a single feature branch, which has since
+# merged — so this guard ran nowhere. A bit-rot guard that only fires on a dead
+# branch protects nothing, and the prototypes it watches are the evidence base
+# for SPEC claims. It now runs where the evidence can actually change: pull
+# requests that touch a prototype, and `main` after they land.
 on:
   push:
-    branches: ["claude/specs-progress-n5u27n"]
-    paths:
+    branches: ["main"]
+    paths: &proto
       - "prototypes/**"
       - "!prototypes/**/*.md"
       - "!prototypes/p34-ci-pipeline/**"
       - ".github/workflows/prototypes.yml"
+      # The root manifest decides whether a prototype can build at all: a
+      # package inside the workspace directory that is neither a member nor
+      # excluded is one Cargo refuses outright. That is precisely how all 28
+      # broke when the workspace landed, and a filter watching only
+      # `prototypes/**` would not have fired on the commit that did it.
+      - "Cargo.toml"
+      - "rust-toolchain.toml"
+  pull_request:
+    branches: ["main"]
+    paths: *proto
   workflow_dispatch: {}
 
 permissions:
@@ -43,7 +58,14 @@ jobs:
           echo "|-------|--------|---------|" >> "$GITHUB_STEP_SUMMARY"
           failed=""
           total=0
-          for d in prototypes/p*/; do
+          # Every prototype directory, not just `p*`: adw-pioneer names its
+          # output after the issue (`i<issue>-<slug>`) because two runs cannot
+          # see each other's unmerged branches to agree a sequential number. A
+          # glob that silently skips a whole naming scheme is worse than a
+          # failing test — the prototype looks covered and is never run. The
+          # Cargo.toml guard below is what actually decides; the glob only has
+          # to avoid excluding candidates.
+          for d in prototypes/*/; do
             [ -f "$d/Cargo.toml" ] || continue
             case "$d" in prototypes/p34-ci-pipeline/) continue;; esac
             name=$(basename "$d")
