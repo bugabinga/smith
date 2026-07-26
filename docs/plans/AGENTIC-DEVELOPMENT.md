@@ -111,7 +111,7 @@ level below is a standing assignment.
 | `security-reviewer` | PR on sensitive surface / `needs:security` / `adw-alerts` daily sweep or manual dispatch | security review; escalate high severity | a **PR review** + `risk:*` | opus | high |
 | `builder` (Claude) | issue labeled `ready` | build one **UI/UX** slice per `WALKING-SKELETON`, hardened, tested | a **branch + PR** | opus | high |
 | `builder` (Codex) | issue labeled `codex` | build one **backend** slice per `WALKING-SKELETON`, hardened, tested | a **branch + PR** | terra | high |
-| `codex-review` | `pull_request` | cross-family second opinion (advisory; never a gate label) | a **PR comment** | sol | high |
+| `codex-review` | `pull_request` | cross-family review; fallback verdict when Claude produces no verdict | a **PR comment** + fallback **labels** | sol | high |
 | `adw-doctor` | `schedule` (weekly) | diagnose the *workflow's own* health — drift, gate pathologies — and propose one systemic fix | a **PR**/`Issue` on ADW config | sol | xhigh |
 | `docs-writer` | merged PR changes user-facing / SDK behavior | keep user + plugin-author docs and the site true to the product | doc sources + Pages, via **PR** | terra | medium |
 | `dependency-manager` | Dependabot bump PR | shepherd version bumps through the gates; escalate risky ones | **Dependabot PRs** | terra | medium |
@@ -125,11 +125,11 @@ surface: **UI/UX → the Claude builder** (`opus`, `ready`), **backend → the C
 builder** (`terra`, `codex`). Two model families building different halves is
 diversity *and* specialization. Cross-family review is preserved by construction:
 a backend (`terra`) PR is **gated** cross-family by the `opus` `reviewer`, and a
-UI/UX (`opus`) PR — built and gated by `opus` — gets its cross-family read from the
-`sol` `codex-review` (advisory) plus a higher-effort (`xhigh`) `opus` second pass.
-Every PR is seen by both families; only which family *gates* flips with the
-builder. Promoting `codex-review` to gating on `opus`-built PRs would make the UI
-cross-family read gating too — a later tightening, not a blocker.
+UI/UX (`opus`) PR gets an advisory `sol` read plus the higher-effort (`xhigh`)
+`opus` review. Every PR is seen by both families. When either Claude reviewer
+fails to emit its required verdict, the `sol` fallback supplies only that missing
+current-head verdict after both Claude jobs finish; it never races or overwrites a
+valid Claude decision.
 
 **Codex is first-class, not foreign.** `sol`/`terra`/`luna` agents run on the
 owner's ChatGPT subscription (`CODEX_AUTH_JSON` seeds auth each run; re-seed when
@@ -142,8 +142,13 @@ agent files are TOML, an incompatible schema, so a symlink can't share the Markd
 charter). They also load `CLAUDE.md` as their project doc via
 `project_doc_fallback_filenames = ["CLAUDE.md"]`. The exception is `codex-review`:
 it is not a roster agent and has no charter file — it runs a self-contained inline
-review prompt, and stays advisory (a comment + `codex-reviewed`, never a merge-gate
-label, so an OpenAI outage can't deadlock a merge).
+review prompt. It always posts an advisory `codex-reviewed` comment; after the
+Claude reviewers fail to produce their required artifacts, its current-head verdict
+may supply the same gate labels on ordinary source PRs. Its provider assessment has
+no token-bearing step after the model; a fresh deterministic reducer applies its
+bounded output. It never supplies labels for protected ADW/spec/instruction changes,
+oversized diffs, or forks, so an OpenAI outage leaves those already owner-gated or
+fail-closed rather than widening trust.
 
 The **authority** for each agent's mission and boundaries is its `.claude/agents/`
 charter; **model, effort, and tool access** are set by the workflow that runs it
@@ -482,7 +487,7 @@ agents (which run in Actions) drive them. Code scanning, secret scanning, and
 push protection are **repo settings** the owner enables once; the agents then
 triage their alerts.
 
-### Cross-family review — extra eyes, not extra gates
+### Cross-family review — advisory first, bounded fallback
 
 Anthropic agents reviewing Anthropic-built code share blind spots. **Copilot**
 (GitHub) and **Codex** (OpenAI) have *different* ones, so they are wired in for
@@ -495,14 +500,18 @@ prizes cross-family review across model families.
 - **Codex** is a first-class dual-role citizen — it both **builds** (route an issue
   with the `codex` label → `adw-codex-build.yml` implements a slice and opens a PR
   that rides the normal gate) and **reviews** (`adw-codex-review.yml` posts an
-  advisory cross-family read on every PR). Both are CI workflows on the owner's
-  ChatGPT subscription (`CODEX_AUTH_JSON`); the triager routes each build to Claude
-  or Codex. Advisory as a reviewer — it never sets a gate label.
+  advisory cross-family read on every PR). When Claude fails to produce a required
+  current-head review artifact, `adw-review.yml` runs Codex as a bounded fallback
+  and a separate deterministic reducer may set only the missing verdict label.
+  Both are CI workflows on the owner's ChatGPT subscription (`CODEX_AUTH_JSON`);
+  the triager routes each build to Claude or Codex.
 
-**Deliberately advisory, never gating.** External tools stay *out* of the
-`merge-gate`'s critical path: our own reviewers own the verdict labels, so a
-Copilot or Codex outage can never deadlock a merge, and no external service becomes
-load-bearing for landing code. They enrich the judgment; they don't hold the key.
+**Advisory by default, fail-closed as fallback.** Copilot never sets a gate label.
+Codex fallback becomes load-bearing only after Claude has failed to produce its
+artifact, and only on complete ordinary-source diffs; protected instruction/spec/ADW
+surfaces, oversized diffs, and forks receive no fallback labels. Thus an OpenAI
+outage leaves those paths red rather than widening trust, while an ordinary Claude
+outage does not silently wedge the cycle.
 
 ### Credentialed agents over untrusted input (the ADW's §6.7)
 
@@ -534,9 +543,10 @@ compromised member account is out of scope.
 **Agents are inside the trust boundary.** The owner authors and owns every agent
 instruction — charters in `.claude/agents/`, prompts in `.github/workflows/`, the
 shared rules in `CLAUDE.md` — and all of it is CODEOWNERS-gated, so no instruction
-changes without the owner's review. Agents are therefore *trusted actors running
-owner-written instructions*, not untrusted code to be sandboxed from the repo's own
-configuration. That is why a builder may edit ADW config when a triaged work-order
+changes without the owner's review. PR reviewers check out project instructions from
+the base SHA and receive the PR diff only as untrusted review data. Agents are
+therefore *trusted actors running owner-written instructions*, not untrusted code to
+be sandboxed from the repo's own configuration. That is why a builder may edit ADW config when a triaged work-order
 names the file: it is the owner's machinery being maintained by the owner's agents.
 
 The residual this accepts is real and named: for a `pull_request` event GitHub runs

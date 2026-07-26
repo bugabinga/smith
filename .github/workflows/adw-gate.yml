@@ -70,6 +70,7 @@ jobs:
             BLOCKING_GATE_LABELS="risk:high blocked changes-requested needs:info needs:spec needs:prototype"
           fi
           labels=$(gh pr view "$PR" --repo "$REPO" --json labels -q '[.labels[].name] | join(",")')
+          HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid -q .headRefOid)
           echo "labels: [$labels]"
           csv=",$labels,"
           held=""
@@ -82,4 +83,33 @@ jobs:
           done
           if [ -n "$held" ]; then echo "::error::merge held by label(s):$held"; exit 1; fi
           if [ -n "$waiting" ]; then echo "::error::waiting on verdict label(s):$waiting"; exit 1; fi
-          echo "merge-gate green — reviewed + security-cleared, no blocking labels"
+          # Labels have no commit identity. A push between a reviewer's head
+          # read and its label mutation can otherwise make old-head labels green
+          # on this label event, after the synchronize event already failed.
+          # Require a current-head marker from the App for every passing label.
+          comments=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                     --jq '.[] | select(.user.login == "agent-smith-bugabinga-adc[bot]") | .body | @base64')
+          correctness=false
+          security=false
+          while IFS= read -r encoded; do
+            [ -n "$encoded" ] || continue
+            body=$(printf '%s' "$encoded" | base64 -d)
+            first=${body%%$'\n'*}
+            case "$first" in
+              "Review: $HEAD_SHA"|"Review: $HEAD_SHA "*)
+                printf '%s\n' "$body" | grep -Fxq 'VERDICT: reviewed' && correctness=true ;;
+              "Security review: $HEAD_SHA"|"Security review: $HEAD_SHA "*)
+                printf '%s\n' "$body" | grep -Fxq 'VERDICT: security-cleared' && security=true ;;
+              "Fallback review: $HEAD_SHA")
+                printf '%s\n' "$body" | grep -Fxq 'CORRECTNESS: approve' && correctness=true
+                printf '%s\n' "$body" | grep -Fxq 'SECURITY: cleared' && security=true ;;
+            esac
+          done <<< "$comments"
+          missing=""
+          [ "$correctness" = true ] || missing="$missing reviewed"
+          [ "$security" = true ] || missing="$missing security-cleared"
+          if [ -n "$missing" ]; then
+            echo "::error::verdict label(s) lack App evidence for $HEAD_SHA:$missing"
+            exit 1
+          fi
+          echo "merge-gate green — current-head verdict evidence, no blocking labels"
