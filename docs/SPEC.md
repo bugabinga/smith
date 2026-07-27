@@ -134,10 +134,25 @@ Forbidden:
 - `mod.rs` containing anything except module declarations and re-exports.
 - Public API leaking from implementation modules unless explicitly listed here.
 
+Implementation-module public API exceptions are declared only in this table. An
+exception names the crate, the implementation-module path, the exact public
+symbols allowed there, and the reason the symbol cannot live at the crate root or
+in a dedicated public API module. An empty table means no exceptions.
+
+| Crate | Implementation module | Allowed public symbols | Reason |
+|---|---|---|---|
+| _none_ | _none_ | _none_ | _none_ |
+
+Crate roots and dedicated public API modules may declare public API normally.
+Every other public item under an implementation module must either be private to
+its crate or appear in the exception table above.
+
 Architecture gates:
 
 - `cargo run -p xtask -- arch` checks stable Cargo metadata and source
-  invariants not covered by pup.
+  invariants not covered by pup, including the implementation-module exception
+  table above: any public item in an implementation module that is absent from
+  the table fails the gate with crate, module path, and symbol name.
 - `cargo run -p xtask -- pup` runs `cargo +nightly-2026-01-22 pup`.
 - `cargo run -p xtask -- print-modules` prints crate roots from Cargo metadata
   plus cargo-pup submodule output.
@@ -465,7 +480,9 @@ roles.
 - `ThinkingLevel`: `Off`, `Minimal`, `Low`, `Medium`, `High`, `XHigh`.
 - `ProviderEvent`:
   - `TextDelta { text }`,
-  - `ThinkingDelta { text }`,
+  - `ThinkingDelta { text, provider_metadata? }` — `provider_metadata` is
+    opaque, optional, and attached by the provider adapter to the delta whose
+    thinking text it authenticates,
   - `ToolCall { id, name, arguments }` — assembled and complete; partial
     argument chunks are joined at the provider boundary (§7.2),
   - `Done { usage, stop_reason }`,
@@ -484,6 +501,8 @@ roles.
 - `AgentTool` is async and `Send + Sync`.
 - `ToolExecutionMode`: sequential or parallel according to tool metadata.
 - `AgentToolResult` returns content blocks, error flag, and optional updates.
+- Tool updates are v1 completion metadata: `AgentToolUpdate` values are surfaced
+  in the final `AgentToolResult`, not streamed live while the tool runs.
 - Tool arguments are JSON and validated with `jsonschema`.
 
 ### 5.4 StreamFn
@@ -495,6 +514,15 @@ roles.
 - no dependency on `smith-ai`.
 
 This permits `smith-core` and `smith-ai` to build independently.
+
+The agent loop assembles consecutive `ThinkingDelta` events into a
+`ContentBlock::Thinking`. It concatenates `text` in arrival order and carries
+forward every non-empty `provider_metadata` value into the assembled block. If a
+provider emits more than one metadata value for one assembled thinking block,
+the block stores them in arrival order inside the opaque metadata payload;
+Smith still never interprets them. This is the only route by which signed
+thinking metadata crosses the `StreamFn` boundary and becomes available for
+provider replay (§7.2).
 
 ### 5.5 Lua Runtime
 
