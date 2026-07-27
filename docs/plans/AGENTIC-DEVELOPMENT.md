@@ -2,7 +2,7 @@
 
 > Guide and overview, **not** the source of truth. The ADW *is* the encoded
 > config — `.github/workflows/`, GitHub settings (CODEOWNERS, rulesets, labels,
-> the Project board), and `.claude/` (agents, settings, skills). This doc
+> milestones), and `.claude/` (agents, settings, skills). This doc
 > explains and ties those together; when the doc and the config disagree, **the
 > config wins** and the doc is corrected — never the reverse, because the config
 > is what actually runs. `docs/SPEC.md` stays canonical for what Smith *is*;
@@ -72,13 +72,12 @@ API/UI (a drift risk to minimize by preferring the as-code option).
 | merge gates / auto-merge | native auto-merge + `merge-gate` check + ruleset | ✅ `adw-automerge.yml` + `adw-gate.yml` + ruleset (`merge-gate` required); ⚠️ ruleset applied by hand | workflow + ruleset |
 | routing labels | `.github/labels.yml` + a label-sync action | ✅ if adopted as-code | `labels.yml` |
 | waves | Milestones | ❌ GitHub API/UI | GitHub |
-| lifecycle board | Project (v2) | ❌ mostly (scriptable via `gh`) | GitHub |
 | bot identity | GitHub App + secrets | ⚠️ App-manifest JSON can live in repo; key/install manual | GitHub |
 
 **Rule:** prefer the as-code option for anything that can be one (rulesets,
 labels-as-code, the App manifest) so the ADW is reviewable and reproducible;
-accept that the Project board, milestones, and the App installation are
-irreducibly GitHub-side. A `xtask adw` (or CI) check can assert the in-repo
+accept that milestones and the App installation are irreducibly GitHub-side. A
+`xtask adw` (or CI) check can assert the in-repo
 artifacts agree with this doc's tables — the same no-drift discipline as the
 arch gate.
 
@@ -105,7 +104,7 @@ level below is a standing assignment.
 
 | Agent | Woken by (in the workflow) | Mission | Artifact it owns | Model | Effort |
 |-------|----------------------------|---------|------------------|-------|--------|
-| `planner` | spec change on `main`; a `needs:breakdown` epic; weekly `schedule` | interpret spec diffs into work-orders, slice epics into single work-orders, and groom the backlog + board | **Issues** + `docs/plans/*` | fable | xhigh |
+| `planner` | spec change on `main`; a `needs:breakdown` epic; weekly `schedule` | interpret spec diffs into work-orders, slice epics into single work-orders, and groom the backlog | **Issues** + `docs/plans/*` | fable | xhigh |
 | `surveyor` | `schedule` | measure the spec-vs-code gap and open the next unbuilt slice as a work-order | **one Issue** per tick | fable | high |
 | `reviewer` | `pull_request` | adversarial correctness review vs the spec — a *second* model | a **PR review** | opus | xhigh |
 | `security-reviewer` | PR on sensitive surface / `needs:security` / `adw-alerts` daily sweep or manual dispatch | security review; escalate high severity | a **PR review** + `risk:*` | opus | high |
@@ -116,8 +115,8 @@ level below is a standing assignment.
 | `docs-writer` | merged PR changes user-facing / SDK behavior | keep user + plugin-author docs and the site true to the product | doc sources + Pages, via **PR** | terra | medium |
 | `dependency-manager` | Dependabot bump PR | shepherd version bumps through the gates; escalate risky ones | **Dependabot PRs** | terra | medium |
 | `release-manager` | `v*` tag | draft notes, verify the §14 matrix, publish the Release | a **GitHub Release** | terra | medium |
-| `triager` | issue opened | triage a raw issue into a labeled, ranked, spec-anchored work-order related to the open backlog — routed to a builder, or `needs:breakdown` to the planner if it is an epic/meta issue | the **Issue** + board card | luna | medium |
-| `sweeper` | `schedule` | unstick stalls, enforce WIP, brake runaways | **Issues/PRs/board** labels | luna | low |
+| `triager` | issue opened | triage a raw issue into a labeled, ranked, spec-anchored work-order related to the open backlog — routed to a builder, or `needs:breakdown` to the planner if it is an epic/meta issue | the **Issue** | luna | medium |
+| `sweeper` | `schedule` | unstick stalls, enforce WIP, brake runaways | **Issues/PRs** + labels | luna | low |
 | `pioneer` (skill) | issue labeled `needs:prototype` (`adw-pioneer.yml`) | prove/disprove an unproven spec claim with a prototype | `prototypes/*` + a **PR** | opus | high |
 
 **Two builders, by domain.** The `triager` routes each `ready`-able issue by
@@ -194,15 +193,15 @@ sequenceDiagram
     Note over Owner,Board: Touchpoint 2 — issues
     Owner->>Board: file an issue
     Board-->>Tri: issue opened
-    Tri->>Board: classify · anchor · size · route · card→Ready
+    Tri->>Board: classify · anchor · size · route · labels
     Note over Tri,Board: epic/meta issue → needs:breakdown (planner slices it), no builder
 
-    Board-->>Bld: labeled `ready` (card→In Progress)
+    Board-->>Bld: labeled `ready`
     loop until gates green
         Bld->>CI: push slice
         CI-->>Bld: red → self-heal
     end
-    Bld->>PR: open PR, closes #N (card→In Review)
+    Bld->>PR: open PR, closes #N
     PR-->>Rev: pull_request
     PR-->>Sec: pull_request
 
@@ -218,7 +217,7 @@ sequenceDiagram
 
     alt reviewed + security-cleared, no blocking label
         Note over PR,Trunk: native auto-merge, gated by merge-gate
-        PR->>Trunk: squash-merge (signed) — card→Done
+        PR->>Trunk: squash-merge (signed)
         Trunk-->>Sur: front clears → next slice
     else risk:high / sev:high
         Note over PR,Owner: Touchpoint 3 — PR review
@@ -299,11 +298,11 @@ PR (PROJECT-INVARIANTS §5), and an agent never resolves ambiguity by guessing �
 routes to the human via one of `needs:spec`, `risk:high`, or `needs:info`.
 
 The last row is the pipeline's dead-man's switch. The ruleset names `merge-gate`
-as the sole required check, which makes it the sole way the whole board can
+as the sole required check, which makes it the sole way the whole queue can
 seize: fail-closed is right for one bad PR and catastrophic when the gate
 *itself* breaks — a yanked action, an expired App token, a bad edit to
 `adw-gate.yml`. Then no single PR is "wrong" and the jam is invisible from any
-one PR. `adw-jam-detector` watches the whole board: a deterministic, no-LLM scan
+one PR. `adw-jam-detector` watches the whole queue: a deterministic, no-LLM scan
 reduces each check name to its latest run, then tallies active `merge-gate`
 failures across open non-draft PRs. An ordinary red gate is control state, not
 illness: while a verdict is missing or a blocking label is present, it is
@@ -463,7 +462,7 @@ do is invisible. Beyond the issue→PR spine:
 | Concern | Feature | Owned by |
 |---|---|---|
 | unit of work | **Issues** (+ sub-issues) | triager / planner / surveyor |
-| lifecycle state | **Project (v2)** board: Triage → Ready → In Progress → In Review → Security → Done; fields for risk / wave / owner | each agent moves its own card; `sweeper` reconciles drift |
+| lifecycle state | **Labels** (`ready`, `codex`, `blocked`, `stalled`, `reviewed`, `security-cleared`, `risk:*`) | each agent moves labels; `sweeper` reconciles drift |
 | routing & gates | **Labels** (`.github/labels.yml`, as code) | triager / planner / security-reviewer |
 | grouping | **Milestones** = waves | `planner` opens + assigns; `surveyor` fills the current one; `release-manager` closes |
 | every change | **PRs** linked to issues, agent-reviewed | builder |
@@ -476,11 +475,14 @@ do is invisible. Beyond the issue→PR spine:
 | site + book | **Astro site + mdBook book → Pages** (`.github/workflows/pages.yml`, one deploy on push to `main`) | docs-writer |
 | compute | **Actions** workflows | — |
 
-Projects v2, Discussions, Pages, and Releases aren't reachable from the MCP
-toolset but are reachable from `gh` / `gh api graphql` inside Actions — so the
-agents (which run in Actions) drive them. Code scanning, secret scanning, and
-push protection are **repo settings** the owner enables once; the agents then
-triage their alerts.
+Discussions, Pages, and Releases aren't reachable from the MCP toolset but are
+reachable from `gh` inside Actions — so the agents (which run in Actions) drive
+only the surfaces Smith actually uses. Projects v2 is deliberately excluded:
+GitHub App installation tokens cannot resolve or create the user-owned Project
+v2 board this repo would need, so issues, labels, milestones, PRs, checks, and
+Git history are the reviewed trail. Code scanning, secret scanning, and push
+protection are **repo settings** the owner enables once; the agents then triage
+their alerts.
 
 ### Cross-family review — extra eyes, not extra gates
 
@@ -581,33 +583,32 @@ rather than replacing them:
   builds only if its manifest exists and deploy is skipped until at least one is
   scaffolded, so `main` stays green until those work-orders land.
 
-### Milestones and the board — planning in the open
+### Milestones and labels — planning in the open
 
-The two features exist to make the plan *visible on GitHub itself*, not buried in
-`docs/plans/`. They carry different axes and have different maturity:
+The visible plan lives in GitHub primitives the App can drive in this user-owned
+repo:
 
-- **Milestones = waves (wire now).** A milestone is one wave of the walking
-  skeleton. `planner` opens a milestone per wave and files each work-order into it;
+- **Milestones = waves.** A milestone is one wave of the walking skeleton.
+  `planner` opens a milestone per wave and files each work-order into it;
   `surveyor` only opens slices from the **current** milestone, in order, and does
   not reach into the next wave until the current one closes — that ordering is what
   keeps autonomous build-out marching the skeleton rather than sprawling.
   `release-manager` treats a milestone going all-closed-and-green as the trigger to
-  cut a release. Milestones are first-class REST (reachable from the MCP `milestone`
-  field and from `gh`), so this is cheap and encoded now — no proof needed.
-- **The board = lifecycle (gated on proof).** The Project (v2) board carries the
-  *state* axis milestones don't: Triage → Ready → In Progress → In Review →
-  Security → Done, with fields for risk / wave / owner. Each agent moves its own
-  card as the diagram annotates (`triager`→Ready, `builder`→In Progress→In Review,
-  reviewers→Security/Done, merge→Done), and `sweeper` reconciles cards that drift
-  from reality (a card stuck "In Review" on a PR that already merged). **But
-  Projects v2 is reachable only via `gh api graphql`, which p35 did not exercise** —
-  so board-driving is *designed, not yet proven*. It is gated on two things: the
-  board existing (owner, issue #14) and a mechanic proof that an Action step can
-  read and move a card with the App token (a `needs:prototype`, the same discipline
-  p35 applied to the action). Until both land, **issues + labels + milestones are
-  the load-bearing state**, and the board is best-effort mirror, not source of
-  truth. This keeps the cycle honest: no agent blocks on a surface that isn't
-  proven to work.
+  cut a release. Milestones are first-class REST (reachable from the MCP
+  `milestone` field and from `gh`), so this is cheap and encoded now — no proof
+  needed.
+- **Labels = lifecycle and gates.** Triage, routing, review, security, risk,
+  blocking, and stalls are label state on issues and PRs. Labels are visible in
+  the GitHub UI, diffable as `.github/labels.yml`, readable by deterministic
+  shell checks, and writable by the App installation token. This is the ADW's
+  lifecycle surface.
+
+Projects v2 is intentionally not used. The i16 proof showed the App installation
+token cannot create a user-owned Project v2 and cannot resolve the owner-created
+user Project #1. An org-owned Project could work, but Smith is a user-owned repo;
+adding an org just to host a board would add identity and permission machinery
+without adding correctness. Issues, labels, milestones, PRs, checks, and Git are
+the reviewed trail.
 
 ## Release lifecycle — Releases, not Packages
 
@@ -638,32 +639,26 @@ if Smith ever publishes a container image or a crate.
 
 The App is provisioned: **`agent-smith-bugabinga-adc`** is created, installed on
 the repo, and its `APP_ID` / `APP_PRIVATE_KEY` are stored as secrets. It is
-required, not optional, for two reasons:
-
-1. **Cascade.** Actions taken with the default `GITHUB_TOKEN` do **not** trigger
-   downstream workflows — an agent-opened PR would never trip the review
-   workflow. An App installation token cascades, so the chain actually flows.
-2. **Projects scope.** Projects v2 is org/user-scoped; `GITHUB_TOKEN` can't
-   write it. The App can be granted project permission.
+required, not optional: actions taken with the default `GITHUB_TOKEN` do **not**
+trigger downstream workflows — an agent-opened PR would never trip the review
+workflow. An App installation token cascades, so the chain actually flows.
 
 Bonus: every autonomous action is attributable to the bot, not the human — a
 clean audit identity.
 
 ### TL;DR — creating the App
 
-1. **Settings → Developer settings → GitHub Apps → New GitHub App** (org-level if
-   the Project is org-owned).
+1. **Settings → Developer settings → GitHub Apps → New GitHub App**.
 2. **Permissions:** Contents RW, Issues RW, Pull requests RW, Checks R, Actions
    **RW** (the no-Claude watchers relay `push`/`issues` via `gh workflow run`, which
-   needs Actions:write); Organization **Projects RW** (and repo Projects if used);
-   Discussions RW and Metadata R as needed.
+   needs Actions:write); Discussions RW and Metadata R as needed.
 3. **Install** the App on the `smith` repo.
 4. **Generate a private key**; store `APP_ID` + `PRIVATE_KEY` as repo/org
    secrets.
 5. In each workflow, mint an installation token with
    `actions/create-github-app-token@v1` and pass it as the action's
-   `github_token` (and to `gh` via `GH_TOKEN`). That token both cascades and
-   carries Projects scope.
+   `github_token` (and to `gh` via `GH_TOKEN`). That token cascades downstream
+   workflows.
 
 ## Signed commits — verified trail, now; enforced, later
 
@@ -777,8 +772,7 @@ action's docs settled the rest:
 ## Phased rollout
 
 - **Phase 0** — CODEOWNERS + branch protection on the spec (enforces touchpoint
-  #1); create the Project board; land the `.claude/agents/*` personas. No
-  autonomy yet.
+  #1); land the `.claude/agents/*` personas. No autonomy yet.
 - **Phase 1** — `issues → triager → implementer → PR` on the existing proven CI;
   **human reviews every PR** (build trust in the trail).
 - **Phase 2** — add `reviewer` + `security-reviewer`; enable gated auto-merge for

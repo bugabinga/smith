@@ -129,7 +129,7 @@ Scanned all GitHub issues whose title, body, or labels mention ADW, including cl
 | #21 | Liveness cliff, revise thrash, and no post-merge recovery. | Bounded WIP with one alternate unblocked slice, per-PR revise counter, and post-merge red-CI revert PR path. |
 | #20 | Some event triggers are unproven. | Treat schedules/reconciliation as load-bearing; prototype only events that remain load-bearing. |
 | #17 | `merge-gate` is labels-only until real CI is required. | No hands-off auto-merge until `xtask check` is a required status beside `merge-gate`. |
-| #16 | Project v2 board driving is unproven. | Labels, issues, milestones remain source of truth; board stays disabled/best-effort until proven. |
+| #16 | User-owned Projects v2 are not App-token viable for Smith. | Drop Projects; issues, labels, milestones, PRs, checks, and Git are the ADW trail. |
 | #122 | Release workflow must stay thin and invoke `xtask release`. | Release-manager uses the same provider runner; release mechanics wait on #104/#120 and stay xtask-owned. |
 
 Closed ADW incidents cluster into the same roots: merge-gate jams (#39, #43, #58-#76, #84), stale labels (#94), label drift (#113), no-verdict recovery (#128/#129), stale CodeQL config (#116), auth/setup blockers (#13/#14/#32/#47), and wrong-signing diagnosis (#115). They argue for fewer moving pieces, not more per-incident patches.
@@ -138,7 +138,7 @@ Closed ADW incidents cluster into the same roots: merge-gate jams (#39, #43, #58
 
 The minimal system is four boring layers:
 
-1. **State:** GitHub issues, labels, milestones, required checks. Project boards are mirrors only.
+1. **State:** GitHub issues, labels, milestones, PRs, required checks, and Git history. No Projects board.
 2. **Runner:** one provider runner contract prepares trusted inputs, runs Claude or Codex, and proves the artifact.
 3. **Reducer:** deterministic shell logic reduces provider results into labels, comments, PRs, or failures.
 4. **Reconciler:** scheduled sweeper/doctor repairs missed events, stalled work, and provider outages.
@@ -159,6 +159,6 @@ Immediate event triggers stay only where latency affects correctness: PR head ch
 4. Convert triage, sweep, planner, surveyor, docs, deps, release, pioneer, and doctor to the same runner.
 5. Add ADW coverage matrix and liveness rules to `docs/plans/AGENTIC-DEVELOPMENT.md`.
 6. Keep auto-merge disabled until real CI is required with `merge-gate`.
-7. Leave Project v2 disabled as source of truth until #16 is proven.
+7. Remove Project v2 from the ADW model; do not replace it with another board.
 
 Each step must preserve current artifact contracts before adding new behavior.
