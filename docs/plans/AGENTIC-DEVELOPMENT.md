@@ -109,7 +109,7 @@ level below is a standing assignment.
 | `reviewer` | `pull_request` | adversarial correctness review vs the spec — a *second* model | a **PR review** | opus | xhigh |
 | `security-reviewer` | PR on sensitive surface / `needs:security` / `adw-alerts` daily sweep or manual dispatch | security review; escalate high severity | a **PR review** + `risk:*` | opus | high |
 | `builder` (Claude) | issue labeled `ready` | build one **UI/UX** slice per `WALKING-SKELETON`, hardened, tested | a **branch + PR** | opus | high |
-| `builder` (Codex) | issue labeled `codex` | build one **backend** slice per `WALKING-SKELETON`, hardened, tested | a **branch + PR** | terra | high |
+| `builder` (Codex) | issue labeled `codex` | build one **backend** slice per `WALKING-SKELETON`, or one fallback UI/UX slice after Claude fails, hardened and tested | a **branch + PR** | terra | high |
 | `codex-review` | `pull_request` | cross-family review; fallback verdict when Claude produces no verdict | a **PR comment** + fallback **labels** | sol | high |
 | `adw-doctor` | `schedule` (weekly) | diagnose the *workflow's own* health — drift, gate pathologies — and propose one systemic fix | a **PR**/`Issue` on ADW config | sol | xhigh |
 | `docs-writer` | merged PR changes user-facing / SDK behavior | keep user + plugin-author docs and the site true to the product | doc sources + Pages, via **PR** | terra | medium |
@@ -121,8 +121,10 @@ level below is a standing assignment.
 
 **Two builders, by domain.** The `triager` routes each `ready`-able issue by
 surface: **UI/UX → the Claude builder** (`opus`, `ready`), **backend → the Codex
-builder** (`terra`, `codex`). Two model families building different halves is
-diversity *and* specialization. Cross-family review is preserved by construction:
+builder** (`terra`, `codex`). Those are primary routes; after a missing Claude
+branch/PR artifact, Codex inherits the same issue as a fallback UI/UX builder.
+Two model families building different halves is diversity *and* specialization.
+Cross-family review is preserved by construction:
 a backend (`terra`) PR is **gated** cross-family by the `opus` `reviewer`, and a
 UI/UX (`opus`) PR gets an advisory `sol` read plus the higher-effort (`xhigh`)
 `opus` review. Every PR is seen by both families. When either Claude reviewer

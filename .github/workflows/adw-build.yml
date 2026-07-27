@@ -49,7 +49,10 @@ jobs:
           fi
           git fetch origin "$branch:refs/remotes/origin/$branch"
           git checkout --track "origin/$branch"
-      - uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b
+      - id: claude
+        continue-on-error: true
+        timeout-minutes: 15
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b
         env:
           CLAUDE_BRANCH: "claude/issue-${{ github.event.issue.number }}"
         with:
@@ -69,3 +72,36 @@ jobs:
             slices; the Codex builder owns backend. Do not merge. If you cannot
             build it, say why in one line instead of producing nothing.
           claude_args: --model claude-opus-4-8 --effort high --dangerously-skip-permissions
+      - name: Route a missing Claude artifact to Codex
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          ISSUE: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
+        run: |
+          branch="claude/issue-${ISSUE}"
+          state=$(gh issue view "$ISSUE" --repo "$REPO" --json state,labels \
+                    --jq '[.state, ([.labels[].name] | join(","))] | @tsv')
+          IFS=$'\t' read -r issue_state labels <<< "$state"
+          [ "$issue_state" = OPEN ] || exit 0
+          case ",$labels," in *,ready,*) ;; *) exit 0 ;; esac
+          case ",$labels," in *,codex,*|*,blocked,*|*,needs:info,*|*,needs:spec,*|*,needs:prototype,*|*,needs:breakdown,*|*,risk:high,*) exit 0 ;; esac
+          owner=${REPO%%/*}
+          numbers=$(gh api --method GET "repos/$REPO/pulls" -f state=open \
+                    -f "head=$owner:$branch" --jq '.[].number')
+          prs=0
+          while IFS= read -r number; do
+            [ -n "$number" ] || continue
+            qualifies=$(gh pr view "$number" --repo "$REPO" --json baseRefName,closingIssuesReferences \
+                        -q '.baseRefName == "main" and any(.closingIssuesReferences[]; .number == '"$ISSUE"')')
+            if [ "$qualifies" = true ]; then
+              prs=1
+              break
+            fi
+          done <<< "$numbers"
+          [ "$prs" -eq 0 ] || exit 0
+          next_labels=$(gh issue view "$ISSUE" --repo "$REPO" --json labels \
+                        -q '[.labels[].name | select(. != "ready")] + ["fallback:claude", "codex"] | unique')
+          gh api --method PATCH "repos/$REPO/issues/$ISSUE" --input - \
+            <<< "{\"labels\":$next_labels}"
+          gh issue comment "$ISSUE" --repo "$REPO" --body "Claude produced no open PR (${CLAUDE_OUTCOME}); routed once to Codex fallback."
