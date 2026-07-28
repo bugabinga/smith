@@ -105,6 +105,12 @@ require .github/workflows/adw-review.yml 'needs: \[reviewer, security-reviewer, 
   'Codex reducer receives the failed-provider state in a clean downstream job'
 require .github/workflows/adw-codex-review.yml 'advisory' \
   'ordinary Codex review remains advisory'
+if [ "$(grep -c 'timeout-minutes: 5' .github/workflows/adw-plan.yml)" -lt 3 ]; then
+  echo "FAIL every planner primary is time-bounded"
+  fail=1
+else
+  echo "PASS every planner primary is time-bounded"
+fi
 if [ "$(grep -c 'continue-on-error: true' .github/workflows/adw-plan.yml)" -lt 3 ]; then
   echo "FAIL every planner mode permits provider fallback"
   fail=1
@@ -121,6 +127,8 @@ require .github/workflows/adw-plan.yml 'gpt-5.6-sol' \
   'planner fallback uses the assigned Codex model'
 require .github/workflows/adw-plan.yml '.claude/agents/planner.md' \
   'planner fallback keeps the canonical charter'
+require .github/workflows/adw-survey.yml 'timeout-minutes: 5' \
+  'surveyor primary is time-bounded'
 require .github/workflows/adw-survey.yml 'continue-on-error: true' \
   'surveyor permits provider fallback'
 require .github/workflows/adw-survey.yml "steps.claude.outcome == 'failure'" \
