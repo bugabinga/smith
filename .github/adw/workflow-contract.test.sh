@@ -31,6 +31,8 @@ require .github/workflows/adw-gate.yml 'Fallback review:' \
   'merge gate binds labels to evidence for the current head'
 require .github/workflows/adw-gate.yml 'VERDICT: reviewed' \
   'merge gate binds an approval label to an approval comment'
+require .github/rulesets/main.json '"context": "check"' \
+  'main requires product CI beside the merge gate'
 require .github/workflows/adw-review.yml 'pulls/\$PR/files' \
   'Codex fallback refuses merge labels for binary or incomplete files'
 require .github/workflows/adw-review.yml 'previous_filename' \
