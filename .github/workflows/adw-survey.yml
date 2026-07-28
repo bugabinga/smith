@@ -30,7 +30,9 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-      - uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b
+      - id: claude
+        continue-on-error: true
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b
         with:
           github_token: ${{ steps.token.outputs.token }}
           allowed_bots: agent-smith-bugabinga-adc
@@ -45,3 +47,19 @@ jobs:
             `needs:prototype` if it needs a decision or proof. One issue per tick,
             or none. Never edit the spec, never write code.
           claude_args: --model claude-fable-5 --effort high --dangerously-skip-permissions
+      - name: Codex fallback for surveying
+        if: steps.claude.outcome == 'failure'
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p ~/.codex
+          printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
+          chmod 600 ~/.codex/auth.json
+          printf 'project_doc_fallback_filenames = ["CLAUDE.md"]\n' > ~/.codex/config.toml
+          npm install -g @openai/codex@0.145.0
+          set -o pipefail
+          codex exec -m gpt-5.6-sol -c model_reasoning_effort="high" --sandbox danger-full-access "$(awk 'f>=2{print} /^---$/{f++}' .claude/agents/surveyor.md)
+
+          Claude failed. Survey ${REPO} using the canonical charter. Respect WIP across both builder queues and agent PRs; open at most one next work-order, correctly routed, or no issue. Never edit the spec or write code."
