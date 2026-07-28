@@ -158,6 +158,22 @@ require .github/workflows/adw-codex-build.yml 'fallback:claude' \
   'Codex builder distinguishes inherited Claude UI/UX work'
 require .github/workflows/adw-codex-build.yml 'Closes #\$\{ISSUE\}' \
   'Codex fallback PR closes its routed issue'
+require .github/workflows/adw-codex-build.yml 'smith:builder-route/v1' \
+  'Codex fallback requires an armed reconciler record'
+require .github/adw/reconcile-builder-routes.sh 'headRepository' \
+  'Route reconciler rejects fork PR artifacts'
+require .github/adw/reconcile-builder-routes.sh 'closingIssuesReferences' \
+  'Route reconciler verifies the closed issue repository'
+require .github/workflows/adw-sweep.yml 'bash .github/adw/reconcile-builder-routes.sh' \
+  'Sweep runs deterministic route reconciliation'
+if awk '/Reconcile builder routes/{seen=1} seen && /codex exec/{found=1; exit} END{exit !found}' .github/workflows/adw-sweep.yml; then
+  echo "PASS sweep reconciles routes before Codex"
+else
+  echo "FAIL sweep must reconcile routes before Codex"
+  fail=1
+fi
+require .claude/agents/sweeper.md 'Never add, remove, or replace `ready`, `codex`, or `fallback:claude`' \
+  'Sweeper cannot mutate builder routes'
 require .github/workflows/adw-build.yml 'open a PR that closes the issue' \
   'Claude builder is instructed to open a closing PR'
 if grep -R -q --include='adw-*.yml' 'anthropics/claude-code-action@v1' .github/workflows; then
