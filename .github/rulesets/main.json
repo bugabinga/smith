@@ -37,7 +37,8 @@
       "parameters": {
         "strict_required_status_checks_policy": false,
         "required_status_checks": [
-          { "context": "merge-gate" }
+          { "context": "merge-gate" },
+          { "context": "check" }
         ]
       }
     }
