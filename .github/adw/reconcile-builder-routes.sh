@@ -18,10 +18,15 @@ live() {
     --jq '[.state, ([.labels[].name] | join(","))] | @tsv'
 }
 
+read_live() {
+  local row
+  row=$(live "$1") || return 1
+  IFS=$'\t' read -r LIVE_STATE LIVE_LABELS <<< "$row"
+}
+
 open_unheld() {
-  local state labels
-  IFS=$'\t' read -r state labels <<< "$(live "$1")"
-  [[ $state == OPEN ]] && ! [[ ,$labels, =~ ,($HOLDS), ]]
+  read_live "$1" || return 1
+  [[ $LIVE_STATE == OPEN ]] && ! [[ ,$LIVE_LABELS, =~ ,($HOLDS), ]]
 }
 
 has_label() {
@@ -95,12 +100,14 @@ refresh_or_pause() {
 transition_prepared() {
   local issue=$1 id=$2 marker=$3 labels
   refresh_or_pause "$issue" || return 0
-  IFS=$'\t' read -r _ labels <<< "$(live "$issue")"
+  read_live "$issue" || return 1
+  labels=$LIVE_LABELS
   if ! has_label fallback:claude "$labels"; then
     gh issue edit "$issue" --repo "$REPO" --add-label fallback:claude >/dev/null
   fi
   refresh_or_pause "$issue" || return 0
-  IFS=$'\t' read -r _ labels <<< "$(live "$issue")"
+  read_live "$issue" || return 1
+  labels=$LIVE_LABELS
   if has_label ready "$labels"; then
     gh issue edit "$issue" --repo "$REPO" --remove-label ready >/dev/null
   fi
@@ -108,7 +115,8 @@ transition_prepared() {
   set_phase "$id" "$marker" armed
   marker=${marker/phase=prepared/phase=armed}
   refresh_or_pause "$issue" || return 0
-  IFS=$'\t' read -r _ labels <<< "$(live "$issue")"
+  read_live "$issue" || return 1
+  labels=$LIVE_LABELS
   if ! has_label codex "$labels"; then
     gh issue edit "$issue" --repo "$REPO" --add-label codex >/dev/null
   fi
@@ -116,7 +124,9 @@ transition_prepared() {
 
 reconcile() {
   local issue=$1 state labels source target head record id marker phase
-  IFS=$'\t' read -r state labels <<< "$(live "$issue")"
+  read_live "$issue" || return 1
+  state=$LIVE_STATE
+  labels=$LIVE_LABELS
   [[ $state == OPEN ]] || return 0
   [[ ,$labels, =~ ,($HOLDS), ]] && return 0
   source="claude/issue-$issue"
@@ -127,6 +137,22 @@ reconcile() {
     IFS=$'\t' read -r id marker <<< "$record"
     phase=${marker##*phase=}
     phase=${phase% -->}
+    if [[ $phase == completed ]]; then
+      if qualifying_pr "$issue" "$target"; then
+        return 0
+      elif [[ $? -ne 1 ]]; then
+        return 1
+      fi
+      if has_label fallback:claude "$labels" && has_label codex "$labels"; then
+        set_phase "$id" "$marker" armed
+        gh issue edit "$issue" --repo "$REPO" --remove-label codex >/dev/null
+        gh issue edit "$issue" --repo "$REPO" --add-label codex >/dev/null
+      fi
+      return 0
+    fi
+    if [[ $phase == cancelled ]] && has_label ready "$labels"; then
+      record=""
+    fi
     if [[ $phase == armed ]]; then
       if qualifying_pr "$issue" "$target"; then
         set_phase "$id" "$marker" completed
@@ -135,7 +161,7 @@ reconcile() {
         return 1
       fi
       open_unheld "$issue" || return 0
-      IFS=$'\t' read -r _ labels <<< "$(live "$issue")"
+      labels=$LIVE_LABELS
       if ! has_label codex "$labels"; then
         gh issue edit "$issue" --repo "$REPO" --add-label codex >/dev/null
       fi
@@ -151,7 +177,7 @@ reconcile() {
       fi
     fi
     [[ $phase == prepared ]] && transition_prepared "$issue" "$id" "$marker"
-    return 0
+    [[ -n $record ]] && return 0
   fi
   has_label ready "$labels" || return 0
   has_attempt "$issue" "$head" || return 0
