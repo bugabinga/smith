@@ -32,5 +32,7 @@ jobs:
       - uses: actions/checkout@v5
       - name: Gate label contract
         run: bash .github/adw/gate-labels.test.sh
+      - name: Builder route reconciler
+        run: bash .github/adw/reconcile-builder-routes.test.sh
       - name: Workflow contracts
         run: bash .github/adw/workflow-contract.test.sh

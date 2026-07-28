@@ -49,7 +49,10 @@ jobs:
           fi
           git fetch origin "$branch:refs/remotes/origin/$branch"
           git checkout --track "origin/$branch"
-      - uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b
+      - id: claude
+        continue-on-error: true
+        timeout-minutes: 15
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b
         env:
           CLAUDE_BRANCH: "claude/issue-${{ github.event.issue.number }}"
         with:
@@ -69,3 +72,34 @@ jobs:
             slices; the Codex builder owns backend. Do not merge. If you cannot
             build it, say why in one line instead of producing nothing.
           claude_args: --model claude-opus-4-8 --effort high --dangerously-skip-permissions
+      - name: Record a missing Claude artifact
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          ISSUE: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          APP_LOGIN: agent-smith-bugabinga-adc[bot]
+          CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
+        run: |
+          branch="claude/issue-${ISSUE}"
+          [ "$(gh issue view "$ISSUE" --repo "$REPO" --json state -q .state)" = OPEN ] || exit 0
+          owner=${REPO%%/*}
+          numbers=$(gh api --method GET "repos/$REPO/pulls" -f state=open \
+                    -f "head=$owner:$branch" --jq '.[].number')
+          while IFS= read -r number; do
+            [ -n "$number" ] || continue
+            qualifies=$(gh pr view "$number" --repo "$REPO" \
+              --json baseRefName,headRepository,closingIssuesReferences \
+              | jq -r --arg repo "$REPO" --argjson issue "$ISSUE" \
+                '.baseRefName == "main" and
+                 ((.headRepository.nameWithOwner // "") == $repo) and
+                 any(.closingIssuesReferences[]?;
+                     (.repository.nameWithOwner // "") == $repo and .number == $issue)')
+            [ "$qualifies" = true ] && exit 0
+          done <<< "$numbers"
+          head=$(gh api "repos/$REPO/git/ref/heads/$branch" -q .object.sha)
+          marker="<!-- smith:claude-attempt/v1 issue=$ISSUE branch=$branch head=$head outcome=$CLAUDE_OUTCOME -->"
+          comments=$(gh api "repos/$REPO/issues/$ISSUE/comments" --paginate \
+                     | jq -rs --arg app "$APP_LOGIN" '(add // [])[] | select(.user.login == $app) | .body')
+          grep -Fqx "$marker" <<< "$comments" && exit 0
+          gh api --method POST "repos/$REPO/issues/$ISSUE/comments" \
+            -f "body=$marker" >/dev/null

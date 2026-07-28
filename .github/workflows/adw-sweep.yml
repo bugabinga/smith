@@ -30,6 +30,13 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - name: Reconcile builder routes
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+          APP_LOGIN: agent-smith-bugabinga-adc[bot]
+          MAX_ISSUES: 100
+        run: bash .github/adw/reconcile-builder-routes.sh
       - name: Codex auth + config
         env:
           CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}

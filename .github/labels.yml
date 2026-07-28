@@ -67,6 +67,9 @@
 - name: "codex"
   color: "10a37f"
   description: "Route to the Codex builder instead of `ready` (Claude); one or the other, never both"
+- name: "fallback:claude"
+  color: "6a5acd"
+  description: "Codex inherited a failed Claude UI/UX builder route"
 
 # — verdict (reviewers set; the merge-gate reads these) —
 - name: "reviewed"

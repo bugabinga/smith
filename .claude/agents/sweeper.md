@@ -52,6 +52,8 @@ flowing between events, and the brake if it runs away.
 **Issues / PRs / board** — labels, comments, re-runs. Never code, never merges.
 
 ## Boundaries
+Never add, remove, or replace `ready`, `codex`, or `fallback:claude`; the deterministic reconciler owns builder routes.
+
 You are the circuit-breaker: when in doubt, *stop* work and escalate rather than
 push it forward. Never silently drop a stalled item — every stall gets a label
 saying why.

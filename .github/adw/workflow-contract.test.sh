@@ -65,6 +65,8 @@ require .github/workflows/adw-build.yml 'git fetch origin "\$branch:refs/remotes
   'Claude builder fetches the stable branch as a tracking ref'
 require .github/workflows/adw-build.yml 'git checkout --track "origin/\$branch"' \
   'Claude builder checks out an existing stable branch before retrying'
+require docs/plans/AGENTIC-DEVELOPMENT.md 'fallback UI/UX' \
+  'ADW guide records Codex UI/UX fallback ownership'
 if grep -Fq 'Advisory as a reviewer — it never sets a gate label.' docs/plans/AGENTIC-DEVELOPMENT.md; then
   echo "FAIL ADW guide records Codex fallback gate semantics"
   fail=1
@@ -108,6 +110,74 @@ require .github/workflows/adw-build.yml 'CLAUDE_BRANCH: "claude/issue-\$\{\{ git
   'Claude builder directs agent mode to its stable issue branch'
 require .github/workflows/adw-build.yml 'use_commit_signing: true' \
   'Claude builder keeps GitHub-verified App commits'
+require .github/workflows/adw-build.yml 'id: claude' \
+  'Claude builder exposes its result to the fallback path'
+require .github/workflows/adw-codex-build.yml 'fallback:claude' \
+  'Codex builder accepts a failed Claude UI/UX slice'
+require .github/workflows/adw-build.yml 'repos/\$REPO/pulls' \
+  'Claude builder probes same-repository PR artifacts through the API'
+require .github/workflows/adw-build.yml 'timeout-minutes: 15' \
+  'Claude builder bounds a provider hang before fallback'
+require .github/workflows/adw-build.yml 'smith:claude-attempt/v1' \
+  'Claude builder records a missing artifact for reconciliation'
+if awk '/Record a missing Claude artifact/{p=1} p && /--add-label codex|--remove-label ready|--method PATCH/{found=1} END{exit !found}' .github/workflows/adw-build.yml; then
+  echo "FAIL Claude builder must not route fallback labels"
+  fail=1
+else
+  echo "PASS Claude builder leaves fallback routing to the reconciler"
+fi
+require .github/workflows/adw-codex-build.yml 'types: \[labeled, unlabeled\]' \
+  'Codex builder rechecks work after a hold clears'
+require .github/workflows/adw-build.yml 'closingIssuesReferences' \
+  'Claude fallback accepts only an issue-closing PR artifact'
+require .github/workflows/adw-build.yml 'qualifies=\$\(gh pr view' \
+  'Claude fallback fails on PR artifact verification errors'
+require .github/workflows/adw-codex-build.yml 'id: validate' \
+  'Codex builder validates live routing before execution'
+require .github/workflows/adw-codex-build.yml 'steps.validate.outputs.run == '\''true'\''' \
+  'Codex builder skips stale routing events'
+require .github/workflows/adw-codex-build.yml '\*,ready,\*\) run=false' \
+  'Codex builder rejects a dual-routed issue'
+require .github/workflows/adw-codex-build.yml 'return 2' \
+  'Codex builder fails on artifact verification errors'
+require .github/workflows/adw-codex-build.yml 'issue-labels.txt' \
+  'Codex builder reads live route labels'
+require .github/workflows/adw-codex-build.yml 'remote=\$\(git ls-remote origin' \
+  'Codex builder distinguishes remote failure from an absent branch'
+require .github/workflows/adw-codex-build.yml 'git checkout --track "origin/\$branch"' \
+  'Codex builder resumes an existing fallback branch'
+require .github/workflows/adw-build.yml 'numbers=\$\(gh api' \
+  'Claude builder fails rather than duplicate on a PR lookup error'
+require .github/workflows/adw-build.yml '-f "head=\$owner:\$branch"' \
+  'Claude builder only trusts its own branch PR artifact'
+require .github/workflows/adw-codex-build.yml 'set -o pipefail' \
+  'Codex builder fails when its provider fails'
+require .github/workflows/adw-revise.yml 'fallback:claude' \
+  'Codex reviser preserves a Claude UI/UX fallback assignment'
+require .github/workflows/adw-codex-build.yml 'fallback:claude' \
+  'Codex builder distinguishes inherited Claude UI/UX work'
+require .github/workflows/adw-codex-build.yml 'Closes #\$\{ISSUE\}' \
+  'Codex fallback PR closes its routed issue'
+require .github/workflows/adw-codex-build.yml 'smith:builder-route/v1' \
+  'Codex fallback requires an armed reconciler record'
+require .github/workflows/adw-codex-build.yml 'contains\(\$marker\)' \
+  'Codex selects the latest route record, not any App comment'
+require .github/workflows/adw-selftest.yml 'reconcile-builder-routes.test.sh' \
+  'ADW self-test runs reconciler regressions'
+require .github/adw/reconcile-builder-routes.sh 'headRepository' \
+  'Route reconciler rejects fork PR artifacts'
+require .github/adw/reconcile-builder-routes.sh 'closingIssuesReferences' \
+  'Route reconciler verifies the closed issue repository'
+require .github/workflows/adw-sweep.yml 'bash .github/adw/reconcile-builder-routes.sh' \
+  'Sweep runs deterministic route reconciliation'
+if awk '/Reconcile builder routes/{seen=1} seen && /codex exec/{found=1; exit} END{exit !found}' .github/workflows/adw-sweep.yml; then
+  echo "PASS sweep reconciles routes before Codex"
+else
+  echo "FAIL sweep must reconcile routes before Codex"
+  fail=1
+fi
+require .claude/agents/sweeper.md 'Never add, remove, or replace `ready`, `codex`, or `fallback:claude`' \
+  'Sweeper cannot mutate builder routes'
 require .github/workflows/adw-build.yml 'open a PR that closes the issue' \
   'Claude builder is instructed to open a closing PR'
 if grep -R -q --include='adw-*.yml' 'anthropics/claude-code-action@v1' .github/workflows; then
