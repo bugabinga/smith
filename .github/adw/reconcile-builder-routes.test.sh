@@ -32,7 +32,10 @@ if [[ $1 == api && $2 == repos/*/comments ]]; then
 fi
 if [[ $1 == api && $2 == repos/*/git/ref/* ]]; then printf 'abc\n'; exit 0; fi
 if [[ $1 == api && $2 == repos/*/pulls ]]; then exit 0; fi
-if [[ $1 == api && $2 == --method && $3 == GET && $4 == repos/*/pulls ]]; then exit 0; fi
+if [[ $1 == api && $2 == --method && $3 == GET && $4 == repos/*/pulls ]]; then
+  [[ ${FAIL_PULLS:-0} == 1 ]] && exit 1
+  exit 0
+fi
 if [[ $1 == api && $2 == --method && $3 == POST ]]; then printf '42\n'; exit 0; fi
 if [[ $1 == api && $2 == --method && $3 == PATCH ]]; then exit 0; fi
 printf 'unexpected gh call: %s\n' "$*" >&2
@@ -60,6 +63,12 @@ if grep -Eq 'issue edit|--method POST|--method PATCH' "$tmp/calls"; then
   exit 1
 fi
 
+printf ready > "$tmp/labels"
+if PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" LABELS="$tmp/labels" FAIL_PULLS=1 GH_TOKEN=x REPO=owner/repo \
+  bash "$root/.github/adw/reconcile-builder-routes.sh"; then
+  echo 'FAIL pull lookup failure was ignored' >&2
+  exit 1
+fi
 grep -q 'MAX_ISSUES -le 100' "$root/.github/adw/reconcile-builder-routes.sh"
 grep -q 'headRepository' "$root/.github/adw/reconcile-builder-routes.sh"
 grep -q 'closingIssuesReferences' "$root/.github/adw/reconcile-builder-routes.sh"
