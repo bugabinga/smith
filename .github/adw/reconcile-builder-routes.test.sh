@@ -62,6 +62,10 @@ grep -Eq 'issue edit 1 --repo owner/repo --add-label fallback:claude' "$tmp/call
 grep -Eq 'api --method PATCH repos/owner/repo/issues/comments/42' "$tmp/calls"
 grep -Eq 'issue edit 1 --repo owner/repo --add-label codex' "$tmp/calls"
 
+run 'ready,codex'
+grep -Eq 'issue edit 1 --repo owner/repo --remove-label codex' "$tmp/calls"
+grep -Eq 'issue edit 1 --repo owner/repo --add-label codex' "$tmp/calls"
+
 run 'fallback:claude' '[{"id":1,"user":{"login":"smith[bot]"},"body":"<!-- smith:builder-route/v1 issue=1 id=123e4567-e89b-12d3-a456-426614174000 source=claude/issue-1 target=codex/issue-1 phase=armed -->"},{"id":2,"user":{"login":"smith[bot]"},"body":"unrelated App comment"}]'
 grep -Eq 'issue edit 1 --repo owner/repo --add-label codex' "$tmp/calls"
 

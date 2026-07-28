@@ -25,7 +25,7 @@ read_live() {
 }
 
 open_unheld() {
-  read_live "$1" || return 1
+  read_live "$1" || return 2
   [[ $LIVE_STATE == OPEN ]] && ! [[ ,$LIVE_LABELS, =~ ,($HOLDS), ]]
 }
 
@@ -38,7 +38,13 @@ comments() {
 }
 
 branch_head() {
-  gh api "repos/$REPO/git/ref/heads/$1" -q .object.sha
+  local branch=$1 output
+  output=$(gh api "repos/$REPO/git/ref/heads/$branch" -q .object.sha 2>&1) || {
+    grep -q 'HTTP 404' <<< "$output" && { printf absent; return 0; }
+    printf '%s\n' "$output" >&2
+    return 1
+  }
+  printf '%s\n' "$output"
 }
 
 qualifying_pr() {
@@ -98,28 +104,29 @@ refresh_or_pause() {
 }
 
 transition_prepared() {
-  local issue=$1 id=$2 marker=$3 labels
-  refresh_or_pause "$issue" || return 0
+  local issue=$1 id=$2 marker=$3 labels status
+  refresh_or_pause "$issue" || { status=$?; [ "$status" -eq 1 ] && return 0; return "$status"; }
   read_live "$issue" || return 1
   labels=$LIVE_LABELS
   if ! has_label fallback:claude "$labels"; then
     gh issue edit "$issue" --repo "$REPO" --add-label fallback:claude >/dev/null
   fi
-  refresh_or_pause "$issue" || return 0
+  refresh_or_pause "$issue" || { status=$?; [ "$status" -eq 1 ] && return 0; return "$status"; }
   read_live "$issue" || return 1
   labels=$LIVE_LABELS
   if has_label ready "$labels"; then
     gh issue edit "$issue" --repo "$REPO" --remove-label ready >/dev/null
   fi
-  refresh_or_pause "$issue" || return 0
+  refresh_or_pause "$issue" || { status=$?; [ "$status" -eq 1 ] && return 0; return "$status"; }
   set_phase "$id" "$marker" armed
   marker=${marker/phase=prepared/phase=armed}
-  refresh_or_pause "$issue" || return 0
+  refresh_or_pause "$issue" || { status=$?; [ "$status" -eq 1 ] && return 0; return "$status"; }
   read_live "$issue" || return 1
   labels=$LIVE_LABELS
-  if ! has_label codex "$labels"; then
-    gh issue edit "$issue" --repo "$REPO" --add-label codex >/dev/null
+  if has_label codex "$labels"; then
+    gh issue edit "$issue" --repo "$REPO" --remove-label codex >/dev/null
   fi
+  gh issue edit "$issue" --repo "$REPO" --add-label codex >/dev/null
 }
 
 reconcile() {
@@ -131,7 +138,8 @@ reconcile() {
   [[ ,$labels, =~ ,($HOLDS), ]] && return 0
   source="claude/issue-$issue"
   target="codex/issue-$issue"
-  head=$(branch_head "$source")
+  head=$(branch_head "$source") || return 1
+  [[ $head != absent ]] || return 0
   record=$(route_record "$issue")
   if [[ -n $record ]]; then
     IFS=$'\t' read -r id marker <<< "$record"
