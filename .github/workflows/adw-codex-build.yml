@@ -59,6 +59,7 @@ jobs:
           ISSUE: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
         run: |
+          set -o pipefail
           state=$(gh issue view "$ISSUE" --repo "$REPO" --json state,labels \
                     --jq '[.state, ([.labels[].name] | join(","))] | @tsv')
           IFS=$'\t' read -r issue_state labels <<< "$state"
@@ -67,14 +68,26 @@ jobs:
           case ",$labels," in *,codex,*) ;; *) run=false ;; esac
           case ",$labels," in *,ready,*) run=false ;; esac
           case ",$labels," in *,blocked,*|*,needs:info,*|*,needs:spec,*|*,needs:prototype,*|*,needs:breakdown,*|*,risk:high,*) run=false ;; esac
+          if [[ ",$labels," == *,fallback:claude,* ]]; then
+            app=$(gh api user -q .login)
+            route=$(gh api "repos/$REPO/issues/$ISSUE/comments" --paginate \
+              | jq -rs --arg app "$app" \
+                '(add // []) | map(select(.user.login == $app)) | sort_by(.id) | last.body // ""')
+            [[ $route == *"smith:builder-route/v1 issue=$ISSUE "*" phase=armed -->"* ]] || run=false
+          fi
           owner=${REPO%%/*}
           branch="codex/issue-${ISSUE}"
           numbers=$(gh api --method GET "repos/$REPO/pulls" -f state=open \
                     -f "head=$owner:$branch" --jq '.[].number')
           while IFS= read -r number; do
             [ -n "$number" ] || continue
-            qualifies=$(gh pr view "$number" --repo "$REPO" --json baseRefName,closingIssuesReferences \
-                        -q '.baseRefName == "main" and any(.closingIssuesReferences[]; .number == '"$ISSUE"')')
+            qualifies=$(gh pr view "$number" --repo "$REPO" \
+              --json baseRefName,headRepository,closingIssuesReferences \
+              | jq -r --arg repo "$REPO" --argjson issue "$ISSUE" \
+                '.baseRefName == "main" and
+                 ((.headRepository.nameWithOwner // "") == $repo) and
+                 any(.closingIssuesReferences[]?;
+                     (.repository.nameWithOwner // "") == $repo and .number == $issue)')
             [ "$qualifies" = true ] && run=false
           done <<< "$numbers"
           echo "run=$run" >> "$GITHUB_OUTPUT"
@@ -150,8 +163,13 @@ jobs:
                       -f "head=$owner:$branch" --jq '.[].number') || return 2
             while IFS= read -r number; do
               [ -n "$number" ] || continue
-              qualifies=$(gh pr view "$number" --repo "$REPO" --json baseRefName,closingIssuesReferences \
-                          -q '.baseRefName == "main" and any(.closingIssuesReferences[]; .number == '"$ISSUE"')') || return 2
+              qualifies=$(gh pr view "$number" --repo "$REPO" \
+                --json baseRefName,headRepository,closingIssuesReferences \
+                | jq -r --arg repo "$REPO" --argjson issue "$ISSUE" \
+                  '.baseRefName == "main" and
+                   ((.headRepository.nameWithOwner // "") == $repo) and
+                   any(.closingIssuesReferences[]?;
+                       (.repository.nameWithOwner // "") == $repo and .number == $issue)') || return 2
               [ "$qualifies" = true ] && return 0
             done <<< "$numbers"
             return 1
