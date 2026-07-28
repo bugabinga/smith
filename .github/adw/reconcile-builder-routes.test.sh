@@ -12,7 +12,8 @@ set -euo pipefail
 printf '%q ' "$@" >> "$CALLS"
 printf '\n' >> "$CALLS"
 if [[ $1 == issue && $2 == list ]]; then
-  [[ " $* " == *' --label ready '* ]] && printf '1\n'
+  [[ " $* " == *' --label ready '* && $(<"$LABELS") == *ready* ]] && printf '1\n'
+  [[ " $* " == *' --label fallback:claude '* && $(<"$LABELS") == *fallback:claude* ]] && printf '1\n'
   exit 0
 fi
 if [[ $1 == issue && $2 == view ]]; then
@@ -27,7 +28,11 @@ if [[ $1 == issue && $2 == edit ]]; then
 fi
 if [[ $1 == api && $2 == user ]]; then printf 'smith[bot]\n'; exit 0; fi
 if [[ $1 == api && $2 == repos/*/comments ]]; then
-  printf '%s\n' '[{"id":1,"user":{"login":"smith[bot]"},"body":"<!-- smith:claude-attempt/v1 issue=1 branch=claude/issue-1 head=abc outcome=failure -->"}]'
+  if [[ -n ${COMMENTS:-} ]]; then
+    printf '%s\n' "$COMMENTS"
+  else
+    printf '%s\n' '[{"id":1,"user":{"login":"smith[bot]"},"body":"<!-- smith:claude-attempt/v1 issue=1 branch=claude/issue-1 head=abc outcome=failure -->"}]'
+  fi
   exit 0
 fi
 if [[ $1 == api && $2 == repos/*/git/ref/* ]]; then printf 'abc\n'; exit 0; fi
@@ -46,7 +51,7 @@ chmod +x "$tmp/bin/gh"
 run() {
   : > "$tmp/calls"
   printf '%s' "$1" > "$tmp/labels"
-  PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" LABELS="$tmp/labels" GH_TOKEN=x REPO=owner/repo \
+  PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" LABELS="$tmp/labels" COMMENTS="${2:-}" GH_TOKEN=x REPO=owner/repo \
     bash "$root/.github/adw/reconcile-builder-routes.sh"
 }
 
@@ -55,6 +60,9 @@ grep -Eq 'api --method POST repos/owner/repo/issues/1/comments' "$tmp/calls"
 grep -Eq 'issue edit 1 --repo owner/repo --remove-label ready' "$tmp/calls"
 grep -Eq 'issue edit 1 --repo owner/repo --add-label fallback:claude' "$tmp/calls"
 grep -Eq 'api --method PATCH repos/owner/repo/issues/comments/42' "$tmp/calls"
+grep -Eq 'issue edit 1 --repo owner/repo --add-label codex' "$tmp/calls"
+
+run 'fallback:claude' '[{"id":1,"user":{"login":"smith[bot]"},"body":"<!-- smith:builder-route/v1 issue=1 id=123e4567-e89b-12d3-a456-426614174000 source=claude/issue-1 target=codex/issue-1 phase=armed -->"},{"id":2,"user":{"login":"smith[bot]"},"body":"unrelated App comment"}]'
 grep -Eq 'issue edit 1 --repo owner/repo --add-label codex' "$tmp/calls"
 
 run 'ready,blocked'

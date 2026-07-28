@@ -71,8 +71,8 @@ jobs:
           if [[ ",$labels," == *,fallback:claude,* ]]; then
             app=$(gh api user -q .login)
             route=$(gh api "repos/$REPO/issues/$ISSUE/comments" --paginate \
-              | jq -rs --arg app "$app" \
-                '(add // []) | map(select(.user.login == $app)) | sort_by(.id) | last.body // ""')
+              | jq -rs --arg app "$app" --arg marker "smith:builder-route/v1 issue=$ISSUE " \
+                '(add // []) | map(select(.user.login == $app and (.body | contains($marker)))) | sort_by(.id) | last.body // ""')
             [[ $route == *"smith:builder-route/v1 issue=$ISSUE "*" phase=armed -->"* ]] || run=false
           fi
           owner=${REPO%%/*}

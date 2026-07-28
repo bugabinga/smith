@@ -134,6 +134,12 @@ reconcile() {
       elif [[ $? -ne 1 ]]; then
         return 1
       fi
+      open_unheld "$issue" || return 0
+      IFS=$'\t' read -r _ labels <<< "$(live "$issue")"
+      if ! has_label codex "$labels"; then
+        gh issue edit "$issue" --repo "$REPO" --add-label codex >/dev/null
+      fi
+      return 0
     fi
     if [[ $phase == prepared ]]; then
       if qualifying_pr "$issue" "$source"; then
@@ -161,7 +167,7 @@ reconcile() {
 issues=$(
   {
     gh issue list --repo "$REPO" --state open --label ready --limit "$MAX_ISSUES" --json number --jq '.[].number'
-    gh issue list --repo "$REPO" --state open --label codex --label fallback:claude --limit "$MAX_ISSUES" --json number --jq '.[].number'
+    gh issue list --repo "$REPO" --state open --label fallback:claude --limit "$MAX_ISSUES" --json number --jq '.[].number'
   } | sort -nu | head -n "$MAX_ISSUES"
 )
 while IFS= read -r issue; do

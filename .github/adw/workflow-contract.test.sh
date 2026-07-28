@@ -160,6 +160,10 @@ require .github/workflows/adw-codex-build.yml 'Closes #\$\{ISSUE\}' \
   'Codex fallback PR closes its routed issue'
 require .github/workflows/adw-codex-build.yml 'smith:builder-route/v1' \
   'Codex fallback requires an armed reconciler record'
+require .github/workflows/adw-codex-build.yml 'contains\(\$marker\)' \
+  'Codex selects the latest route record, not any App comment'
+require .github/workflows/adw-selftest.yml 'reconcile-builder-routes.test.sh' \
+  'ADW self-test runs reconciler regressions'
 require .github/adw/reconcile-builder-routes.sh 'headRepository' \
   'Route reconciler rejects fork PR artifacts'
 require .github/adw/reconcile-builder-routes.sh 'closingIssuesReferences' \
