@@ -72,7 +72,7 @@ jobs:
             slices; the Codex builder owns backend. Do not merge. If you cannot
             build it, say why in one line instead of producing nothing.
           claude_args: --model claude-opus-4-8 --effort high --dangerously-skip-permissions
-      - name: Route a missing Claude artifact to Codex
+      - name: Record a missing Claude artifact
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           ISSUE: ${{ github.event.issue.number }}
@@ -80,28 +80,26 @@ jobs:
           CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
         run: |
           branch="claude/issue-${ISSUE}"
-          state=$(gh issue view "$ISSUE" --repo "$REPO" --json state,labels \
-                    --jq '[.state, ([.labels[].name] | join(","))] | @tsv')
-          IFS=$'\t' read -r issue_state labels <<< "$state"
-          [ "$issue_state" = OPEN ] || exit 0
-          case ",$labels," in *,ready,*) ;; *) exit 0 ;; esac
-          case ",$labels," in *,codex,*|*,blocked,*|*,needs:info,*|*,needs:spec,*|*,needs:prototype,*|*,needs:breakdown,*|*,risk:high,*) exit 0 ;; esac
+          [ "$(gh issue view "$ISSUE" --repo "$REPO" --json state -q .state)" = OPEN ] || exit 0
           owner=${REPO%%/*}
           numbers=$(gh api --method GET "repos/$REPO/pulls" -f state=open \
                     -f "head=$owner:$branch" --jq '.[].number')
-          prs=0
           while IFS= read -r number; do
             [ -n "$number" ] || continue
-            qualifies=$(gh pr view "$number" --repo "$REPO" --json baseRefName,closingIssuesReferences \
-                        -q '.baseRefName == "main" and any(.closingIssuesReferences[]; .number == '"$ISSUE"')')
-            if [ "$qualifies" = true ]; then
-              prs=1
-              break
-            fi
+            qualifies=$(gh pr view "$number" --repo "$REPO" \
+              --json baseRefName,headRepository,closingIssuesReferences \
+              | jq -r --arg repo "$REPO" --argjson issue "$ISSUE" \
+                '.baseRefName == "main" and
+                 ((.headRepository.nameWithOwner // "") == $repo) and
+                 any(.closingIssuesReferences[]?;
+                     (.repository.nameWithOwner // "") == $repo and .number == $issue)')
+            [ "$qualifies" = true ] && exit 0
           done <<< "$numbers"
-          [ "$prs" -eq 0 ] || exit 0
-          next_labels=$(gh issue view "$ISSUE" --repo "$REPO" --json labels \
-                        -q '[.labels[].name | select(. != "ready")] + ["fallback:claude", "codex"] | unique')
-          gh api --method PATCH "repos/$REPO/issues/$ISSUE" --input - \
-            <<< "{\"labels\":$next_labels}"
-          gh issue comment "$ISSUE" --repo "$REPO" --body "Claude produced no open PR (${CLAUDE_OUTCOME}); routed once to Codex fallback."
+          head=$(gh api "repos/$REPO/git/ref/heads/$branch" -q .object.sha 2>/dev/null || printf absent)
+          marker="<!-- smith:claude-attempt/v1 issue=$ISSUE branch=$branch head=$head outcome=$CLAUDE_OUTCOME -->"
+          app=$(gh api user -q .login)
+          comments=$(gh api "repos/$REPO/issues/$ISSUE/comments" --paginate \
+                     | jq -rs --arg app "$app" '(add // [])[] | select(.user.login == $app) | .body')
+          grep -Fqx "$marker" <<< "$comments" && exit 0
+          gh api --method POST "repos/$REPO/issues/$ISSUE/comments" \
+            -f "body=$marker" >/dev/null

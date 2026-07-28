@@ -118,16 +118,14 @@ require .github/workflows/adw-build.yml 'repos/\$REPO/pulls' \
   'Claude builder probes same-repository PR artifacts through the API'
 require .github/workflows/adw-build.yml 'timeout-minutes: 15' \
   'Claude builder bounds a provider hang before fallback'
-require .github/workflows/adw-build.yml 'state=\$\(gh issue view' \
-  'Claude builder rechecks issue state before fallback routing'
-require .github/workflows/adw-build.yml 'select\(\. != "ready"\)' \
-  'Claude fallback removes its route before assigning Codex'
-require .github/workflows/adw-build.yml '--method PATCH' \
-  'Claude fallback changes builder routing atomically'
-require .github/workflows/adw-build.yml 'needs:spec' \
-  'Claude fallback respects builder-blocking labels'
-require .github/workflows/adw-build.yml 'needs:breakdown' \
-  'Claude fallback respects every hold label'
+require .github/workflows/adw-build.yml 'smith:claude-attempt/v1' \
+  'Claude builder records a missing artifact for reconciliation'
+if awk '/Record a missing Claude artifact/{p=1} p && /--add-label codex|--remove-label ready|--method PATCH/{found=1} END{exit !found}' .github/workflows/adw-build.yml; then
+  echo "FAIL Claude builder must not route fallback labels"
+  fail=1
+else
+  echo "PASS Claude builder leaves fallback routing to the reconciler"
+fi
 require .github/workflows/adw-codex-build.yml 'types: \[labeled, unlabeled\]' \
   'Codex builder rechecks work after a hold clears'
 require .github/workflows/adw-build.yml 'closingIssuesReferences' \

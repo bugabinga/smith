@@ -44,11 +44,11 @@ qualifying_pr() {
     [[ -n $number ]] || continue
     qualifies=$(gh pr view "$number" --repo "$REPO" \
       --json baseRefName,headRepository,closingIssuesReferences \
-      --jq --arg repo "$REPO" --argjson issue "$issue" \
-      '.baseRefName == "main" and
-       ((.headRepository.nameWithOwner // "") == $repo) and
-       any(.closingIssuesReferences[]?;
-           (.repository.nameWithOwner // "") == $repo and .number == $issue)') || return 2
+      | jq -r --arg repo "$REPO" --argjson issue "$issue" \
+        '.baseRefName == "main" and
+         ((.headRepository.nameWithOwner // "") == $repo) and
+         any(.closingIssuesReferences[]?;
+             (.repository.nameWithOwner // "") == $repo and .number == $issue)') || return 2
     [[ $qualifies == true ]] && return 0
   done <<< "$numbers"
   return 1
