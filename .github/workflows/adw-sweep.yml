@@ -34,6 +34,7 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           REPO: ${{ github.repository }}
+          APP_LOGIN: agent-smith-bugabinga-adc[bot]
           MAX_ISSUES: 100
         run: bash .github/adw/reconcile-builder-routes.sh
       - name: Codex auth + config

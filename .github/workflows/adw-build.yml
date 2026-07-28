@@ -77,6 +77,7 @@ jobs:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           ISSUE: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
+          APP_LOGIN: agent-smith-bugabinga-adc[bot]
           CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
         run: |
           branch="claude/issue-${ISSUE}"
@@ -95,11 +96,10 @@ jobs:
                      (.repository.nameWithOwner // "") == $repo and .number == $issue)')
             [ "$qualifies" = true ] && exit 0
           done <<< "$numbers"
-          head=$(gh api "repos/$REPO/git/ref/heads/$branch" -q .object.sha 2>/dev/null || printf absent)
+          head=$(gh api "repos/$REPO/git/ref/heads/$branch" -q .object.sha)
           marker="<!-- smith:claude-attempt/v1 issue=$ISSUE branch=$branch head=$head outcome=$CLAUDE_OUTCOME -->"
-          app=$(gh api user -q .login)
           comments=$(gh api "repos/$REPO/issues/$ISSUE/comments" --paginate \
-                     | jq -rs --arg app "$app" '(add // [])[] | select(.user.login == $app) | .body')
+                     | jq -rs --arg app "$APP_LOGIN" '(add // [])[] | select(.user.login == $app) | .body')
           grep -Fqx "$marker" <<< "$comments" && exit 0
           gh api --method POST "repos/$REPO/issues/$ISSUE/comments" \
             -f "body=$marker" >/dev/null

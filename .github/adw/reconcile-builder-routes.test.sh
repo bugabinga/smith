@@ -51,7 +51,7 @@ chmod +x "$tmp/bin/gh"
 run() {
   : > "$tmp/calls"
   printf '%s' "$1" > "$tmp/labels"
-  PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" LABELS="$tmp/labels" COMMENTS="${2:-}" GH_TOKEN=x REPO=owner/repo \
+  PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" LABELS="$tmp/labels" COMMENTS="${2:-}" GH_TOKEN=x REPO=owner/repo APP_LOGIN='smith[bot]' \
     bash "$root/.github/adw/reconcile-builder-routes.sh"
 }
 
@@ -72,7 +72,7 @@ if grep -Eq 'issue edit|--method POST|--method PATCH' "$tmp/calls"; then
 fi
 
 printf ready > "$tmp/labels"
-if PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" LABELS="$tmp/labels" FAIL_PULLS=1 GH_TOKEN=x REPO=owner/repo \
+if PATH="$tmp/bin:$PATH" CALLS="$tmp/calls" LABELS="$tmp/labels" FAIL_PULLS=1 GH_TOKEN=x REPO=owner/repo APP_LOGIN='smith[bot]' \
   bash "$root/.github/adw/reconcile-builder-routes.sh"; then
   echo 'FAIL pull lookup failure was ignored' >&2
   exit 1

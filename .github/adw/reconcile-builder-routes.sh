@@ -3,13 +3,13 @@ set -euo pipefail
 
 : "${GH_TOKEN:?GH_TOKEN is required}"
 : "${REPO:?REPO is required}"
+: "${APP_LOGIN:?APP_LOGIN is required}"
 MAX_ISSUES=${MAX_ISSUES:-100}
 [[ $MAX_ISSUES =~ ^[1-9][0-9]*$ && $MAX_ISSUES -le 100 ]] || {
   echo "MAX_ISSUES must be 1..100" >&2
   exit 2
 }
 
-APP_LOGIN=$(gh api user -q .login)
 OWNER=${REPO%%/*}
 HOLDS='blocked|risk:high|needs:info|needs:spec|needs:prototype|needs:breakdown'
 
@@ -33,7 +33,7 @@ comments() {
 }
 
 branch_head() {
-  gh api "repos/$REPO/git/ref/heads/$1" -q .object.sha 2>/dev/null || printf absent
+  gh api "repos/$REPO/git/ref/heads/$1" -q .object.sha
 }
 
 qualifying_pr() {
@@ -96,13 +96,13 @@ transition_prepared() {
   local issue=$1 id=$2 marker=$3 labels
   refresh_or_pause "$issue" || return 0
   IFS=$'\t' read -r _ labels <<< "$(live "$issue")"
-  if has_label ready "$labels"; then
-    gh issue edit "$issue" --repo "$REPO" --remove-label ready >/dev/null
+  if ! has_label fallback:claude "$labels"; then
+    gh issue edit "$issue" --repo "$REPO" --add-label fallback:claude >/dev/null
   fi
   refresh_or_pause "$issue" || return 0
   IFS=$'\t' read -r _ labels <<< "$(live "$issue")"
-  if ! has_label fallback:claude "$labels"; then
-    gh issue edit "$issue" --repo "$REPO" --add-label fallback:claude >/dev/null
+  if has_label ready "$labels"; then
+    gh issue edit "$issue" --repo "$REPO" --remove-label ready >/dev/null
   fi
   refresh_or_pause "$issue" || return 0
   set_phase "$id" "$marker" armed

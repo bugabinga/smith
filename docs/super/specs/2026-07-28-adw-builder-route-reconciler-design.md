@@ -6,6 +6,8 @@ A deterministic reconciler, invoked hourly by `adw-sweep.yml`, is the sole write
 
 ## Route Record
 
+`APP_LOGIN` is the configured, literal GitHub App bot login. Installation tokens cannot call `GET /user`; every record reader filters comments against `APP_LOGIN` rather than attempting authenticated-user discovery.
+
 The reconciler creates one App-authored issue comment before any transition:
 
 ```text
@@ -14,7 +16,7 @@ The reconciler creates one App-authored issue comment before any transition:
 
 The comment ID is the durable operation lock. The reconciler finds the latest App-authored record for the issue; `prepared` and `armed` are active, `completed` and `cancelled` are terminal. With workflow concurrency, one active record permits exactly one operation per issue. Retrying resumes the existing record; it never creates another operation. The reconciler edits the App comment through its ID to advance phases. Owner comments cannot impersonate or edit the App-authored record.
 
-A missing Claude artifact is recorded by the Claude builder in an App comment carrying the issue number, source branch, and observed head SHA. The reconciler uses this comment as the fallback precondition. A comment with the same issue, source branch, and head SHA is idempotent; a later Claude artifact makes the active route record `cancelled`.
+A missing Claude artifact is recorded by the Claude builder in an App comment carrying the issue number, source branch, and observed head SHA. Branch lookup failure fails closed; it is never represented as an absent SHA. The reconciler uses this comment as the fallback precondition. A comment with the same issue, source branch, and head SHA is idempotent; a later Claude artifact makes the active route record `cancelled`.
 
 ## State and Interfaces
 
@@ -34,7 +36,7 @@ It performs no write for closed, held, artifacted, or invalidly routed issues. F
 
 1. Write or resume the App route record at `prepared`.
 2. Before every mutation, refetch state and labels. A hold pauses the record without changing route labels.
-3. Remove `ready`, then add `fallback:claude`.
+3. Add `fallback:claude`, then remove `ready`.
 4. Edit the record to `armed`.
 5. Add `codex`.
 

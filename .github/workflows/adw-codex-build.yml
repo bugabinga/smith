@@ -58,6 +58,7 @@ jobs:
           GH_TOKEN: ${{ steps.token.outputs.token }}
           ISSUE: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
+          APP_LOGIN: agent-smith-bugabinga-adc[bot]
         run: |
           set -o pipefail
           state=$(gh issue view "$ISSUE" --repo "$REPO" --json state,labels \
@@ -69,9 +70,8 @@ jobs:
           case ",$labels," in *,ready,*) run=false ;; esac
           case ",$labels," in *,blocked,*|*,needs:info,*|*,needs:spec,*|*,needs:prototype,*|*,needs:breakdown,*|*,risk:high,*) run=false ;; esac
           if [[ ",$labels," == *,fallback:claude,* ]]; then
-            app=$(gh api user -q .login)
             route=$(gh api "repos/$REPO/issues/$ISSUE/comments" --paginate \
-              | jq -rs --arg app "$app" --arg marker "smith:builder-route/v1 issue=$ISSUE " \
+              | jq -rs --arg app "$APP_LOGIN" --arg marker "smith:builder-route/v1 issue=$ISSUE " \
                 '(add // []) | map(select(.user.login == $app and (.body | contains($marker)))) | sort_by(.id) | last.body // ""')
             [[ $route == *"smith:builder-route/v1 issue=$ISSUE "*" phase=armed -->"* ]] || run=false
           fi
