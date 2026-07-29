@@ -199,6 +199,92 @@ export function validateDecision(value) {
   return copy(value);
 }
 
+export function qualifyAssessment({ snapshot, rolePolicy, provider, assessment }) {
+  const fallbackProvider = rolePolicy.mode !== "quorum" && provider === rolePolicy.fallback;
+  if (fallbackProvider) {
+    const input = snapshot.state.input ?? {};
+    for (const flag of ["protected", "incomplete", "fork", "binary", "oversized"]) {
+      if (input[flag] === true && rolePolicy.fallbackAuthority[flag] !== true) {
+        return Object.freeze({ status: "terminal", reason: "fallback_forbidden" });
+      }
+    }
+  }
+  if (assessment === null || assessment === undefined) return Object.freeze({ status: "fallback", reason: "missing_artifact" });
+  let value;
+  try {
+    value = validateAssessment(assessment);
+  } catch {
+    return Object.freeze({ status: "fallback", reason: "malformed" });
+  }
+  if (
+    value.controlSha !== snapshot.controlSha ||
+    value.snapshotDigest !== digestJson(snapshot) ||
+    value.role !== rolePolicy.name ||
+    value.provider !== provider
+  ) return Object.freeze({ status: "fallback", reason: "malformed" });
+  if (value.outcome === "unable") return Object.freeze({ status: "fallback", reason: "unavailable" });
+  if (rolePolicy.payload.requiredKeys.some(key => !Object.hasOwn(value.payload, key))) {
+    return Object.freeze({ status: "fallback", reason: "missing_artifact" });
+  }
+  return deepFreeze({ status: "artifact", assessment: value });
+}
+
+function patchFrom(values) {
+  const patches = values.map(value => value.patch).filter(Boolean);
+  const digests = new Set(patches.map(value => value.digest));
+  if (digests.size > 1) return { conflict: true, patch: null };
+  return { conflict: false, patch: patches[0] ?? null };
+}
+
+export function reduceAssessments({ snapshot, rolePolicy, assessments }) {
+  validateSnapshot(snapshot);
+  const byProvider = new Map();
+  for (const value of assessments) {
+    const provider = value?.provider;
+    if (!PROVIDERS.has(provider) || byProvider.has(provider)) {
+      return deepFreeze({ status: "terminal", reason: "contract" });
+    }
+    byProvider.set(provider, value);
+  }
+  const qualify = provider => qualifyAssessment({ snapshot, rolePolicy, provider, assessment: byProvider.get(provider) });
+  if (rolePolicy.mode === "single") {
+    const primary = qualify(rolePolicy.primary);
+    if (primary.status === "artifact") {
+      return deepFreeze({ status: "artifact", authoritative: true, selected: [digestJson(primary.assessment)], patch: primary.assessment.patch });
+    }
+    if (primary.status === "terminal") return primary;
+    if (!rolePolicy.fallback) return deepFreeze({ status: "terminal", reason: "provider_unavailable" });
+    const fallback = qualify(rolePolicy.fallback);
+    if (fallback.status === "artifact") {
+      return deepFreeze({ status: "artifact", authoritative: true, selected: [digestJson(fallback.assessment)], patch: fallback.assessment.patch });
+    }
+    if (fallback.status === "terminal") return fallback;
+    return deepFreeze({ status: "terminal", reason: "providers_unavailable" });
+  }
+  if (rolePolicy.mode === "advisory") {
+    for (const provider of [rolePolicy.primary, rolePolicy.fallback].filter(Boolean)) {
+      const result = qualify(provider);
+      if (result.status === "artifact") {
+        return deepFreeze({ status: "artifact", authoritative: false, selected: [digestJson(result.assessment)], patch: result.assessment.patch });
+      }
+    }
+    return deepFreeze({ status: "terminal", reason: "advisory_unavailable" });
+  }
+  const qualified = rolePolicy.providers.map(provider => [provider, qualify(provider)]);
+  if (qualified.some(([, value]) => value.status !== "artifact")) {
+    return deepFreeze({ status: "terminal", reason: "quorum_incomplete" });
+  }
+  const selected = qualified.map(([provider, value]) => ({ provider, assessment: value.assessment }));
+  const patch = patchFrom(selected.map(value => value.assessment));
+  if (patch.conflict) return deepFreeze({ status: "terminal", reason: "patch_conflict" });
+  return deepFreeze({
+    status: "artifact",
+    authoritative: true,
+    selected: selected.sort((a, b) => a.provider.localeCompare(b.provider)).map(value => digestJson(value.assessment)),
+    patch: patch.patch,
+  });
+}
+
 export function validateVerification(value) {
   exact(value, ["schemaVersion", "controlSha", "decisionDigest", "kind", "preconditionDigest", "patch", "resultTree"], "verification");
   if (value.schemaVersion !== 1) fail("verification schema version is invalid");

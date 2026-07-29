@@ -11,7 +11,10 @@ import {
   validateDecision,
   validateSnapshot,
   validateVerification,
+  qualifyAssessment,
+  reduceAssessments,
 } from "../core.mjs";
+import { defineRole } from "../roles.mjs";
 
 test("canonical JSON sorts object keys without sorting arrays", () => {
   assert.equal(
@@ -153,4 +156,110 @@ test("patch verification requires matching metadata and result tree", () => {
   assert.throws(() => validateVerification({ ...verification, kind: "patch", patch }), AdwError);
   const value = { ...verification, kind: "patch", patch, resultTree: "d".repeat(40) };
   assert.equal(validateVerification(value).resultTree, value.resultTree);
+});
+
+function policy(mode, primary = null, fallback = null) {
+  return defineRole({
+    name: "reviewer",
+    charter: ".claude/agents/reviewer.md",
+    mode,
+    primary,
+    fallback,
+    providers: ["claude", "codex"],
+    providerConfig: {
+      claude: { model: "fixture-claude", effort: "high", timeoutSeconds: 300 },
+      codex: { model: "fixture-codex", effort: "high", timeoutSeconds: 300 },
+    },
+    capabilities: ["pulls:read"],
+    snapshot: { fields: ["pull"], maxBytes: 262144 },
+    payload: { outcomes: ["negative", "noop", "positive", "unable"], requiredKeys: ["verdict"] },
+    operations: ["publish_check", "terminal"],
+    fallbackAuthority: { protected: false, incomplete: false, fork: false, binary: false, oversized: false },
+    patch: null,
+  });
+}
+
+function providerAssessment(provider, overrides = {}) {
+  const nextPayload = overrides.payload ?? payload;
+  return {
+    ...assessment,
+    provider,
+    model: `fixture-${provider}`,
+    run: { ...assessment.run, job: provider },
+    payload: nextPayload,
+    payloadDigest: digestJson(nextPayload),
+    ...overrides,
+  };
+}
+
+test("assessment qualification distinguishes artifacts from provider failure", () => {
+  const single = policy("single", "claude", "codex");
+  assert.equal(qualifyAssessment({ snapshot, rolePolicy: single, provider: "claude", assessment }).status, "artifact");
+  assert.deepEqual(
+    qualifyAssessment({ snapshot, rolePolicy: single, provider: "claude", assessment: providerAssessment("claude", { outcome: "unable" }) }),
+    { status: "fallback", reason: "unavailable" },
+  );
+  assert.equal(qualifyAssessment({ snapshot, rolePolicy: single, provider: "claude", assessment: null }).status, "fallback");
+  assert.equal(qualifyAssessment({ snapshot, rolePolicy: single, provider: "claude", assessment: { ...assessment, controlSha: "f".repeat(40) } }).status, "fallback");
+});
+
+test("protected input refuses fallback authority", () => {
+  const single = policy("single", "claude", "codex");
+  const protectedSnapshot = { ...snapshot, state: { input: { protected: true } } };
+  assert.deepEqual(
+    qualifyAssessment({ snapshot: protectedSnapshot, rolePolicy: single, provider: "codex", assessment: providerAssessment("codex") }),
+    { status: "terminal", reason: "fallback_forbidden" },
+  );
+});
+
+test("single reduction is symmetric and valid primary skips fallback", () => {
+  for (const [primary, fallback] of [["claude", "codex"], ["codex", "claude"]]) {
+    const result = reduceAssessments({
+      snapshot,
+      rolePolicy: policy("single", primary, fallback),
+      assessments: [providerAssessment(primary), providerAssessment(fallback)],
+    });
+    assert.equal(result.status, "artifact");
+    assert.equal(result.selected.length, 1);
+    assert.equal(result.selected[0], digestJson(providerAssessment(primary)));
+    assert.equal(result.authoritative, true);
+  }
+});
+
+test("single reduction accepts fallback only after primary failure", () => {
+  const result = reduceAssessments({
+    snapshot,
+    rolePolicy: policy("single", "claude", "codex"),
+    assessments: [providerAssessment("claude", { outcome: "unable" }), providerAssessment("codex")],
+  });
+  assert.equal(result.status, "artifact");
+  assert.deepEqual(result.selected, [digestJson(providerAssessment("codex"))]);
+});
+
+test("quorum selects both providers and rejects conflicting patches", () => {
+  const quorum = policy("quorum");
+  const result = reduceAssessments({ snapshot, rolePolicy: quorum, assessments: [providerAssessment("codex"), providerAssessment("claude")] });
+  assert.equal(result.status, "artifact");
+  assert.equal(result.selected.length, 2);
+  assert.equal(result.authoritative, true);
+  assert.equal(reduceAssessments({ snapshot, rolePolicy: quorum, assessments: [providerAssessment("claude")] }).reason, "quorum_incomplete");
+
+  const patchA = { baseSha: headSha, digest: "c".repeat(64), size: 1, files: [] };
+  const patchB = { baseSha: headSha, digest: "d".repeat(64), size: 1, files: [] };
+  const conflict = reduceAssessments({
+    snapshot,
+    rolePolicy: quorum,
+    assessments: [providerAssessment("claude", { patch: patchA }), providerAssessment("codex", { patch: patchB })],
+  });
+  assert.equal(conflict.reason, "patch_conflict");
+});
+
+test("advisory reduction cannot become authoritative", () => {
+  const result = reduceAssessments({
+    snapshot,
+    rolePolicy: policy("advisory", "codex", "claude"),
+    assessments: [providerAssessment("codex")],
+  });
+  assert.equal(result.status, "artifact");
+  assert.equal(result.authoritative, false);
 });
