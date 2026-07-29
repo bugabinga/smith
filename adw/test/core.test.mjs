@@ -13,6 +13,11 @@ import {
   validateVerification,
   qualifyAssessment,
   reduceAssessments,
+  holdReasons,
+  mergeEligibility,
+  nextBuilderRoute,
+  reduceReviews,
+  reduceRisk,
 } from "../core.mjs";
 import { defineRole } from "../roles.mjs";
 
@@ -262,4 +267,95 @@ test("advisory reduction cannot become authoritative", () => {
   });
   assert.equal(result.status, "artifact");
   assert.equal(result.authoritative, false);
+});
+
+test("hold reasons are closed, sorted, and unique", () => {
+  assert.deepEqual(
+    holdReasons(["bug", "risk:high", "hold", "needs:owner", "hold"]),
+    ["hold", "needs:owner", "risk:high"],
+  );
+});
+
+test("builder route follows one bounded fallback", () => {
+  const route = {
+    sourceRevision: "r1",
+    headSha,
+    status: "unarmed",
+    primaryOutcome: null,
+    fallbackOutcome: null,
+  };
+  assert.equal(nextBuilderRoute(route, "r1").status, "primary");
+  assert.equal(nextBuilderRoute({ ...route, status: "primary", primaryOutcome: "artifact" }, "r1").status, "complete");
+  assert.equal(nextBuilderRoute({ ...route, status: "primary", primaryOutcome: "provider_failure" }, "r1").status, "fallback");
+  assert.equal(nextBuilderRoute({ ...route, status: "fallback", primaryOutcome: "provider_failure", fallbackOutcome: "provider_failure" }, "r1").status, "blocked");
+  assert.equal(nextBuilderRoute({ ...route, status: "complete" }, "r2").status, "unarmed");
+});
+
+const trust = { ownerIds: ["U_owner"], appId: "A_smith" };
+const correctness = {
+  kind: "correctness",
+  headSha,
+  conclusion: "approve",
+  actorId: "A_smith",
+  provider: "claude",
+  authoritative: true,
+  artifactDigest: "c".repeat(64),
+};
+const security = { ...correctness, kind: "security", provider: "codex", artifactDigest: "d".repeat(64) };
+
+test("review reduction trusts only current-head App evidence", () => {
+  assert.deepEqual(
+    reduceReviews({ evidence: [correctness, security], headSha, trust, protectedInput: false }),
+    { correctness: "approve", security: "approve", conflict: false, reasons: [] },
+  );
+  const stale = { ...security, headSha: "e".repeat(40) };
+  assert.deepEqual(
+    reduceReviews({ evidence: [correctness, stale], headSha, trust, protectedInput: false }).reasons,
+    ["security_missing"],
+  );
+  const rejection = { ...security, conclusion: "reject" };
+  assert.equal(reduceReviews({ evidence: [correctness, rejection], headSha, trust, protectedInput: false }).conflict, true);
+  const fallback = { ...security, authoritative: false };
+  assert.deepEqual(
+    reduceReviews({ evidence: [correctness, fallback], headSha, trust, protectedInput: true }).reasons,
+    ["security_missing"],
+  );
+});
+
+test("risk clears only through later same-head owner evidence", () => {
+  const marker = {
+    headSha,
+    findingDigest: "f".repeat(64),
+    status: "open",
+    createdAt: "2026-07-28T10:00:00.000Z",
+    clearedAt: null,
+  };
+  const event = {
+    id: "TE_1",
+    kind: "label_removed",
+    actorId: "U_owner",
+    createdAt: "2026-07-28T10:01:00.000Z",
+    label: "risk:high",
+    headSha,
+  };
+  assert.equal(reduceRisk({ marker, timeline: [event], headSha, trust }).status, "cleared");
+  assert.equal(reduceRisk({ marker, timeline: [{ ...event, actorId: "U_other" }], headSha, trust }).status, "open");
+  assert.equal(reduceRisk({ marker, timeline: [event], headSha: "e".repeat(40), trust }).status, "open");
+});
+
+test("merge eligibility requires all current-head evidence", () => {
+  const state = {
+    headSha,
+    labels: [],
+    checks: [{ name: "check", headSha, conclusion: "success" }],
+    reviews: [correctness, security],
+    riskMarker: null,
+    timeline: [],
+    trust,
+    autoMergeAllowed: true,
+  };
+  assert.deepEqual(mergeEligibility(state), { eligible: true, reasons: [] });
+  assert.deepEqual(mergeEligibility({ ...state, labels: ["hold"] }), { eligible: false, reasons: ["hold"] });
+  assert.deepEqual(mergeEligibility({ ...state, checks: [] }).reasons, ["check_missing"]);
+  assert.deepEqual(mergeEligibility({ ...state, autoMergeAllowed: false }).reasons, ["auto_merge_forbidden"]);
 });

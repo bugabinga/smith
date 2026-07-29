@@ -285,6 +285,83 @@ export function reduceAssessments({ snapshot, rolePolicy, assessments }) {
   });
 }
 
+const HOLD_LABELS = new Set(["hold", "needs:owner", "needs:spec", "needs:security", "risk:high"]);
+
+export function holdReasons(labels) {
+  return Object.freeze([...new Set(labels.filter(label => HOLD_LABELS.has(label)))].sort());
+}
+
+export function nextBuilderRoute(route, currentSourceRevision) {
+  if (route.sourceRevision !== currentSourceRevision) {
+    return deepFreeze({ ...route, sourceRevision: currentSourceRevision, status: "unarmed", primaryOutcome: null, fallbackOutcome: null });
+  }
+  if (route.status === "unarmed") return deepFreeze({ ...route, status: "primary" });
+  if (route.status === "primary" && route.primaryOutcome === "artifact") return deepFreeze({ ...route, status: "complete" });
+  if (route.status === "primary" && route.primaryOutcome === "provider_failure") return deepFreeze({ ...route, status: "fallback" });
+  if (route.status === "fallback" && route.fallbackOutcome === "artifact") return deepFreeze({ ...route, status: "complete" });
+  if (route.status === "fallback" && route.fallbackOutcome === "provider_failure") return deepFreeze({ ...route, status: "blocked" });
+  return copy(route);
+}
+
+export function reduceReviews({ evidence, headSha, trust, protectedInput }) {
+  const accepted = evidence.filter(item =>
+    item.headSha === headSha &&
+    item.actorId === trust.appId &&
+    item.authoritative === true &&
+    (!protectedInput || item.authoritative === true),
+  );
+  const result = {};
+  const reasons = [];
+  let conflict = false;
+  for (const kind of ["correctness", "security"]) {
+    const values = accepted.filter(item => item.kind === kind).map(item => item.conclusion);
+    if (values.includes("reject")) {
+      result[kind] = "reject";
+      reasons.push(`${kind}_rejected`);
+      conflict = true;
+    } else if (values.includes("approve")) {
+      result[kind] = "approve";
+    } else {
+      result[kind] = "missing";
+      reasons.push(`${kind}_missing`);
+    }
+  }
+  return deepFreeze({ correctness: result.correctness, security: result.security, conflict, reasons: reasons.sort() });
+}
+
+export function reduceRisk({ marker, timeline, headSha, trust }) {
+  if (marker.headSha !== headSha) return deepFreeze({ status: "open", marker: { ...marker, status: "open", clearedAt: null } });
+  const event = timeline
+    .filter(item =>
+      item.kind === "label_removed" &&
+      item.label === "risk:high" &&
+      item.headSha === headSha &&
+      trust.ownerIds.includes(item.actorId) &&
+      item.createdAt > marker.createdAt,
+    )
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0];
+  if (!event) return deepFreeze({ status: "open", marker: { ...marker, status: "open", clearedAt: null } });
+  return deepFreeze({ status: "cleared", marker: { ...marker, status: "cleared", clearedAt: event.createdAt } });
+}
+
+export function mergeEligibility(state) {
+  const reasons = [...holdReasons(state.labels)];
+  const check = state.checks.find(item => item.name === "check" && item.headSha === state.headSha);
+  if (!check) reasons.push("check_missing");
+  else if (check.conclusion !== "success") reasons.push("check_failed");
+  const reviews = reduceReviews({
+    evidence: state.reviews,
+    headSha: state.headSha,
+    trust: state.trust,
+    protectedInput: true,
+  });
+  reasons.push(...reviews.reasons);
+  if (state.riskMarker?.status === "open") reasons.push("risk:high");
+  if (!state.autoMergeAllowed) reasons.push("auto_merge_forbidden");
+  const unique = [...new Set(reasons)].sort();
+  return deepFreeze({ eligible: unique.length === 0, reasons: unique });
+}
+
 export function validateVerification(value) {
   exact(value, ["schemaVersion", "controlSha", "decisionDigest", "kind", "preconditionDigest", "patch", "resultTree"], "verification");
   if (value.schemaVersion !== 1) fail("verification schema version is invalid");
