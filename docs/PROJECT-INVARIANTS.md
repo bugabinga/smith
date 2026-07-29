@@ -15,14 +15,26 @@ These invariants govern the smith codebase. They are non-negotiable rules that e
 
 **xtask boundary:** Any task not handled natively by cargo lives in the `xtask/` workspace crate. xtask is the single extension point for custom automation.
 
-**CI is orchestration, not a second build system.** The agentic workflow's
-GitHub Actions are permitted, but each workflow stays thin and delegates to
-`cargo` / `cargo run -p xtask -- <cmd>` — no business logic in YAML or inline
-shell, the same rule that binds xtask (§4). Workflows *call* the build system;
-they never become one.
+**CI is orchestration, not a second build system.** GitHub Actions stay thin
+and delegate product work to `cargo` / `cargo run -p xtask -- <cmd>` — no
+business logic in YAML or inline shell, the same rule that binds xtask (§4).
+Workflows *call* the build system; they never become one.
+
+**ADW control-plane exception.** Dependency-free `.mjs` automation under
+`adw/` may orchestrate forge state, test itself with `node --test`, and install
+exact-pinned Claude/Codex CLI packages into a temporary CI directory. It is not
+a product build entry point: every product build, test, gate, book build, and
+artifact construction still enters through Cargo/xtask; the separately exempt
+site remains unchanged. ADW carries no `package.json`, lockfile, npm library
+dependency, or reusable product code. Once `adw/main.mjs` becomes authoritative,
+GitHub workflows may call only that entrypoint for ADW policy. Until the atomic
+cutover, the existing `.github/workflows/adw-*` implementation remains the
+owner-approved migration source and is deleted by that cutover.
 
 **Prohibited:**
 - Makefile, justfile, package.json, build.sh
+- Custom scripts outside Cargo, except the narrowly defined `adw/*.mjs`
+  control-plane exception above
 - Shell scripts in repo root or scripts/
 - Any build step that requires tools not installable via `cargo install`, with three named exceptions, all confined to gates and release builds: pinned nightly rustup components required by the `cargo-pup` architecture gate; the **toolchains** the cross-compilers drive — the `zig` toolchain `cargo-zigbuild` needs, and the host **LLVM/clang** installation `cargo-xwin` needs (it fetches the Microsoft SDK, not the compiler that consumes it); and the **platform SDKs** themselves — the Microsoft C runtime and Windows SDK that `cargo-xwin` fetches, and a macOS SDK where a C dependency's darwin headers demand one (§4, *Cross-compilation*). The cross-compilers themselves are `cargo install`-able; the exception covers the external toolchains and SDKs they drive, nothing else
 
@@ -31,8 +43,10 @@ and their build. The published **web site** is a separate artifact and is exempt
 narrowly: the Astro site may carry its own `package.json` and Node build **confined
 to `site/`** (never the workspace root), built by `.github/workflows/pages.yml`.
 The **book** stays inside the rule — it is mdBook, which is `cargo install`-able —
-so this exemption is for the site alone. No Node toolchain, lockfile, or
-`package.json` may appear at the repo root or inside any crate.
+so the site exemption remains confined there. No lockfile or `package.json` may
+appear at the repo root or inside any crate. The separate ADW exception may use
+the runner-provided Node/npm executables only for MJS execution, self-tests, and
+exact-pinned provider CLI installation into a temporary directory.
 
 ## 2. Directory Separation: Code vs. Project Management
 
@@ -46,6 +60,7 @@ smith/                          # ← code (crates, Cargo, .rs)
 ├── smith-harness/
 ├── smith-cli/
 ├── xtask/
+├── adw/                          # dependency-free agentic control plane (.mjs)
 ├── .gitignore
 ├── rust-toolchain.toml
 └── ...
@@ -297,8 +312,9 @@ Files that coding agents MUST NOT modify without explicit user approval:
 - `docs/PROJECT-INVARIANTS.md`
 - `docs/SPEC.md` (source of truth — agents read, don't edit without approval)
 - `docs/plans/AGENTIC-DEVELOPMENT.md` (the "how to build" spec)
-- `.github/workflows/`, `.github/CODEOWNERS`, `.claude/agents/` (the agentic
-  workflow's own config — agents must not rewrite the rules they run under).
+- `adw/`, `.github/workflows/`, `.github/CODEOWNERS`, `.claude/agents/` (the
+  agentic workflow's own code/config — agents must not rewrite the rules they
+  run under).
   **Carve-out (owner-approved):** a builder acting on a *triaged ADW work-order
   that names the file* may edit `.github/**` and `.claude/**`. These paths are
   CODEOWNERS-owned and the ruleset sets `require_code_owner_review: true` with the
@@ -308,8 +324,10 @@ Files that coding agents MUST NOT modify without explicit user approval:
   owns every agent instruction (see AGENTIC-DEVELOPMENT → *Credentialed agents
   over untrusted input*, which also names the accepted PR-time execution
   residual). Still never, whatever a work-order asks: `.github/rulesets/**`,
-  `.github/CODEOWNERS`, `adw-gate.yml`, `adw-automerge.yml`,
-  `.claude/settings.json` — an agent does not widen its own permissions or weaken
+  `.github/CODEOWNERS`, `.github/workflows/adw-gate.yml`,
+  `.github/workflows/adw-automerge.yml`, `.github/workflows/adw-issues.yml`,
+  `.github/workflows/adw-pulls.yml`, `.github/workflows/adw-maintenance.yml`,
+  `adw/**`, `.claude/settings.json` — an agent does not widen its own permissions or weaken
   the check that judges it.
 - `Cargo.toml` workspace root
 - adding or removing a crate in any `Cargo.toml` `[dependencies]` (version
@@ -574,6 +592,7 @@ Rules:
 
 | Date | Change | Author |
 |------|--------|--------|
+| 2026-07-28 | §1 exempts the dependency-free MJS ADW control plane and temporary pinned provider CLI installs; §2/§5 protect `adw/` as owner-controlled automation (user-approved) | smith-spec |
 | 2026-07-25 | §4 becomes the single cross-compiler mapping, with a proven-by column; §1 exception widened to the host LLVM `cargo-xwin` needs and repointed at §4; §8a release pipeline stops naming one tool for every target (user-approved) | smith-spec |
 | 2026-07-19 | §7 switch rebase→squash merge: rebase-merge can't be signed, so squash is the only method that satisfies signed-commits + linear history; one-PR-one-decision keeps squash = one-commit-per-decision (user-directed) | smith-spec |
 | 2026-07-18 | §1 scope note: Astro site exempt from the package.json ban, confined to `site/`; book stays mdBook (cargo-native) (user-directed) | smith-spec |
