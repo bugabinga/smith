@@ -1,0 +1,23 @@
+{
+  "snapshot": {
+    "schemaVersion": 1,
+    "controlSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "event": { "kind": "schedule", "action": "reconcile", "entityId": "repository" },
+    "repository": { "id": "R_1", "owner": "bugabinga", "name": "smith", "defaultBranch": "main" },
+    "revisions": [{ "resource": "repository", "kind": "default_branch", "token": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
+    "routing": { "role": "sweeper", "mode": "single", "primary": "codex" },
+    "state": { "currentRevisions": { "issue:1": "r2" } }
+  },
+  "routes": [{ "issueId": "1", "sourceRevision": "r1", "status": "primary", "primary": "claude", "fallback": "codex", "artifactDigest": null }],
+  "pulls": [{
+    "prId": "2",
+    "headSha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "merged": true,
+    "mergeSha": "cccccccccccccccccccccccccccccccccccccccc",
+    "obligations": [{ "role": "docs-writer", "status": "missing", "artifactDigest": null }]
+  }],
+  "labelSync": {
+    "wantedDigest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "liveDigest": "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}

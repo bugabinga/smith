@@ -18,6 +18,10 @@ import {
   nextBuilderRoute,
   reduceReviews,
   reduceRisk,
+  idempotencyKey,
+  planReconciliation,
+  validateOperation,
+  validatePatchManifest,
 } from "../core.mjs";
 import { defineRole } from "../roles.mjs";
 
@@ -358,4 +362,93 @@ test("merge eligibility requires all current-head evidence", () => {
   assert.deepEqual(mergeEligibility({ ...state, labels: ["hold"] }), { eligible: false, reasons: ["hold"] });
   assert.deepEqual(mergeEligibility({ ...state, checks: [] }).reasons, ["check_missing"]);
   assert.deepEqual(mergeEligibility({ ...state, autoMergeAllowed: false }).reasons, ["auto_merge_forbidden"]);
+});
+
+const operationSamples = [
+  { type: "comment", entityId: "I_1", body: "body", marker: "m1" },
+  { type: "add_label", entityId: "I_1", label: "bug" },
+  { type: "remove_label", entityId: "I_1", label: "hold" },
+  { type: "create_issue", title: "title", body: "body", labels: ["bug"], marker: "m2" },
+  { type: "update_issue", issueId: "I_1", title: "title" },
+  { type: "close_issue", issueId: "I_1", reason: "completed" },
+  { type: "create_milestone", title: "M1", description: "desc", marker: "m3" },
+  { type: "update_milestone", milestoneId: "M_1", description: "next" },
+  { type: "close_milestone", milestoneId: "M_1" },
+  { type: "assign_milestone", issueId: "I_1", milestoneId: "M_1" },
+  { type: "link_sub_issue", parentId: "I_1", childId: "I_2" },
+  { type: "create_branch", name: "feature/x", baseSha: headSha, treeSha: "c".repeat(40) },
+  { type: "create_pr", head: "feature/x", base: "main", title: "title", body: "body", marker: "m4" },
+  { type: "update_pr", prId: "P_1", headSha },
+  { type: "publish_check", headSha, name: "merge-gate", conclusion: "success", summary: "ok", externalId: "e1" },
+  { type: "rerun_check", runId: "R_1" },
+  { type: "dispatch_workflow", workflow: "check.yml", ref: "main", inputs: {} },
+  { type: "arm_auto_merge", prId: "P_1", headSha, method: "squash" },
+  { type: "sync_labels", definitionsDigest: "a".repeat(64) },
+  { type: "report_drift", title: "drift", body: "body", marker: "m5" },
+  { type: "noop", reason: "already_complete" },
+  { type: "terminal", reason: "contract" },
+];
+
+test("closed operations accept exact fields only", () => {
+  const allOperations = defineRole({
+    ...structuredClone(policy("quorum")),
+    operations: [...new Set(operationSamples.map(value => value.type))].sort(),
+  });
+  for (const operation of operationSamples) {
+    assert.deepEqual(validateOperation(operation, allOperations), operation);
+    assert.throws(() => validateOperation({ ...operation, surprise: true }, allOperations), error => error?.code === "contract");
+  }
+  assert.throws(() => validateOperation({ type: "publish_everything" }, allOperations), error => error?.code === "contract");
+});
+
+test("semantic idempotency keys ignore irrelevant ordering", () => {
+  assert.equal(
+    idempotencyKey("issue_route", { issueId: "1", route: "claude", sourceRevision: "r1" }),
+    "issue:1:route:claude:r1",
+  );
+  assert.equal(
+    idempotencyKey("pr_review", { prId: "2", headSha, reviewKind: "security" }),
+    `pr:2:${headSha}:security`,
+  );
+  assert.throws(() => idempotencyKey("unknown", {}), error => error?.code === "contract");
+});
+
+test("patch manifest enforces role and global boundaries", () => {
+  const patchRole = defineRole({
+    ...structuredClone(policy("quorum")),
+    patch: {
+      maxBytes: 1024,
+      maxFiles: 2,
+      allowedPrefixes: ["docs/", "smith-core/"],
+      deniedPaths: ["adw/**", "docs/SPEC.md"],
+    },
+  });
+  const manifest = {
+    baseSha: headSha,
+    digest: "a".repeat(64),
+    size: 12,
+    files: [{ path: "docs/guide.md", kind: "regular", oldMode: "100644", newMode: "100644" }],
+  };
+  assert.deepEqual(validatePatchManifest(manifest, patchRole), manifest);
+  for (const path of ["../secret", "/tmp/x", ".git/config", ".gitmodules", "adw/core.mjs", "docs/SPEC.md", "site/index.html"]) {
+    assert.throws(() => validatePatchManifest({ ...manifest, files: [{ ...manifest.files[0], path }] }, patchRole), error => error?.code === "contract");
+  }
+  assert.throws(() => validatePatchManifest({ ...manifest, files: [{ ...manifest.files[0], kind: "binary" }] }, patchRole), error => error?.code === "contract");
+});
+
+test("reconciliation emits only missing normalized obligations", () => {
+  const request = {
+    snapshot: { ...snapshot, state: { currentRevisions: { "issue:1": "r2" } } },
+    routes: [{ issueId: "1", sourceRevision: "r1", status: "primary", primary: "claude", fallback: "codex", artifactDigest: null }],
+    pulls: [
+      { prId: "2", headSha, merged: true, mergeSha: "c".repeat(40), obligations: [{ role: "docs-writer", status: "missing", artifactDigest: null }] },
+      { prId: "3", headSha, merged: true, mergeSha: "d".repeat(40), obligations: [{ role: "docs-writer", status: "complete", artifactDigest: "e".repeat(64) }] },
+    ],
+    labelSync: { wantedDigest: "f".repeat(64), liveDigest: "0".repeat(64) },
+  };
+  assert.deepEqual(planReconciliation(request), [
+    { kind: "retry_route", issueId: "1", sourceRevision: "r2" },
+    { kind: "run_obligation", prId: "2", mergeSha: "c".repeat(40), role: "docs-writer" },
+    { kind: "sync_labels", definitionsDigest: "f".repeat(64) },
+  ].sort((a, b) => canonicalBytes(a).compare(canonicalBytes(b))));
 });

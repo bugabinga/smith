@@ -362,6 +362,125 @@ export function mergeEligibility(state) {
   return deepFreeze({ eligible: unique.length === 0, reasons: unique });
 }
 
+const OPERATION_FIELDS = Object.freeze({
+  comment: { required: ["type", "entityId", "body", "marker"] },
+  add_label: { required: ["type", "entityId", "label"] },
+  remove_label: { required: ["type", "entityId", "label"] },
+  create_issue: { required: ["type", "title", "body", "labels", "marker"] },
+  update_issue: { required: ["type", "issueId"], optional: ["title", "body"] },
+  close_issue: { required: ["type", "issueId", "reason"] },
+  create_milestone: { required: ["type", "title", "description", "marker"], optional: ["dueOn"] },
+  update_milestone: { required: ["type", "milestoneId"], optional: ["title", "description", "dueOn"] },
+  close_milestone: { required: ["type", "milestoneId"] },
+  assign_milestone: { required: ["type", "issueId", "milestoneId"] },
+  link_sub_issue: { required: ["type", "parentId", "childId"] },
+  create_branch: { required: ["type", "name", "baseSha", "treeSha"] },
+  create_pr: { required: ["type", "head", "base", "title", "body", "marker"] },
+  update_pr: { required: ["type", "prId"], optional: ["title", "body", "headSha"] },
+  publish_check: { required: ["type", "headSha", "name", "conclusion", "summary", "externalId"] },
+  rerun_check: { required: ["type", "runId"] },
+  dispatch_workflow: { required: ["type", "workflow", "ref", "inputs"] },
+  arm_auto_merge: { required: ["type", "prId", "headSha", "method"] },
+  sync_labels: { required: ["type", "definitionsDigest"] },
+  report_drift: { required: ["type", "title", "body", "marker"] },
+  noop: { required: ["type", "reason"] },
+  terminal: { required: ["type", "reason"] },
+});
+
+function exactOptional(value, required, optional, name) {
+  object(value, name);
+  for (const key of required) if (!Object.hasOwn(value, key)) fail(`${name}.${key} is required`);
+  const allowed = new Set([...required, ...(optional ?? [])]);
+  if (Object.keys(value).some(key => !allowed.has(key))) fail(`${name} has invalid fields`);
+}
+
+export function validateOperation(operation, rolePolicy) {
+  object(operation, "operation");
+  const shape = OPERATION_FIELDS[operation.type];
+  if (!shape || !rolePolicy.operations.includes(operation.type)) fail("operation type is not allowed");
+  exactOptional(operation, shape.required, shape.optional, "operation");
+  for (const [key, value] of Object.entries(operation)) {
+    if (key === "type") continue;
+    if (["labels"].includes(key)) {
+      array(value, `operation.${key}`);
+      value.forEach(item => string(item, `operation.${key}[]`));
+    } else if (key === "inputs") {
+      canonicalObject(value, "operation.inputs");
+    } else {
+      string(value, `operation.${key}`);
+    }
+  }
+  for (const key of ["headSha", "baseSha", "treeSha"]) if (operation[key]) sha(operation[key], `operation.${key}`);
+  if (operation.definitionsDigest) digest(operation.definitionsDigest, "operation.definitionsDigest");
+  if (operation.method && operation.method !== "squash") fail("auto-merge method must be squash");
+  if (operation.conclusion && !new Set(["success", "failure", "neutral"]).has(operation.conclusion)) fail("check conclusion is invalid");
+  if (operation.type === "close_issue" && !new Set(["completed", "not_planned"]).has(operation.reason)) fail("close reason is invalid");
+  return copy(operation);
+}
+
+export function idempotencyKey(kind, fields) {
+  if (kind === "issue_route") return `issue:${string(fields.issueId, "issueId")}:route:${string(fields.route, "route")}:${string(fields.sourceRevision, "sourceRevision")}`;
+  if (kind === "pr_review") return `pr:${string(fields.prId, "prId")}:${sha(fields.headSha, "headSha")}:${string(fields.reviewKind, "reviewKind")}`;
+  if (kind === "milestone") return `milestone:${string(fields.title, "title")}:${digest(fields.specDigest, "specDigest")}`;
+  if (kind === "alert") return `alert:${string(fields.alertId, "alertId")}:${string(fields.state, "state")}`;
+  fail("idempotency key kind is invalid");
+}
+
+const GLOBAL_DENIED_PATHS = [
+  "docs/SPEC.md", "docs/PROJECT-INVARIANTS.md", ".github/CODEOWNERS",
+  ".claude/settings.json", ".github/workflows/adw-issues.yml",
+  ".github/workflows/adw-pulls.yml", ".github/workflows/adw-maintenance.yml",
+];
+const GLOBAL_DENIED_PREFIXES = ["adw/", ".github/rulesets/"];
+
+function matchesRule(path, rule) {
+  return rule.endsWith("/**") ? path.startsWith(rule.slice(0, -2)) : path === rule;
+}
+
+function safePatchPath(path) {
+  if (path.startsWith("/") || path.includes("\\")) return false;
+  const parts = path.split("/");
+  return parts.length > 0 && parts.every(part => part && part !== "." && part !== ".." && part !== ".git");
+}
+
+export function validatePatchManifest(manifest, rolePolicy) {
+  if (!rolePolicy.patch) fail("role does not permit patches");
+  patchMetadata(manifest, "patch");
+  if (manifest.size > rolePolicy.patch.maxBytes || manifest.files.length > rolePolicy.patch.maxFiles) fail("patch exceeds role bounds");
+  for (const file of manifest.files) {
+    if (file.kind !== "regular") fail("patch contains unsupported file kind");
+    if (!safePatchPath(file.path) || file.path === ".gitmodules") fail("patch path is unsafe");
+    if (GLOBAL_DENIED_PATHS.includes(file.path) || GLOBAL_DENIED_PREFIXES.some(prefix => file.path.startsWith(prefix))) fail("patch path is globally denied");
+    if (rolePolicy.patch.deniedPaths.some(rule => matchesRule(file.path, rule))) fail("patch path is denied by role");
+    if (!rolePolicy.patch.allowedPrefixes.some(prefix => file.path.startsWith(prefix))) fail("patch path is outside role prefixes");
+  }
+  return copy(manifest);
+}
+
+export function planReconciliation({ snapshot, routes, pulls, labelSync }) {
+  validateSnapshot(snapshot);
+  const intents = [];
+  for (const route of routes) {
+    exact(route, ["issueId", "sourceRevision", "status", "primary", "fallback", "artifactDigest"], "route");
+    const current = snapshot.state.currentRevisions?.[`issue:${route.issueId}`];
+    if (current && current !== route.sourceRevision && route.artifactDigest === null) {
+      intents.push({ kind: "retry_route", issueId: route.issueId, sourceRevision: current });
+    }
+  }
+  for (const pull of pulls) {
+    exact(pull, ["prId", "headSha", "merged", "mergeSha", "obligations"], "pull");
+    if (!pull.merged) continue;
+    for (const obligation of pull.obligations) {
+      exact(obligation, ["role", "status", "artifactDigest"], "obligation");
+      if (obligation.status === "missing") intents.push({ kind: "run_obligation", prId: pull.prId, mergeSha: pull.mergeSha, role: obligation.role });
+    }
+  }
+  exact(labelSync, ["wantedDigest", "liveDigest"], "labelSync");
+  if (labelSync.wantedDigest !== labelSync.liveDigest) intents.push({ kind: "sync_labels", definitionsDigest: labelSync.wantedDigest });
+  const unique = new Map(intents.map(intent => [digestJson(intent), intent]));
+  return deepFreeze([...unique.values()].sort((a, b) => canonicalBytes(a).compare(canonicalBytes(b))));
+}
+
 export function validateVerification(value) {
   exact(value, ["schemaVersion", "controlSha", "decisionDigest", "kind", "preconditionDigest", "patch", "resultTree"], "verification");
   if (value.schemaVersion !== 1) fail("verification schema version is invalid");
