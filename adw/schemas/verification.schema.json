@@ -3,46 +3,164 @@
   "$id": "smith:adw:verification:v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "controlSha", "decisionDigest", "kind", "preconditionDigest", "patch", "resultTree"],
+  "required": [
+    "schemaVersion",
+    "controlSha",
+    "decisionDigest",
+    "kind",
+    "preconditionDigest",
+    "patch",
+    "resultTree"
+  ],
   "properties": {
-    "schemaVersion": { "const": 1 },
-    "controlSha": { "$ref": "#/$defs/sha" },
-    "decisionDigest": { "$ref": "#/$defs/digest" },
-    "kind": { "enum": ["state", "patch"] },
-    "preconditionDigest": { "$ref": "#/$defs/digest" },
-    "patch": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/patch" }] },
-    "resultTree": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" }
+    "schemaVersion": {
+      "const": 1
+    },
+    "controlSha": {
+      "$ref": "#/$defs/sha"
+    },
+    "decisionDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "kind": {
+      "enum": [
+        "state",
+        "patch"
+      ]
+    },
+    "preconditionDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "patch": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/patch"
+        }
+      ]
+    },
+    "resultTree": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{40}$"
+    }
   },
   "allOf": [
     {
-      "if": { "properties": { "kind": { "const": "patch" } }, "required": ["kind"] },
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "patch"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
       "then": {
         "properties": {
-          "patch": { "$ref": "#/$defs/patch" },
-          "resultTree": { "$ref": "#/$defs/sha" }
+          "patch": {
+            "$ref": "#/$defs/patch"
+          },
+          "resultTree": {
+            "$ref": "#/$defs/sha"
+          }
         }
       },
       "else": {
         "properties": {
-          "patch": { "type": "null" },
-          "resultTree": { "type": "null" }
+          "patch": {
+            "type": "null"
+          },
+          "resultTree": {
+            "type": "null"
+          }
         }
       }
     }
   ],
   "$defs": {
-    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
     "patch": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["baseSha", "digest", "size", "files"],
+      "required": [
+        "baseSha",
+        "digest",
+        "size",
+        "files"
+      ],
       "properties": {
-        "baseSha": { "$ref": "#/$defs/sha" },
-        "digest": { "$ref": "#/$defs/digest" },
-        "size": { "type": "integer", "minimum": 0, "maximum": 1048576 },
-        "files": { "type": "array", "maxItems": 100, "items": { "type": "object" } }
+        "baseSha": {
+          "$ref": "#/$defs/sha"
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1048576
+        },
+        "files": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "kind",
+              "oldMode",
+              "newMode"
+            ],
+            "properties": {
+              "path": {
+                "$ref": "#/$defs/text"
+              },
+              "kind": {
+                "enum": [
+                  "regular",
+                  "binary",
+                  "symlink",
+                  "submodule",
+                  "device"
+                ]
+              },
+              "oldMode": {
+                "enum": [
+                  "absent",
+                  "100644",
+                  "100755"
+                ]
+              },
+              "newMode": {
+                "enum": [
+                  "absent",
+                  "100644",
+                  "100755"
+                ]
+              }
+            }
+          }
+        }
       }
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
     }
   }
 }

@@ -545,4 +545,4 @@ git commit -S -m "Gate the inert MJS control-plane foundation"
 
 ## Result
 
-Implemented in `01a27d3..2b2ef82` plus the final self-test commit. Offline MJS coverage: 31 tests, 31 passed, 0 failed/skipped/cancelled/todo. All three legacy ADW shell suites and `git diff --check` passed; live adapters and production authority remain deferred to Phase 2+.
+Implemented in `01a27d3..13a3934` plus the post-review hardening commit. Offline MJS coverage: 46 tests, 46 passed, 0 failed/skipped/cancelled/todo. All three legacy ADW shell suites and `git diff --check` passed; live adapters and production authority remain deferred to Phase 2+.

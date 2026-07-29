@@ -184,7 +184,7 @@ export function validateDecision(value) {
   if (value.schemaVersion !== 1) fail("decision schema version is invalid");
   sha(value.controlSha, "decision.controlSha");
   digest(value.snapshotDigest, "decision.snapshotDigest");
-  array(value.assessmentDigests, "decision.assessmentDigests");
+  array(value.assessmentDigests, "decision.assessmentDigests", 2);
   const seen = new Set();
   for (const item of value.assessmentDigests) {
     digest(item, "decision.assessmentDigests[]");
@@ -193,16 +193,25 @@ export function validateDecision(value) {
   }
   oneOf(value.kind, new Set(["state", "patch", "terminal"]), "decision.kind");
   array(value.operations, "decision.operations");
-  for (const operation of value.operations) canonicalObject(operation, "decision.operation");
+  for (const operation of value.operations) validateOperationShape(operation);
   if (value.kind === "patch") patchMetadata(value.patch, "decision.patch");
   else if (value.patch !== null) fail("non-patch decision has patch metadata");
+  if (canonicalBytes(value).length > 262_144) fail("decision is oversized");
   return copy(value);
 }
 
-export function qualifyAssessment({ snapshot, rolePolicy, provider, assessment }) {
+export function qualifyAssessment({ snapshot, rolePolicy, provider, assessment, patchBytes }) {
+  const input = snapshot.state.input ?? {};
+  if (!input || Array.isArray(input) || Object.getPrototypeOf(input) !== Object.prototype) {
+    return Object.freeze({ status: "terminal", reason: "contract" });
+  }
+  for (const flag of ["protected", "incomplete", "fork", "binary", "oversized"]) {
+    if (Object.hasOwn(input, flag) && typeof input[flag] !== "boolean") {
+      return Object.freeze({ status: "terminal", reason: "contract" });
+    }
+  }
   const fallbackProvider = rolePolicy.mode !== "quorum" && provider === rolePolicy.fallback;
   if (fallbackProvider) {
-    const input = snapshot.state.input ?? {};
     for (const flag of ["protected", "incomplete", "fork", "binary", "oversized"]) {
       if (input[flag] === true && rolePolicy.fallbackAuthority[flag] !== true) {
         return Object.freeze({ status: "terminal", reason: "fallback_forbidden" });
@@ -212,7 +221,7 @@ export function qualifyAssessment({ snapshot, rolePolicy, provider, assessment }
   if (assessment === null || assessment === undefined) return Object.freeze({ status: "fallback", reason: "missing_artifact" });
   let value;
   try {
-    value = validateAssessment(assessment);
+    value = validateAssessmentArtifact({ assessment, patchBytes });
   } catch {
     return Object.freeze({ status: "fallback", reason: "malformed" });
   }
@@ -220,8 +229,17 @@ export function qualifyAssessment({ snapshot, rolePolicy, provider, assessment }
     value.controlSha !== snapshot.controlSha ||
     value.snapshotDigest !== digestJson(snapshot) ||
     value.role !== rolePolicy.name ||
-    value.provider !== provider
+    value.provider !== provider ||
+    value.model !== rolePolicy.providerConfig[provider]?.model
   ) return Object.freeze({ status: "fallback", reason: "malformed" });
+  if (!rolePolicy.payload.outcomes.includes(value.outcome)) return Object.freeze({ status: "fallback", reason: "malformed" });
+  if (value.patch !== null) {
+    try {
+      validatePatchManifest(value.patch, rolePolicy);
+    } catch {
+      return Object.freeze({ status: "fallback", reason: "malformed" });
+    }
+  }
   if (value.outcome === "unable") return Object.freeze({ status: "fallback", reason: "unavailable" });
   if (rolePolicy.payload.requiredKeys.some(key => !Object.hasOwn(value.payload, key))) {
     return Object.freeze({ status: "fallback", reason: "missing_artifact" });
@@ -231,22 +249,33 @@ export function qualifyAssessment({ snapshot, rolePolicy, provider, assessment }
 
 function patchFrom(values) {
   const patches = values.map(value => value.patch).filter(Boolean);
-  const digests = new Set(patches.map(value => value.digest));
-  if (digests.size > 1) return { conflict: true, patch: null };
+  const metadata = new Set(patches.map(value => digestJson(value)));
+  if (metadata.size > 1) return { conflict: true, patch: null };
   return { conflict: false, patch: patches[0] ?? null };
 }
 
 export function reduceAssessments({ snapshot, rolePolicy, assessments }) {
   validateSnapshot(snapshot);
   const byProvider = new Map();
-  for (const value of assessments) {
-    const provider = value?.provider;
-    if (!PROVIDERS.has(provider) || byProvider.has(provider)) {
+  for (const entry of assessments) {
+    const wrapped = entry?.assessment !== undefined;
+    const assessment = wrapped ? entry.assessment : entry;
+    const provider = assessment?.provider;
+    if (!rolePolicy.providers.includes(provider) || byProvider.has(provider)) {
       return deepFreeze({ status: "terminal", reason: "contract" });
     }
-    byProvider.set(provider, value);
+    byProvider.set(provider, { assessment, patchBytes: wrapped ? entry.patchBytes : undefined });
   }
-  const qualify = provider => qualifyAssessment({ snapshot, rolePolicy, provider, assessment: byProvider.get(provider) });
+  const qualify = provider => {
+    const artifact = byProvider.get(provider);
+    return qualifyAssessment({
+      snapshot,
+      rolePolicy,
+      provider,
+      assessment: artifact?.assessment,
+      patchBytes: artifact?.patchBytes,
+    });
+  };
   if (rolePolicy.mode === "single") {
     const primary = qualify(rolePolicy.primary);
     if (primary.status === "artifact") {
@@ -254,6 +283,9 @@ export function reduceAssessments({ snapshot, rolePolicy, assessments }) {
     }
     if (primary.status === "terminal") return primary;
     if (!rolePolicy.fallback) return deepFreeze({ status: "terminal", reason: "provider_unavailable" });
+    if (!byProvider.has(rolePolicy.fallback)) {
+      return deepFreeze({ status: "fallback", provider: rolePolicy.fallback, reason: primary.reason });
+    }
     const fallback = qualify(rolePolicy.fallback);
     if (fallback.status === "artifact") {
       return deepFreeze({ status: "artifact", authoritative: true, selected: [digestJson(fallback.assessment)], patch: fallback.assessment.patch });
@@ -267,6 +299,7 @@ export function reduceAssessments({ snapshot, rolePolicy, assessments }) {
       if (result.status === "artifact") {
         return deepFreeze({ status: "artifact", authoritative: false, selected: [digestJson(result.assessment)], patch: result.assessment.patch });
       }
+      if (result.status === "terminal") return result;
     }
     return deepFreeze({ status: "terminal", reason: "advisory_unavailable" });
   }
@@ -288,13 +321,48 @@ export function reduceAssessments({ snapshot, rolePolicy, assessments }) {
 const HOLD_LABELS = new Set(["hold", "needs:owner", "needs:spec", "needs:security", "risk:high"]);
 
 export function holdReasons(labels) {
+  array(labels, "labels");
+  labels.forEach(label => string(label, "labels[]"));
   return Object.freeze([...new Set(labels.filter(label => HOLD_LABELS.has(label)))].sort());
 }
 
+function validateTrust(trust) {
+  exact(trust, ["ownerIds", "appId"], "trust");
+  array(trust.ownerIds, "trust.ownerIds");
+  trust.ownerIds.forEach(id => string(id, "trust.ownerIds[]"));
+  string(trust.appId, "trust.appId");
+}
+
+function validateEvidence(item) {
+  exact(item, ["kind", "headSha", "conclusion", "actorId", "provider", "authoritative", "artifactDigest"], "review evidence");
+  oneOf(item.kind, new Set(["correctness", "security"]), "review evidence kind");
+  sha(item.headSha, "review evidence head");
+  oneOf(item.conclusion, new Set(["approve", "reject"]), "review conclusion");
+  string(item.actorId, "review actor");
+  oneOf(item.provider, PROVIDERS, "review provider");
+  if (typeof item.authoritative !== "boolean") fail("review authority must be boolean");
+  digest(item.artifactDigest, "review artifact digest");
+}
+
 export function nextBuilderRoute(route, currentSourceRevision) {
+  exact(route, ["sourceRevision", "headSha", "status", "primaryOutcome", "fallbackOutcome"], "builder route");
+  string(route.sourceRevision, "builder route source");
+  string(currentSourceRevision, "current source revision");
+  sha(route.headSha, "builder route head");
+  oneOf(route.status, new Set(["unarmed", "primary", "fallback", "complete", "blocked"]), "builder route status");
+  for (const [name, value] of [["primary", route.primaryOutcome], ["fallback", route.fallbackOutcome]]) {
+    if (value !== null) oneOf(value, new Set(["artifact", "provider_failure"]), `${name} outcome`);
+  }
   if (route.sourceRevision !== currentSourceRevision) {
     return deepFreeze({ ...route, sourceRevision: currentSourceRevision, status: "unarmed", primaryOutcome: null, fallbackOutcome: null });
   }
+  const validState =
+    (route.status === "unarmed" && route.primaryOutcome === null && route.fallbackOutcome === null) ||
+    (route.status === "primary" && route.fallbackOutcome === null) ||
+    (route.status === "fallback" && route.primaryOutcome === "provider_failure") ||
+    (route.status === "complete" && (route.primaryOutcome === "artifact" || (route.primaryOutcome === "provider_failure" && route.fallbackOutcome === "artifact"))) ||
+    (route.status === "blocked" && route.primaryOutcome === "provider_failure" && route.fallbackOutcome === "provider_failure");
+  if (!validState) fail("builder route state is inconsistent");
   if (route.status === "unarmed") return deepFreeze({ ...route, status: "primary" });
   if (route.status === "primary" && route.primaryOutcome === "artifact") return deepFreeze({ ...route, status: "complete" });
   if (route.status === "primary" && route.primaryOutcome === "provider_failure") return deepFreeze({ ...route, status: "fallback" });
@@ -304,6 +372,11 @@ export function nextBuilderRoute(route, currentSourceRevision) {
 }
 
 export function reduceReviews({ evidence, headSha, trust, protectedInput }) {
+  array(evidence, "review evidence");
+  sha(headSha, "review head");
+  validateTrust(trust);
+  if (typeof protectedInput !== "boolean") fail("protectedInput must be boolean");
+  evidence.forEach(validateEvidence);
   const accepted = evidence.filter(item =>
     item.headSha === headSha &&
     item.actorId === trust.appId &&
@@ -329,7 +402,25 @@ export function reduceReviews({ evidence, headSha, trust, protectedInput }) {
   return deepFreeze({ correctness: result.correctness, security: result.security, conflict, reasons: reasons.sort() });
 }
 
+function validateTimeline(timeline) {
+  array(timeline, "risk timeline");
+  for (const item of timeline) {
+    exact(item, ["id", "kind", "actorId", "createdAt", "label", "headSha"], "timeline event");
+    for (const key of ["id", "kind", "actorId", "createdAt", "label"]) string(item[key], `timeline.${key}`);
+    sha(item.headSha, "timeline head");
+  }
+}
+
 export function reduceRisk({ marker, timeline, headSha, trust }) {
+  exact(marker, ["headSha", "findingDigest", "status", "createdAt", "clearedAt"], "risk marker");
+  sha(marker.headSha, "risk marker head");
+  digest(marker.findingDigest, "risk finding digest");
+  oneOf(marker.status, new Set(["open", "cleared"]), "risk marker status");
+  string(marker.createdAt, "risk marker createdAt");
+  if (marker.clearedAt !== null) string(marker.clearedAt, "risk marker clearedAt");
+  validateTimeline(timeline);
+  sha(headSha, "risk head");
+  validateTrust(trust);
   if (marker.headSha !== headSha) return deepFreeze({ status: "open", marker: { ...marker, status: "open", clearedAt: null } });
   const event = timeline
     .filter(item =>
@@ -345,10 +436,21 @@ export function reduceRisk({ marker, timeline, headSha, trust }) {
 }
 
 export function mergeEligibility(state) {
+  exact(state, ["headSha", "labels", "checks", "reviews", "riskMarker", "timeline", "trust", "autoMergeAllowed"], "merge state");
+  sha(state.headSha, "merge head");
   const reasons = [...holdReasons(state.labels)];
-  const check = state.checks.find(item => item.name === "check" && item.headSha === state.headSha);
-  if (!check) reasons.push("check_missing");
-  else if (check.conclusion !== "success") reasons.push("check_failed");
+  array(state.checks, "merge checks");
+  for (const item of state.checks) {
+    exact(item, ["name", "headSha", "conclusion"], "merge check");
+    string(item.name, "check name");
+    sha(item.headSha, "check head");
+    oneOf(item.conclusion, new Set(["success", "failure", "neutral"]), "check conclusion");
+  }
+  if (typeof state.autoMergeAllowed !== "boolean") fail("autoMergeAllowed must be boolean");
+  validateTimeline(state.timeline);
+  const checks = state.checks.filter(item => item.name === "check" && item.headSha === state.headSha);
+  if (checks.length === 0) reasons.push("check_missing");
+  else if (checks.some(item => item.conclusion !== "success")) reasons.push("check_failed");
   const reviews = reduceReviews({
     evidence: state.reviews,
     headSha: state.headSha,
@@ -356,7 +458,10 @@ export function mergeEligibility(state) {
     protectedInput: true,
   });
   reasons.push(...reviews.reasons);
-  if (state.riskMarker?.status === "open") reasons.push("risk:high");
+  if (state.riskMarker !== null) {
+    object(state.riskMarker, "risk marker");
+    if (reduceRisk({ marker: state.riskMarker, timeline: state.timeline, headSha: state.headSha, trust: state.trust }).status !== "cleared") reasons.push("risk:high");
+  }
   if (!state.autoMergeAllowed) reasons.push("auto_merge_forbidden");
   const unique = [...new Set(reasons)].sort();
   return deepFreeze({ eligible: unique.length === 0, reasons: unique });
@@ -394,10 +499,17 @@ function exactOptional(value, required, optional, name) {
   if (Object.keys(value).some(key => !allowed.has(key))) fail(`${name} has invalid fields`);
 }
 
-export function validateOperation(operation, rolePolicy) {
+const NOOP_REASONS = new Set(["already_complete", "not_applicable", "unchanged"]);
+const TERMINAL_REASONS = new Set([
+  "contract", "fallback_forbidden", "provider_unavailable", "providers_unavailable",
+  "quorum_incomplete", "advisory_unavailable", "patch_conflict", "stale",
+  "verification_failed",
+]);
+
+function validateOperationShape(operation) {
   object(operation, "operation");
   const shape = OPERATION_FIELDS[operation.type];
-  if (!shape || !rolePolicy.operations.includes(operation.type)) fail("operation type is not allowed");
+  if (!shape) fail("operation type is not allowed");
   exactOptional(operation, shape.required, shape.optional, "operation");
   for (const [key, value] of Object.entries(operation)) {
     if (key === "type") continue;
@@ -415,15 +527,30 @@ export function validateOperation(operation, rolePolicy) {
   if (operation.method && operation.method !== "squash") fail("auto-merge method must be squash");
   if (operation.conclusion && !new Set(["success", "failure", "neutral"]).has(operation.conclusion)) fail("check conclusion is invalid");
   if (operation.type === "close_issue" && !new Set(["completed", "not_planned"]).has(operation.reason)) fail("close reason is invalid");
+  if (operation.type === "noop" && !NOOP_REASONS.has(operation.reason)) fail("no-op reason is invalid");
+  if (operation.type === "terminal" && !TERMINAL_REASONS.has(operation.reason)) fail("terminal reason is invalid");
   return copy(operation);
 }
 
+export function validateOperation(operation, rolePolicy) {
+  if (!rolePolicy.operations.includes(operation?.type)) fail("operation type is not allowed by role");
+  return validateOperationShape(operation);
+}
+
 export function idempotencyKey(kind, fields) {
-  if (kind === "issue_route") return `issue:${string(fields.issueId, "issueId")}:route:${string(fields.route, "route")}:${string(fields.sourceRevision, "sourceRevision")}`;
-  if (kind === "pr_review") return `pr:${string(fields.prId, "prId")}:${sha(fields.headSha, "headSha")}:${string(fields.reviewKind, "reviewKind")}`;
-  if (kind === "milestone") return `milestone:${string(fields.title, "title")}:${digest(fields.specDigest, "specDigest")}`;
-  if (kind === "alert") return `alert:${string(fields.alertId, "alertId")}:${string(fields.state, "state")}`;
-  fail("idempotency key kind is invalid");
+  let semantic;
+  if (kind === "issue_route") {
+    semantic = { issueId: string(fields.issueId, "issueId"), route: string(fields.route, "route"), sourceRevision: string(fields.sourceRevision, "sourceRevision") };
+  } else if (kind === "pr_review") {
+    semantic = { prId: string(fields.prId, "prId"), headSha: sha(fields.headSha, "headSha"), reviewKind: string(fields.reviewKind, "reviewKind") };
+  } else if (kind === "milestone") {
+    semantic = { title: string(fields.title, "title"), specDigest: digest(fields.specDigest, "specDigest") };
+  } else if (kind === "alert") {
+    semantic = { alertId: string(fields.alertId, "alertId"), state: string(fields.state, "state") };
+  } else {
+    fail("idempotency key kind is invalid");
+  }
+  return `${kind}:${digestJson(semantic)}`;
 }
 
 const GLOBAL_DENIED_PATHS = [
@@ -457,25 +584,62 @@ export function validatePatchManifest(manifest, rolePolicy) {
   return copy(manifest);
 }
 
-export function planReconciliation({ snapshot, routes, pulls, labelSync }) {
+export function planReconciliation(request) {
+  exact(request, ["snapshot", "routes", "pulls", "labelSync"], "reconciliation");
+  const { snapshot, routes, pulls, labelSync } = request;
   validateSnapshot(snapshot);
+  array(routes, "routes");
+  array(pulls, "pulls");
+  const currentRevisions = snapshot.state.currentRevisions;
+  if (!currentRevisions || Array.isArray(currentRevisions) || Object.getPrototypeOf(currentRevisions) !== Object.prototype) fail("snapshot current revisions are required");
   const intents = [];
+  const routeIds = new Set();
   for (const route of routes) {
     exact(route, ["issueId", "sourceRevision", "status", "primary", "fallback", "artifactDigest"], "route");
-    const current = snapshot.state.currentRevisions?.[`issue:${route.issueId}`];
-    if (current && current !== route.sourceRevision && route.artifactDigest === null) {
+    string(route.issueId, "route.issueId");
+    if (routeIds.has(route.issueId)) fail("duplicate route issue");
+    routeIds.add(route.issueId);
+    string(route.sourceRevision, "route.sourceRevision");
+    oneOf(route.status, new Set(["unarmed", "primary", "fallback", "complete", "blocked"]), "route.status");
+    oneOf(route.primary, PROVIDERS, "route.primary");
+    if (route.fallback !== null) oneOf(route.fallback, PROVIDERS, "route.fallback");
+    if (route.artifactDigest !== null) digest(route.artifactDigest, "route.artifactDigest");
+    if (route.status === "complete" && route.artifactDigest === null) fail("completed route lacks artifact");
+    if (route.status !== "complete" && route.artifactDigest !== null) fail("incomplete route has artifact");
+    const current = currentRevisions[`issue:${route.issueId}`];
+    string(current, "current revision");
+    if (current !== route.sourceRevision) {
       intents.push({ kind: "retry_route", issueId: route.issueId, sourceRevision: current });
     }
   }
+  const pullIds = new Set();
   for (const pull of pulls) {
     exact(pull, ["prId", "headSha", "merged", "mergeSha", "obligations"], "pull");
+    string(pull.prId, "pull.prId");
+    if (pullIds.has(pull.prId)) fail("duplicate pull");
+    pullIds.add(pull.prId);
+    sha(pull.headSha, "pull.headSha");
+    if (typeof pull.merged !== "boolean") fail("pull.merged must be boolean");
+    if (pull.merged) sha(pull.mergeSha, "pull.mergeSha");
+    else if (pull.mergeSha !== null) fail("unmerged pull has merge SHA");
+    array(pull.obligations, "pull.obligations");
     if (!pull.merged) continue;
+    const obligationRoles = new Set();
     for (const obligation of pull.obligations) {
       exact(obligation, ["role", "status", "artifactDigest"], "obligation");
-      if (obligation.status === "missing") intents.push({ kind: "run_obligation", prId: pull.prId, mergeSha: pull.mergeSha, role: obligation.role });
+      string(obligation.role, "obligation.role");
+      if (obligationRoles.has(obligation.role)) fail("duplicate pull obligation");
+      obligationRoles.add(obligation.role);
+      oneOf(obligation.status, new Set(["missing", "complete", "failed"]), "obligation.status");
+      if (obligation.artifactDigest !== null) digest(obligation.artifactDigest, "obligation.artifactDigest");
+      if (obligation.status === "complete" && obligation.artifactDigest === null) fail("completed obligation lacks artifact");
+      if (obligation.status !== "complete" && obligation.artifactDigest !== null) fail("incomplete obligation has artifact");
+      if (obligation.status === "missing" || obligation.status === "failed") intents.push({ kind: "run_obligation", prId: pull.prId, mergeSha: pull.mergeSha, role: obligation.role });
     }
   }
   exact(labelSync, ["wantedDigest", "liveDigest"], "labelSync");
+  digest(labelSync.wantedDigest, "labelSync.wantedDigest");
+  digest(labelSync.liveDigest, "labelSync.liveDigest");
   if (labelSync.wantedDigest !== labelSync.liveDigest) intents.push({ kind: "sync_labels", definitionsDigest: labelSync.wantedDigest });
   const unique = new Map(intents.map(intent => [digestJson(intent), intent]));
   return deepFreeze([...unique.values()].sort((a, b) => canonicalBytes(a).compare(canonicalBytes(b))));
@@ -494,5 +658,6 @@ export function validateVerification(value) {
   } else if (value.patch !== null || value.resultTree !== null) {
     fail("state verification has patch fields");
   }
+  if (canonicalBytes(value).length > 262_144) fail("verification is oversized");
   return copy(value);
 }

@@ -3,37 +3,686 @@
   "$id": "smith:adw:decision:v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "controlSha", "snapshotDigest", "assessmentDigests", "kind", "operations", "patch"],
+  "required": [
+    "schemaVersion",
+    "controlSha",
+    "snapshotDigest",
+    "assessmentDigests",
+    "kind",
+    "operations",
+    "patch"
+  ],
   "properties": {
-    "schemaVersion": { "const": 1 },
-    "controlSha": { "$ref": "#/$defs/sha" },
-    "snapshotDigest": { "$ref": "#/$defs/digest" },
-    "assessmentDigests": { "type": "array", "maxItems": 2, "uniqueItems": true, "items": { "$ref": "#/$defs/digest" } },
-    "kind": { "enum": ["state", "patch", "terminal"] },
-    "operations": { "type": "array", "maxItems": 100, "items": { "type": "object" } },
-    "patch": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/patch" }] }
+    "schemaVersion": {
+      "const": 1
+    },
+    "controlSha": {
+      "$ref": "#/$defs/sha"
+    },
+    "snapshotDigest": {
+      "$ref": "#/$defs/digest"
+    },
+    "assessmentDigests": {
+      "type": "array",
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/digest"
+      }
+    },
+    "kind": {
+      "enum": [
+        "state",
+        "patch",
+        "terminal"
+      ]
+    },
+    "operations": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "$ref": "#/$defs/operation"
+      }
+    },
+    "patch": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/patch"
+        }
+      ]
+    }
   },
   "allOf": [
     {
-      "if": { "properties": { "kind": { "const": "patch" } }, "required": ["kind"] },
-      "then": { "properties": { "patch": { "$ref": "#/$defs/patch" } } },
-      "else": { "properties": { "patch": { "type": "null" } } }
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "patch"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "then": {
+        "properties": {
+          "patch": {
+            "$ref": "#/$defs/patch"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "patch": {
+            "type": "null"
+          }
+        }
+      }
     }
   ],
   "$defs": {
-    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-    "text": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
     "patch": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["baseSha", "digest", "size", "files"],
+      "required": [
+        "baseSha",
+        "digest",
+        "size",
+        "files"
+      ],
       "properties": {
-        "baseSha": { "$ref": "#/$defs/sha" },
-        "digest": { "$ref": "#/$defs/digest" },
-        "size": { "type": "integer", "minimum": 0, "maximum": 1048576 },
-        "files": { "type": "array", "maxItems": 100, "items": { "type": "object" } }
+        "baseSha": {
+          "$ref": "#/$defs/sha"
+        },
+        "digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1048576
+        },
+        "files": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "kind",
+              "oldMode",
+              "newMode"
+            ],
+            "properties": {
+              "path": {
+                "$ref": "#/$defs/text"
+              },
+              "kind": {
+                "enum": [
+                  "regular",
+                  "binary",
+                  "symlink",
+                  "submodule",
+                  "device"
+                ]
+              },
+              "oldMode": {
+                "enum": [
+                  "absent",
+                  "100644",
+                  "100755"
+                ]
+              },
+              "newMode": {
+                "enum": [
+                  "absent",
+                  "100644",
+                  "100755"
+                ]
+              }
+            }
+          }
+        }
       }
+    },
+    "operation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "entityId",
+            "body",
+            "marker"
+          ],
+          "properties": {
+            "type": {
+              "const": "comment"
+            },
+            "entityId": {
+              "$ref": "#/$defs/text"
+            },
+            "body": {
+              "$ref": "#/$defs/text"
+            },
+            "marker": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "entityId",
+            "label"
+          ],
+          "properties": {
+            "type": {
+              "const": "add_label"
+            },
+            "entityId": {
+              "$ref": "#/$defs/text"
+            },
+            "label": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "entityId",
+            "label"
+          ],
+          "properties": {
+            "type": {
+              "const": "remove_label"
+            },
+            "entityId": {
+              "$ref": "#/$defs/text"
+            },
+            "label": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "title",
+            "body",
+            "labels",
+            "marker"
+          ],
+          "properties": {
+            "type": {
+              "const": "create_issue"
+            },
+            "title": {
+              "$ref": "#/$defs/text"
+            },
+            "body": {
+              "$ref": "#/$defs/text"
+            },
+            "labels": {
+              "type": "array",
+              "maxItems": 100,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4096
+              }
+            },
+            "marker": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "issueId"
+          ],
+          "properties": {
+            "type": {
+              "const": "update_issue"
+            },
+            "issueId": {
+              "$ref": "#/$defs/text"
+            },
+            "title": {
+              "$ref": "#/$defs/text"
+            },
+            "body": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "issueId",
+            "reason"
+          ],
+          "properties": {
+            "type": {
+              "const": "close_issue"
+            },
+            "issueId": {
+              "$ref": "#/$defs/text"
+            },
+            "reason": {
+              "enum": [
+                "completed",
+                "not_planned"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "title",
+            "description",
+            "marker"
+          ],
+          "properties": {
+            "type": {
+              "const": "create_milestone"
+            },
+            "title": {
+              "$ref": "#/$defs/text"
+            },
+            "description": {
+              "$ref": "#/$defs/text"
+            },
+            "marker": {
+              "$ref": "#/$defs/text"
+            },
+            "dueOn": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "milestoneId"
+          ],
+          "properties": {
+            "type": {
+              "const": "update_milestone"
+            },
+            "milestoneId": {
+              "$ref": "#/$defs/text"
+            },
+            "title": {
+              "$ref": "#/$defs/text"
+            },
+            "description": {
+              "$ref": "#/$defs/text"
+            },
+            "dueOn": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "milestoneId"
+          ],
+          "properties": {
+            "type": {
+              "const": "close_milestone"
+            },
+            "milestoneId": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "issueId",
+            "milestoneId"
+          ],
+          "properties": {
+            "type": {
+              "const": "assign_milestone"
+            },
+            "issueId": {
+              "$ref": "#/$defs/text"
+            },
+            "milestoneId": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "parentId",
+            "childId"
+          ],
+          "properties": {
+            "type": {
+              "const": "link_sub_issue"
+            },
+            "parentId": {
+              "$ref": "#/$defs/text"
+            },
+            "childId": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "name",
+            "baseSha",
+            "treeSha"
+          ],
+          "properties": {
+            "type": {
+              "const": "create_branch"
+            },
+            "name": {
+              "$ref": "#/$defs/text"
+            },
+            "baseSha": {
+              "$ref": "#/$defs/sha"
+            },
+            "treeSha": {
+              "$ref": "#/$defs/sha"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "head",
+            "base",
+            "title",
+            "body",
+            "marker"
+          ],
+          "properties": {
+            "type": {
+              "const": "create_pr"
+            },
+            "head": {
+              "$ref": "#/$defs/text"
+            },
+            "base": {
+              "$ref": "#/$defs/text"
+            },
+            "title": {
+              "$ref": "#/$defs/text"
+            },
+            "body": {
+              "$ref": "#/$defs/text"
+            },
+            "marker": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "prId"
+          ],
+          "properties": {
+            "type": {
+              "const": "update_pr"
+            },
+            "prId": {
+              "$ref": "#/$defs/text"
+            },
+            "title": {
+              "$ref": "#/$defs/text"
+            },
+            "body": {
+              "$ref": "#/$defs/text"
+            },
+            "headSha": {
+              "$ref": "#/$defs/sha"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "headSha",
+            "name",
+            "conclusion",
+            "summary",
+            "externalId"
+          ],
+          "properties": {
+            "type": {
+              "const": "publish_check"
+            },
+            "headSha": {
+              "$ref": "#/$defs/sha"
+            },
+            "name": {
+              "$ref": "#/$defs/text"
+            },
+            "conclusion": {
+              "enum": [
+                "success",
+                "failure",
+                "neutral"
+              ]
+            },
+            "summary": {
+              "$ref": "#/$defs/text"
+            },
+            "externalId": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "runId"
+          ],
+          "properties": {
+            "type": {
+              "const": "rerun_check"
+            },
+            "runId": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "workflow",
+            "ref",
+            "inputs"
+          ],
+          "properties": {
+            "type": {
+              "const": "dispatch_workflow"
+            },
+            "workflow": {
+              "$ref": "#/$defs/text"
+            },
+            "ref": {
+              "$ref": "#/$defs/text"
+            },
+            "inputs": {
+              "type": "object"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "prId",
+            "headSha",
+            "method"
+          ],
+          "properties": {
+            "type": {
+              "const": "arm_auto_merge"
+            },
+            "prId": {
+              "$ref": "#/$defs/text"
+            },
+            "headSha": {
+              "$ref": "#/$defs/sha"
+            },
+            "method": {
+              "const": "squash"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "definitionsDigest"
+          ],
+          "properties": {
+            "type": {
+              "const": "sync_labels"
+            },
+            "definitionsDigest": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "title",
+            "body",
+            "marker"
+          ],
+          "properties": {
+            "type": {
+              "const": "report_drift"
+            },
+            "title": {
+              "$ref": "#/$defs/text"
+            },
+            "body": {
+              "$ref": "#/$defs/text"
+            },
+            "marker": {
+              "$ref": "#/$defs/text"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "reason"
+          ],
+          "properties": {
+            "type": {
+              "const": "noop"
+            },
+            "reason": {
+              "enum": [
+                "already_complete",
+                "not_applicable",
+                "unchanged"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "reason"
+          ],
+          "properties": {
+            "type": {
+              "const": "terminal"
+            },
+            "reason": {
+              "enum": [
+                "contract",
+                "fallback_forbidden",
+                "provider_unavailable",
+                "providers_unavailable",
+                "quorum_incomplete",
+                "advisory_unavailable",
+                "patch_conflict",
+                "stale",
+                "verification_failed"
+              ]
+            }
+          }
+        }
+      ]
     }
   }
 }

@@ -64,7 +64,8 @@ export function defineRole(input) {
     if (!providerSet.has(input.primary)) fail("routed role requires a primary provider");
     if (input.fallback !== null && !providerSet.has(input.fallback)) fail("role fallback is invalid");
     if (input.fallback === input.primary) fail("primary and fallback must differ");
-    if (!input.providers.includes(input.primary) || (input.fallback && !input.providers.includes(input.fallback))) fail("routed providers must be declared");
+    const routed = [input.primary, input.fallback].filter(Boolean).sort();
+    if (routed.length !== input.providers.length || routed.some((provider, i) => provider !== input.providers[i])) fail("routed roles must declare exactly their routed providers");
   }
   exact(input.providerConfig, input.providers, "role.providerConfig");
   for (const provider of input.providers) {

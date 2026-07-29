@@ -65,7 +65,7 @@ const assessment = {
   controlSha,
   role: "reviewer",
   provider: "claude",
-  model: "claude-opus-4-1",
+  model: "fixture-claude",
   idempotencyKey: "pr:42:head:review",
   snapshotDigest: digestJson(snapshot),
   cliVersion: "1.0.0",
@@ -157,7 +157,32 @@ test("transport schemas are strict draft 2020-12 JSON", async () => {
     const schema = JSON.parse(await readFile(new URL(`../schemas/${name}.schema.json`, import.meta.url)));
     assert.equal(schema.$schema, "https://json-schema.org/draft/2020-12/schema");
     assert.equal(schema.additionalProperties, false);
+    if (schema.$defs?.patch) assert.equal(schema.$defs.patch.properties.files.items.additionalProperties, false);
   }
+  const decisionSchema = JSON.parse(await readFile(new URL("../schemas/decision.schema.json", import.meta.url)));
+  assert.equal(decisionSchema.$defs.operation.oneOf.length, operationSamples.length);
+  assert.ok(decisionSchema.$defs.operation.oneOf.every(shape => shape.additionalProperties === false));
+  for (const type of ["close_issue", "noop", "terminal"]) {
+    const shape = decisionSchema.$defs.operation.oneOf.find(item => item.properties.type.const === type);
+    assert.ok(shape.properties.reason.enum.length > 0);
+  }
+});
+
+test("decision and verification enforce the transport byte ceiling", () => {
+  assert.throws(
+    () => validateDecision({ ...decision, operations: [{ type: "comment", entityId: "I_1", body: "x".repeat(262144), marker: "m" }] }),
+    error => error?.code === "contract",
+  );
+  const oversizedPatch = {
+    baseSha: headSha,
+    digest: "c".repeat(64),
+    size: 1,
+    files: Array.from({ length: 100 }, (_, i) => ({ path: `${i}-${"x".repeat(3000)}`, kind: "regular", oldMode: "100644", newMode: "100644" })),
+  };
+  assert.throws(
+    () => validateVerification({ ...verification, kind: "patch", patch: oversizedPatch, resultTree: "d".repeat(40) }),
+    error => error?.code === "contract",
+  );
 });
 
 test("patch verification requires matching metadata and result tree", () => {
@@ -188,6 +213,18 @@ function policy(mode, primary = null, fallback = null) {
   });
 }
 
+function patchPolicy(rolePolicy) {
+  return defineRole({
+    ...structuredClone(rolePolicy),
+    patch: {
+      maxBytes: 1024,
+      maxFiles: 10,
+      allowedPrefixes: ["a", "docs/"],
+      deniedPaths: ["adw/**", "docs/SPEC.md"],
+    },
+  });
+}
+
 function providerAssessment(provider, overrides = {}) {
   const nextPayload = overrides.payload ?? payload;
   return {
@@ -210,6 +247,7 @@ test("assessment qualification distinguishes artifacts from provider failure", (
   );
   assert.equal(qualifyAssessment({ snapshot, rolePolicy: single, provider: "claude", assessment: null }).status, "fallback");
   assert.equal(qualifyAssessment({ snapshot, rolePolicy: single, provider: "claude", assessment: { ...assessment, controlSha: "f".repeat(40) } }).status, "fallback");
+  assert.equal(qualifyAssessment({ snapshot, rolePolicy: single, provider: "claude", assessment: { ...assessment, model: "wrong-model" } }).status, "fallback");
 });
 
 test("protected input refuses fallback authority", () => {
@@ -218,6 +256,11 @@ test("protected input refuses fallback authority", () => {
   assert.deepEqual(
     qualifyAssessment({ snapshot: protectedSnapshot, rolePolicy: single, provider: "codex", assessment: providerAssessment("codex") }),
     { status: "terminal", reason: "fallback_forbidden" },
+  );
+  const malformed = { ...snapshot, state: { input: { protected: "yes" } } };
+  assert.deepEqual(
+    qualifyAssessment({ snapshot: malformed, rolePolicy: single, provider: "codex", assessment: providerAssessment("codex") }),
+    { status: "terminal", reason: "contract" },
   );
 });
 
@@ -253,12 +296,17 @@ test("quorum selects both providers and rejects conflicting patches", () => {
   assert.equal(result.authoritative, true);
   assert.equal(reduceAssessments({ snapshot, rolePolicy: quorum, assessments: [providerAssessment("claude")] }).reason, "quorum_incomplete");
 
-  const patchA = { baseSha: headSha, digest: "c".repeat(64), size: 1, files: [] };
-  const patchB = { baseSha: headSha, digest: "d".repeat(64), size: 1, files: [] };
+  const bytesA = Buffer.from("a");
+  const bytesB = Buffer.from("b");
+  const patchA = { baseSha: headSha, digest: digestBytes(bytesA), size: 1, files: [] };
+  const patchB = { baseSha: headSha, digest: digestBytes(bytesB), size: 1, files: [] };
   const conflict = reduceAssessments({
     snapshot,
-    rolePolicy: quorum,
-    assessments: [providerAssessment("claude", { patch: patchA }), providerAssessment("codex", { patch: patchB })],
+    rolePolicy: patchPolicy(quorum),
+    assessments: [
+      { assessment: providerAssessment("claude", { patch: patchA }), patchBytes: bytesA },
+      { assessment: providerAssessment("codex", { patch: patchB }), patchBytes: bytesB },
+    ],
   });
   assert.equal(conflict.reason, "patch_conflict");
 });
@@ -292,6 +340,10 @@ test("builder route follows one bounded fallback", () => {
   assert.equal(nextBuilderRoute({ ...route, status: "primary", primaryOutcome: "artifact" }, "r1").status, "complete");
   assert.equal(nextBuilderRoute({ ...route, status: "primary", primaryOutcome: "provider_failure" }, "r1").status, "fallback");
   assert.equal(nextBuilderRoute({ ...route, status: "fallback", primaryOutcome: "provider_failure", fallbackOutcome: "provider_failure" }, "r1").status, "blocked");
+  assert.throws(
+    () => nextBuilderRoute({ ...route, status: "fallback", fallbackOutcome: "artifact" }, "r1"),
+    error => error?.code === "contract",
+  );
   assert.equal(nextBuilderRoute({ ...route, status: "complete" }, "r2").status, "unarmed");
 });
 
@@ -402,14 +454,10 @@ test("closed operations accept exact fields only", () => {
 });
 
 test("semantic idempotency keys ignore irrelevant ordering", () => {
-  assert.equal(
-    idempotencyKey("issue_route", { issueId: "1", route: "claude", sourceRevision: "r1" }),
-    "issue:1:route:claude:r1",
-  );
-  assert.equal(
-    idempotencyKey("pr_review", { prId: "2", headSha, reviewKind: "security" }),
-    `pr:2:${headSha}:security`,
-  );
+  const route = { issueId: "1", route: "claude", sourceRevision: "r1" };
+  assert.equal(idempotencyKey("issue_route", route), idempotencyKey("issue_route", { ...route }));
+  assert.match(idempotencyKey("issue_route", route), /^issue_route:[0-9a-f]{64}$/);
+  assert.match(idempotencyKey("pr_review", { prId: "2", headSha, reviewKind: "security" }), /^pr_review:[0-9a-f]{64}$/);
   assert.throws(() => idempotencyKey("unknown", {}), error => error?.code === "contract");
 });
 
@@ -451,4 +499,192 @@ test("reconciliation emits only missing normalized obligations", () => {
     { kind: "run_obligation", prId: "2", mergeSha: "c".repeat(40), role: "docs-writer" },
     { kind: "sync_labels", definitionsDigest: "f".repeat(64) },
   ].sort((a, b) => canonicalBytes(a).compare(canonicalBytes(b))));
+});
+
+test("transition reducers reject malformed normalized evidence", () => {
+  assert.throws(
+    () => nextBuilderRoute({ sourceRevision: "r1", headSha, status: "unarmed", primaryOutcome: null, fallbackOutcome: null, extra: true }, "r1"),
+    error => error?.code === "contract",
+  );
+  assert.throws(
+    () => reduceReviews({ evidence: [{ ...correctness, actorId: {} }], headSha, trust, protectedInput: false }),
+    error => error?.code === "contract",
+  );
+  assert.throws(
+    () => mergeEligibility({ headSha, labels: "hold", checks: [], reviews: [], riskMarker: null, timeline: [], trust, autoMergeAllowed: true }),
+    error => error?.code === "contract",
+  );
+  assert.throws(
+    () => mergeEligibility({ headSha, labels: [], checks: [], reviews: [], riskMarker: false, timeline: [], trust, autoMergeAllowed: true }),
+    error => error?.code === "contract",
+  );
+  assert.throws(
+    () => mergeEligibility({ headSha, labels: [], checks: [], reviews: [], riskMarker: null, timeline: [{ surprise: true }], trust, autoMergeAllowed: true }),
+    error => error?.code === "contract",
+  );
+});
+
+test("conflicting current-head product checks fail closed", () => {
+  const result = mergeEligibility({
+    headSha,
+    labels: [],
+    checks: [
+      { name: "check", headSha, conclusion: "success" },
+      { name: "check", headSha, conclusion: "failure" },
+    ],
+    reviews: [correctness, security],
+    riskMarker: null,
+    timeline: [],
+    trust,
+    autoMergeAllowed: true,
+  });
+  assert.deepEqual(result.reasons, ["check_failed"]);
+});
+
+test("merge eligibility revalidates sticky risk against current-head owner timeline", () => {
+  const marker = {
+    headSha: "e".repeat(40),
+    findingDigest: "f".repeat(64),
+    status: "cleared",
+    createdAt: "2026-07-28T10:00:00.000Z",
+    clearedAt: "2026-07-28T10:01:00.000Z",
+  };
+  const result = mergeEligibility({
+    headSha,
+    labels: [],
+    checks: [{ name: "check", headSha, conclusion: "success" }],
+    reviews: [correctness, security],
+    riskMarker: marker,
+    timeline: [],
+    trust,
+    autoMergeAllowed: true,
+  });
+  assert.equal(result.eligible, false);
+  assert.ok(result.reasons.includes("risk:high"));
+});
+
+test("patched assessment cannot reduce without bound sidecar bytes", () => {
+  const bytes = Buffer.from("x");
+  const patch = { baseSha: headSha, digest: digestBytes(bytes), size: 1, files: [] };
+  const result = reduceAssessments({
+    snapshot,
+    rolePolicy: policy("single", "claude", "codex"),
+    assessments: [providerAssessment("claude", { patch })],
+  });
+  assert.equal(result.status, "fallback");
+  assert.equal(result.reason, "malformed");
+  const patchRole = defineRole({
+    ...structuredClone(policy("single", "claude", "codex")),
+    patch: null,
+  });
+  const forbidden = reduceAssessments({
+    snapshot,
+    rolePolicy: patchRole,
+    assessments: [{ assessment: providerAssessment("claude", { patch }), patchBytes: bytes }],
+  });
+  assert.equal(forbidden.status, "fallback");
+});
+
+test("advisory fallback preserves a forbidden terminal", () => {
+  const protectedSnapshot = { ...snapshot, state: { input: { protected: true } } };
+  const advisory = policy("advisory", "claude", "codex");
+  const unavailable = providerAssessment("claude", { outcome: "unable", snapshotDigest: digestJson(protectedSnapshot) });
+  const fallback = providerAssessment("codex", { snapshotDigest: digestJson(protectedSnapshot) });
+  assert.deepEqual(
+    reduceAssessments({ snapshot: protectedSnapshot, rolePolicy: advisory, assessments: [unavailable, fallback] }),
+    { status: "terminal", reason: "fallback_forbidden" },
+  );
+});
+
+test("single reduction requests its configured fallback", () => {
+  const result = reduceAssessments({
+    snapshot,
+    rolePolicy: policy("single", "claude", "codex"),
+    assessments: [providerAssessment("claude", { outcome: "unable" })],
+  });
+  assert.deepEqual(result, { status: "fallback", provider: "codex", reason: "unavailable" });
+});
+
+test("decision transport rejects open operations and raw terminal reasons", () => {
+  assert.throws(
+    () => validateDecision({ ...decision, assessmentDigests: ["1".repeat(64), "2".repeat(64), "3".repeat(64)] }),
+    error => error?.code === "contract",
+  );
+  assert.throws(
+    () => validateDecision({ ...decision, operations: [{ type: "publish_everything" }] }),
+    error => error?.code === "contract",
+  );
+  const terminalRole = defineRole({ ...structuredClone(policy("quorum")), operations: ["terminal"] });
+  assert.throws(
+    () => validateOperation({ type: "terminal", reason: "token ghp_secret failed" }, terminalRole),
+    error => error?.code === "contract",
+  );
+});
+
+test("assessment qualification enforces role outcomes and provider membership", () => {
+  const restricted = defineRole({
+    ...structuredClone(policy("single", "claude", "codex")),
+    payload: { outcomes: ["positive", "unable"], requiredKeys: ["verdict"] },
+  });
+  assert.equal(
+    qualifyAssessment({ snapshot, rolePolicy: restricted, provider: "claude", assessment: providerAssessment("claude", { outcome: "negative" }) }).status,
+    "fallback",
+  );
+  const routed = structuredClone(policy("single", "claude", "codex"));
+  const claudeOnly = defineRole({
+    ...routed,
+    fallback: null,
+    providers: ["claude"],
+    providerConfig: { claude: routed.providerConfig.claude },
+  });
+  assert.equal(
+    reduceAssessments({ snapshot, rolePolicy: claudeOnly, assessments: [providerAssessment("codex")] }).reason,
+    "contract",
+  );
+});
+
+test("quorum requires exact patch metadata agreement", () => {
+  const bytes = Buffer.from("x");
+  const base = { baseSha: headSha, digest: digestBytes(bytes), size: 1, files: [] };
+  const result = reduceAssessments({
+    snapshot,
+    rolePolicy: patchPolicy(policy("quorum")),
+    assessments: [
+      { assessment: providerAssessment("claude", { patch: base }), patchBytes: bytes },
+      { assessment: providerAssessment("codex", { patch: { ...base, files: [{ path: "a", kind: "regular", oldMode: "100644", newMode: "100644" }] } }), patchBytes: bytes },
+    ],
+  });
+  assert.equal(result.reason, "patch_conflict");
+});
+
+test("idempotency keys cannot collide through delimiters", () => {
+  assert.notEqual(
+    idempotencyKey("issue_route", { issueId: "a", route: "b", sourceRevision: "c:d" }),
+    idempotencyKey("issue_route", { issueId: "a", route: "b:c", sourceRevision: "d" }),
+  );
+});
+
+test("reconciliation rejects malformed forge state and retries stale completed artifacts", () => {
+  const base = {
+    snapshot: { ...snapshot, state: { currentRevisions: { "issue:1": "r2" } } },
+    routes: [{ issueId: "1", sourceRevision: "r1", status: "complete", primary: "claude", fallback: "codex", artifactDigest: "a".repeat(64) }],
+    pulls: [],
+    labelSync: { wantedDigest: "f".repeat(64), liveDigest: "f".repeat(64) },
+  };
+  assert.deepEqual(planReconciliation(base), [{ kind: "retry_route", issueId: "1", sourceRevision: "r2" }]);
+  assert.throws(() => planReconciliation({ ...base, snapshot: { ...base.snapshot, state: {} } }), error => error?.code === "contract");
+  assert.throws(() => planReconciliation({ ...base, pulls: [{ prId: {}, headSha, merged: "false", mergeSha: null, obligations: [] }] }), error => error?.code === "contract");
+  const failed = {
+    ...base,
+    routes: [],
+    pulls: [{ prId: "2", headSha, merged: true, mergeSha: "c".repeat(40), obligations: [{ role: "docs-writer", status: "failed", artifactDigest: null }] }],
+  };
+  assert.deepEqual(planReconciliation(failed), [{ kind: "run_obligation", prId: "2", mergeSha: "c".repeat(40), role: "docs-writer" }]);
+  assert.throws(() => planReconciliation({ ...base, routes: [base.routes[0], base.routes[0]] }), error => error?.code === "contract");
+  assert.throws(() => planReconciliation({ ...base, routes: [{ ...base.routes[0], status: "complete", artifactDigest: null }] }), error => error?.code === "contract");
+  assert.throws(() => planReconciliation({ ...failed, pulls: [failed.pulls[0], failed.pulls[0]] }), error => error?.code === "contract");
+  assert.throws(
+    () => planReconciliation({ ...failed, pulls: [{ ...failed.pulls[0], obligations: [failed.pulls[0].obligations[0], failed.pulls[0].obligations[0]] }] }),
+    error => error?.code === "contract",
+  );
 });

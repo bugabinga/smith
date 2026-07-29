@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
+import { Readable } from "node:stream";
 import test from "node:test";
 import { digestJson } from "../core.mjs";
-import { run } from "../main.mjs";
+import { execute, readBounded, run } from "../main.mjs";
 
 const controlSha = "a".repeat(40);
 const headSha = "b".repeat(40);
@@ -79,6 +80,8 @@ test("reduce accepts an explicit policy and stamped assessments", async () => {
   const result = await invoke(["reduce"], JSON.stringify({ snapshot, rolePolicy, assessments: [assessment] }));
   assert.equal(result.code, 0);
   assert.equal(JSON.parse(result.out).status, "artifact");
+  const unknown = await invoke(["reduce"], JSON.stringify({ snapshot, rolePolicy, assessments: [assessment], surprise: true }));
+  assert.equal(unknown.code, 6);
 });
 
 test("reconcile accepts normalized state", async () => {
@@ -111,4 +114,46 @@ test("errors use stable exit classes and sanitized JSON", async () => {
   assert.equal(invalidAssessment.code, 6);
   const unsupported = await invoke(["explode"], "{}");
   assert.equal(unsupported.code, 2);
+  const unknownRecord = await invoke(["validate", "banana"], "{}");
+  assert.equal(unknownRecord.code, 2);
+  const malformedArtifact = await invoke(["reduce"], "{");
+  assert.equal(malformedArtifact.code, 6);
+});
+
+test("provider failure and pending fallback use provider exit status", async () => {
+  const unavailable = { ...assessment, outcome: "unable" };
+  const result = await invoke(["reduce"], JSON.stringify({ snapshot, rolePolicy, assessments: [unavailable] }));
+  assert.equal(result.code, 4);
+  assert.equal(JSON.parse(result.out).status, "fallback");
+});
+
+test("executable path sanitizes oversized stdin", async () => {
+  let err = "";
+  const code = await execute({
+    argv: ["validate", "snapshot"],
+    stdin: Readable.from([Buffer.alloc(262145)]),
+    stdout: { write() {} },
+    stderr: { write: value => { err += value; } },
+    readFixture: async () => "",
+  });
+  assert.equal(code, 2);
+  assert.equal(JSON.parse(err).error, "input");
+
+  err = "";
+  const artifactCode = await execute({
+    argv: ["reduce"],
+    stdin: Readable.from([Buffer.alloc(262145)]),
+    stdout: { write() {} },
+    stderr: { write: value => { err += value; } },
+    readFixture: async () => "",
+  });
+  assert.equal(artifactCode, 6);
+});
+
+test("stdin reader stops at the transport ceiling", async () => {
+  await assert.rejects(
+    () => readBounded(Readable.from([Buffer.alloc(262144), Buffer.from("x")])),
+    error => error?.code === "input",
+  );
+  assert.equal(await readBounded(Readable.from(["{}"])), "{}");
 });

@@ -40,6 +40,7 @@ test("single role requires distinct primary and fallback", () => {
   };
   assert.equal(defineRole(single).primary, "codex");
   assert.throws(() => defineRole({ ...single, fallback: "codex" }), error => error?.code === "role");
+  assert.throws(() => defineRole({ ...single, fallback: null }), error => error?.code === "role");
 });
 
 test("role policy rejects implicit or unsorted authority", () => {
