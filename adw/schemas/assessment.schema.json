@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "smith:adw:assessment:v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "controlSha", "role", "provider", "model", "idempotencyKey", "snapshotDigest", "cliVersion", "run", "outcome", "payload", "payloadDigest", "patch", "startedAt", "completedAt"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "controlSha": { "$ref": "#/$defs/sha" },
+    "role": { "$ref": "#/$defs/text" },
+    "provider": { "enum": ["claude", "codex"] },
+    "model": { "$ref": "#/$defs/text" },
+    "idempotencyKey": { "$ref": "#/$defs/text" },
+    "snapshotDigest": { "$ref": "#/$defs/digest" },
+    "cliVersion": { "$ref": "#/$defs/text" },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "job", "attempt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/text" },
+        "job": { "$ref": "#/$defs/text" },
+        "attempt": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "outcome": { "enum": ["positive", "negative", "noop", "unable"] },
+    "payload": { "type": "object" },
+    "payloadDigest": { "$ref": "#/$defs/digest" },
+    "patch": { "anyOf": [{ "type": "null" }, { "$ref": "#/$defs/patch" }] },
+    "startedAt": { "$ref": "#/$defs/text" },
+    "completedAt": { "$ref": "#/$defs/text" }
+  },
+  "$defs": {
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "text": { "type": "string", "minLength": 1, "maxLength": 4096 },
+    "patch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baseSha", "digest", "size", "files"],
+      "properties": {
+        "baseSha": { "$ref": "#/$defs/sha" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "size": { "type": "integer", "minimum": 0, "maximum": 1048576 },
+        "files": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "kind", "oldMode", "newMode"],
+            "properties": {
+              "path": { "$ref": "#/$defs/text" },
+              "kind": { "enum": ["regular", "binary", "symlink", "submodule", "device"] },
+              "oldMode": { "enum": ["absent", "100644", "100755"] },
+              "newMode": { "enum": ["absent", "100644", "100755"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}
