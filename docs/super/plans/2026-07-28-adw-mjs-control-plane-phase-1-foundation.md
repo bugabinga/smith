@@ -1,6 +1,6 @@
 # ADW MJS Control-Plane Foundation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use /skill:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use /skill:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Build the inert, dependency-free MJS contracts and pure policy core required by later live adapters.
 
@@ -33,7 +33,7 @@
 - Create: `adw/core.mjs`
 - Test: `adw/test/core.test.mjs`
 
-- [ ] **Step 1: Write failing canonicalization tests**
+- [x] **Step 1: Write failing canonicalization tests**
 
 Add tests importing `AdwError`, `canonicalBytes`, `digestBytes`, and `digestJson`. Assert that object key order does not change bytes/digest, array order does, and unsupported values throw `AdwError` with code `contract`.
 
@@ -67,13 +67,13 @@ test("canonical JSON rejects values outside the transport domain", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test and verify failure**
+- [x] **Step 2: Run the test and verify failure**
 
 Run: `node --test adw/test/core.test.mjs`
 
 Expected: FAIL because `adw/core.mjs` does not exist.
 
-- [ ] **Step 3: Implement canonicalization and failures**
+- [x] **Step 3: Implement canonicalization and failures**
 
 Implement:
 
@@ -108,13 +108,13 @@ export const digestJson = value => digestBytes(canonicalBytes(value));
 
 Reject sparse arrays and object properties whose value is `undefined` before recursion so JSON cannot silently erase data.
 
-- [ ] **Step 4: Run the focused test**
+- [x] **Step 4: Run the focused test**
 
 Run: `node --test adw/test/core.test.mjs`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add adw/core.mjs adw/test/core.test.mjs
@@ -132,7 +132,7 @@ git commit -S -m "Add canonical ADW transport values"
 - Create: `adw/schemas/verification.schema.json`
 - Modify: `adw/test/core.test.mjs`
 
-- [ ] **Step 1: Write failing contract tests**
+- [x] **Step 1: Write failing contract tests**
 
 Add table tests for `validateSnapshot`, `validateAssessment`, `validateAssessmentArtifact`, `validateDecision`, and `validateVerification`. Use these valid shapes and then delete each required field to prove fail-closed behavior:
 
@@ -182,13 +182,13 @@ const verification = {
 
 Assert unknown top-level keys, wrong schema versions, non-hex SHAs/digests, duplicate assessment digests, unknown outcomes, and patch verification without `patchDigest`/`resultTree` fail with code `contract`.
 
-- [ ] **Step 2: Run the test and verify failure**
+- [x] **Step 2: Run the test and verify failure**
 
 Run: `node --test adw/test/core.test.mjs`
 
 Expected: FAIL because validators are not exported.
 
-- [ ] **Step 3: Add exact object validators**
+- [x] **Step 3: Add exact object validators**
 
 Implement small helpers `expectObject`, `expectExactKeys`, `expectString`, `expectEnum`, `expectArray`, `expectSha`, and `expectDigest`. Export the five validators. Each returns a deeply frozen copy and never mutates input. `validateAssessmentArtifact({ assessment, patchBytes })` requires no bytes when `patch` is null and otherwise checks exact byte length and SHA-256 before returning the validated envelope. Permit only:
 
@@ -199,17 +199,17 @@ Implement small helpers `expectObject`, `expectExactKeys`, `expectString`, `expe
 
 Assessment `patch` is either `null` or `{ baseSha, digest, size, files }` and binds the optional `change.patch` sidecar before reduction. Require patch decisions to copy that metadata byte-for-byte; exact bytes travel only as the artifact sidecar. Require patch verification to carry the same digest plus `resultTree`; forbid patch fields on state records. Tests digest actual patch bytes and reject missing, substituted, oversized, or mismatched sidecars before verification.
 
-- [ ] **Step 4: Add matching static schemas**
+- [x] **Step 4: Add matching static schemas**
 
 Write draft-2020-12 schemas with `additionalProperties: false` at every control-plane object level, the exact required keys above, `schemaVersion: { "const": 1 }`, 40-hex SHA and 64-hex digest patterns, nonempty strings capped at 4 KiB, arrays capped at 100 entries, patch size capped at 1,048,576, patch files capped at 100 unique relative paths, and `if/then` branches for state versus patch. `snapshot.state` and `assessment.payload` are the two explicit opaque boundaries: they accept canonical JSON objects with role-specific keys and remain bounded by the 256 KiB whole-document check until Phase 3 supplies role schemas. Event, repository, revision, routing, run, patch, operation, and precondition records each receive `$defs`. Schemas constrain transport; semantic validators and canonical byte limits remain authoritative.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 Run: `node --test adw/test/core.test.mjs`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add adw/core.mjs adw/schemas adw/test/core.test.mjs
@@ -223,7 +223,7 @@ git commit -S -m "Define fail-closed ADW transport contracts"
 - Create: `adw/roles.mjs`
 - Test: `adw/test/roles.test.mjs`
 
-- [ ] **Step 1: Write failing policy-contract tests**
+- [x] **Step 1: Write failing policy-contract tests**
 
 Test `defineRole` with three local fixtures: Claude-primary single, Codex-primary single, and quorum. Exact input shape:
 
@@ -256,23 +256,23 @@ const patchPolicy = {
 
 `patch` is either `null` or the exact `patchPolicy` shape; prefixes/paths are sorted unique nonempty strings, and global core denials cannot be removed by this list. Assert deep freezing; exact keys; provider/mode consistency; 1–300 second timeouts; unique/sorted capabilities, fields, operations, outcomes, and required keys; operation allowlist; snapshot ≤256 KiB; patch ≤1 MiB/100 files; and rejection of unknown providers/operations. Do not define production role values in Phase 1: Phase 3 derives all canonical role records from current charters and parity fixtures rather than inventing policy here.
 
-- [ ] **Step 2: Run the test and verify failure**
+- [x] **Step 2: Run the test and verify failure**
 
 Run: `node --test adw/test/roles.test.mjs`
 
 Expected: FAIL because `adw/roles.mjs` does not exist.
 
-- [ ] **Step 3: Implement the role-policy boundary**
+- [x] **Step 3: Implement the role-policy boundary**
 
 Export frozen `PROVIDERS`, `OPERATIONS`, and `defineRole(input)`. `defineRole` validates the exact fixture shape above with `AdwError("role", message)`, returns a deep-frozen copy, and rejects production registry lookup because the registry is Phase 3 scope. No classes, registration API, default model, or implicit capability exists.
 
-- [ ] **Step 4: Run role tests**
+- [x] **Step 4: Run role tests**
 
 Run: `node --test adw/test/roles.test.mjs`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add adw/roles.mjs adw/test/roles.test.mjs
@@ -286,7 +286,7 @@ git commit -S -m "Define the ADW role-policy boundary"
 - Modify: `adw/core.mjs`
 - Modify: `adw/test/core.test.mjs`
 
-- [ ] **Step 1: Write failing reduction tests**
+- [x] **Step 1: Write failing reduction tests**
 
 Add `qualifyAssessment` and `reduceAssessments` tests for:
 
@@ -299,13 +299,13 @@ Add `qualifyAssessment` and `reduceAssessments` tests for:
 
 Reduction is an intermediate, not a forge decision: `{ status: "artifact", authoritative, selected: [assessmentDigest], patch }`, `{ status: "fallback", provider, reason }`, or `{ status: "terminal", reason }`. Single selects exactly one valid primary/fallback digest. Quorum requires one valid artifact from each configured provider and selects both digests sorted by provider; it preserves outcomes/payloads for Phase 3 and does not pretend unlike reviewer payloads should hash equally. Advisory selects any one valid artifact with `authoritative: false`, otherwise returns terminal `advisory_unavailable`. `patch` is `null` or exact metadata copied from selected envelopes; zero/one distinct patch digest is accepted and two distinct patch digests are terminal `patch_conflict`. Phase 3 maps role payloads to decisions. Terminal reasons are sanitized enums and never copy provider stderr/auth text.
 
-- [ ] **Step 2: Run the focused test and verify failure**
+- [x] **Step 2: Run the focused test and verify failure**
 
 Run: `node --test --test-name-pattern='assessment|reduce' adw/test/core.test.mjs`
 
 Expected: FAIL because reduction exports are missing.
 
-- [ ] **Step 3: Implement qualification and reduction**
+- [x] **Step 3: Implement qualification and reduction**
 
 Export `qualifyAssessment({ snapshot, rolePolicy, provider, assessment })` returning one of:
 
@@ -317,13 +317,13 @@ Export `qualifyAssessment({ snapshot, rolePolicy, provider, assessment })` retur
 
 Export `reduceAssessments({ snapshot, rolePolicy, assessments })`. Enforce exact provider membership and one envelope per provider, then apply the single/quorum/advisory selection rules from Step 1. No outcome conflict or operation is synthesized in Phase 1. Carry selected assessment digests and exact patch metadata into the intermediate reduction.
 
-- [ ] **Step 4: Run focused and full core tests**
+- [x] **Step 4: Run focused and full core tests**
 
 Run: `node --test adw/test/core.test.mjs`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add adw/core.mjs adw/test/core.test.mjs
@@ -337,7 +337,7 @@ git commit -S -m "Reduce provider artifacts without widening trust"
 - Modify: `adw/core.mjs`
 - Modify: `adw/test/core.test.mjs`
 
-- [ ] **Step 1: Write failing transition-table tests**
+- [x] **Step 1: Write failing transition-table tests**
 
 Test pure exports with table-driven inputs:
 
@@ -365,23 +365,23 @@ Pass `trust` explicitly to `reduceRisk`, `reduceReviews`, and `mergeEligibility`
 
 Transition inputs are exact records: builder route `{ sourceRevision, headSha, status: "unarmed"|"primary"|"fallback"|"complete"|"blocked", primaryOutcome, fallbackOutcome }`; risk marker `{ headSha, findingDigest, status: "open"|"cleared", createdAt, clearedAt }`; merge state `{ headSha, labels, checks: [{ name, headSha, conclusion }], reviews: [reviewEvidence], riskMarker, timeline, trust, autoMergeAllowed }`. `nextBuilderRoute` returns the same route shape with one transition; `reduceReviews` returns `{ correctness, security, conflict, reasons }`; `mergeEligibility` returns `{ eligible, reasons }`. Every record rejects unknown keys.
 
-- [ ] **Step 2: Run the focused test and verify failure**
+- [x] **Step 2: Run the focused test and verify failure**
 
 Run: `node --test --test-name-pattern='hold|route|review|risk|merge' adw/test/core.test.mjs`
 
 Expected: FAIL because transition exports are missing.
 
-- [ ] **Step 3: Implement minimal pure transition functions**
+- [x] **Step 3: Implement minimal pure transition functions**
 
 Use the exact trust/evidence records above, closed enum strings, and frozen outputs. `mergeEligibility` returns `{ eligible, reasons }` with sorted unique reason codes, never a bare boolean. `reduceRisk({ marker, timeline, headSha, trust })` returns `{ status: "open" | "cleared", marker }` and never treats label absence alone as owner clearance. `reduceReviews({ evidence, headSha, trust, protectedInput })` rejects stale/non-App/non-authoritative evidence before conflict reduction.
 
-- [ ] **Step 4: Run core tests**
+- [x] **Step 4: Run core tests**
 
 Run: `node --test adw/test/core.test.mjs`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add adw/core.mjs adw/test/core.test.mjs
@@ -396,7 +396,7 @@ git commit -S -m "Make ADW gate transitions executable"
 - Modify: `adw/test/core.test.mjs`
 - Create: `adw/test/fixtures/reconcile.json`
 
-- [ ] **Step 1: Write failing operation/reconciliation tests**
+- [x] **Step 1: Write failing operation/reconciliation tests**
 
 Test `validateOperation`, `idempotencyKey`, `planReconciliation`, and `validatePatchManifest` against this exact field table (all records also require `type`):
 
@@ -426,23 +426,23 @@ Question-mark fields may be omitted; all others are required. Every object rejec
 
 The reconciliation request is exactly `{ snapshot, routes, pulls, labelSync }`. Routes contain `{ issueId, sourceRevision, status, primary, fallback, artifactDigest }`. Pulls contain `{ prId, headSha, merged, mergeSha, obligations: [{ role, status, artifactDigest }] }`. `labelSync` is `{ wantedDigest, liveDigest }`. Output intents are exactly `{ kind: "retry_route", issueId, sourceRevision }`, `{ kind: "run_obligation", prId, mergeSha, role }`, or `{ kind: "sync_labels", definitionsDigest }`, sorted by canonical bytes and deduplicated. The fixture contains one stale route, one merged PR with one missing normalized obligation, and one complete PR; expected intents include only the first two plus label sync only when the two digests differ. Phase 3 derives obligations from changed paths; Phase 1 only plans already-normalized obligations.
 
-- [ ] **Step 2: Run the focused test and verify failure**
+- [x] **Step 2: Run the focused test and verify failure**
 
 Run: `node --test --test-name-pattern='operation|idempotency|reconcile|patch' adw/test/core.test.mjs`
 
 Expected: FAIL because exports are missing.
 
-- [ ] **Step 3: Implement the closed operation validators and planners**
+- [x] **Step 3: Implement the closed operation validators and planners**
 
 `validateOperation(operation, rolePolicy)` checks exact fields and role allowlist. `idempotencyKey(kind, fields)` canonicalizes only the semantic fields named in the design. `planReconciliation(state)` is bounded by already-normalized input and emits sorted operation intents without I/O. `validatePatchManifest(manifest, rolePolicy)` validates metadata only; actual unified-diff apply belongs to Phase 2 `vcs.mjs`.
 
-- [ ] **Step 4: Run core tests**
+- [x] **Step 4: Run core tests**
 
 Run: `node --test adw/test/core.test.mjs`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add adw/core.mjs adw/test/core.test.mjs adw/test/fixtures/reconcile.json
@@ -459,7 +459,7 @@ git commit -S -m "Plan retry-safe ADW reconciliation"
 - Create: `adw/test/fixtures/reviewer-assessments.json`
 - Create: `adw/test/fixtures/reviewer-policy.json`
 
-- [ ] **Step 1: Write failing CLI tests**
+- [x] **Step 1: Write failing CLI tests**
 
 Import `run` and inject `{ argv, stdin, stdout, stderr, readFixture }`. Test:
 
@@ -471,23 +471,23 @@ await run({ argv: ["reconcile"], stdin: JSON.stringify({ snapshot, routes, pulls
 
 `run` returns the numeric exit code instead of assigning `process.exitCode`; the executable shim assigns it. Successful stdout is canonical JSON plus newline and stderr is empty. Error mapping is exact: unsupported command/record or invalid snapshot input → `2`; stale → `3`; provider unavailable → `4`; forge → `5`; invalid assessment/decision/verification/reduction artifact → `6`; verification → `7`. Emit `{ "error": code, "message": sanitizedMessage }` on stderr. No environment, network, subprocess, forge, or filesystem access exists except injected `readFixture(name)`, which accepts only a basename present under `adw/test/fixtures/`.
 
-- [ ] **Step 2: Run the CLI test and verify failure**
+- [x] **Step 2: Run the CLI test and verify failure**
 
 Run: `node --test adw/test/main.test.mjs`
 
 Expected: FAIL because `adw/main.mjs` does not exist.
 
-- [ ] **Step 3: Implement the minimal CLI**
+- [x] **Step 3: Implement the minimal CLI**
 
 Export `run(io)` and execute it only when `process.argv[1]` exists and `import.meta.url === pathToFileURL(process.argv[1]).href`. Parse exactly `validate <snapshot|assessment|decision|verification>`, `reduce`, and `reconcile`; optional `--fixture <basename>` replaces stdin through injected/local fixture reading. Read at most 256 KiB, validate the exact request shapes above, map errors exactly as Step 1 defines, and emit one canonical sanitized error line.
 
-- [ ] **Step 4: Run CLI and all Node tests**
+- [x] **Step 4: Run CLI and all Node tests**
 
 Run: `node --test adw/test/*.test.mjs`
 
 Expected: PASS with no skipped tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add adw/main.mjs adw/test/main.test.mjs adw/test/fixtures
@@ -501,7 +501,7 @@ git commit -S -m "Expose offline ADW contract commands"
 - Modify: `.github/workflows/adw-selftest.yml`
 - Modify: `docs/super/plans/2026-07-28-adw-mjs-control-plane-phase-1-foundation.md`
 
-- [ ] **Step 1: Extend self-test triggers and job**
+- [x] **Step 1: Extend self-test triggers and job**
 
 Add `adw/**` to pull-request/push paths and add this step after checkout:
 
@@ -512,7 +512,7 @@ Add `adw/**` to pull-request/push paths and add this step after checkout:
 
 Keep all three legacy shell tests unchanged because legacy remains authoritative.
 
-- [ ] **Step 2: Run phase checks**
+- [x] **Step 2: Run phase checks**
 
 Run:
 
@@ -526,19 +526,23 @@ git diff --check
 
 Expected: every test exits `0`; Node reports no skipped/cancelled/todo tests; `git diff --check` prints nothing.
 
-- [ ] **Step 3: Inspect phase boundary**
+- [x] **Step 3: Inspect phase boundary**
 
 Run: `git grep -nE '(^|[^[:alnum:]_])(gh|git|claude|codex)( |$)' -- adw ':!adw/test'`
 
 Expected: no output. Confirm no package manifest/lockfile exists under `adw/`, no workflow except self-test references `adw/main.mjs`, and `git status --short` lists only planned Phase 1 files.
 
-- [ ] **Step 4: Record execution evidence**
+- [x] **Step 4: Record execution evidence**
 
 Mark completed checkboxes and append a short `## Result` section containing the exact test counts and commit range. Do not change roadmap scope or claim live-adapter parity.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add .github/workflows/adw-selftest.yml docs/super/plans/2026-07-28-adw-mjs-control-plane-phase-1-foundation.md
 git commit -S -m "Gate the inert MJS control-plane foundation"
 ```
+
+## Result
+
+Implemented in `01a27d3..2b2ef82` plus the final self-test commit. Offline MJS coverage: 31 tests, 31 passed, 0 failed/skipped/cancelled/todo. All three legacy ADW shell suites and `git diff --check` passed; live adapters and production authority remain deferred to Phase 2+.
