@@ -34,9 +34,7 @@
       "properties": {
         "verdict": {
           "enum": [
-            "proved",
-            "disproved",
-            "inconclusive"
+            "proved"
           ]
         },
         "summary": {
@@ -118,6 +116,66 @@
               }
             }
           ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "summary",
+        "claim",
+        "patch"
+      ],
+      "properties": {
+        "verdict": {
+          "enum": [
+            "disproved"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "claim": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "patch": {
+          "type": "null"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "summary",
+        "claim",
+        "patch"
+      ],
+      "properties": {
+        "verdict": {
+          "enum": [
+            "inconclusive"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "claim": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "patch": {
+          "type": "null"
         }
       }
     }

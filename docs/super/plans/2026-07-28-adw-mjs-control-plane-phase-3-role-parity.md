@@ -1,6 +1,6 @@
 # ADW Role Parity and Reconciliation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use /skill:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use /skill:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Encode every invariant-permitted ADW role as validated data and pure reducers, then prove legacy marker/state reconciliation through offline end-to-end scenarios.
 
@@ -56,11 +56,11 @@
 - Modify: `adw/roles.mjs`
 - Modify: `adw/test/roles.test.mjs`
 
-- [ ] Write failing tests asserting the exact matrix above, charter path existence, model/effort/timeout, required capabilities/snapshot fields, allowed operations, fallback restrictions, global patch denials, deterministic-role separation, and absence of release-manager/Projects.
-- [ ] Run `node --test adw/test/roles.test.mjs`; expect missing registry exports.
-- [ ] Export `role(name)`, `listRoles()`, `deterministicRole(name)`, and `listDeterministicRoles()` over deeply frozen data created through `defineRole`; unknown names throw `AdwError("role", ...)`.
-- [ ] Keep one matrix object; no classes, inheritance, registry mutation, default models, or duplicate role files.
-- [ ] Run role tests and commit: `Encode the production ADW role matrix`.
+- [x] Write failing tests asserting the exact matrix above, charter path existence, model/effort/timeout, required capabilities/snapshot fields, allowed operations, fallback restrictions, global patch denials, deterministic-role separation, and absence of release-manager/Projects.
+- [x] Run `node --test adw/test/roles.test.mjs`; expect missing registry exports.
+- [x] Export `role(name)`, `listRoles()`, `deterministicRole(name)`, and `listDeterministicRoles()` over deeply frozen data created through `defineRole`; unknown names throw `AdwError("role", ...)`.
+- [x] Keep one matrix object; no classes, inheritance, registry mutation, default models, or duplicate role files.
+- [x] Run role tests and commit: `Encode the production ADW role matrix`.
 
 ### Task 2: Exact role payload contracts
 
@@ -78,25 +78,26 @@
 - Create: `adw/schemas/role-payloads/alert.schema.json`
 - Modify: `adw/test/roles.test.mjs`
 
-- [ ] Write failing table tests for `validateRolePayload(roleName, payload)`: exact keys, closed verdict enums, bounded text/findings/labels, no unknown fields, explicit no-op reason, steering `comment|noop`, patch metadata only for patch roles, pioneer `proved|disproved|inconclusive`, review `approve|reject` plus findings/risk, and malformed/oversized rejection.
-- [ ] Define one exact shape per payload family. Findings are `{ severity: "low|medium|high", path, line, message }`; no arbitrary commands or forge operation objects appear in provider payloads.
-- [ ] Generate matching draft-2020-12 schemas with nested `additionalProperties:false`; each role record points at one schema path and validator family.
-- [ ] Run role/schema tests and commit: `Close every ADW role artifact contract`.
+- [x] Write failing table tests for `validateRolePayload(roleName, payload)`: exact keys, closed verdict enums, bounded text/findings/labels, no unknown fields, explicit no-op reason, steering `comment|noop`, patch metadata only for patch roles, pioneer `proved|disproved|inconclusive`, review `approve|reject` plus findings/risk, and malformed/oversized rejection.
+- [x] Define one exact shape per payload family. Findings are `{ severity: "low|medium|high", path, line, message }`; no arbitrary commands or forge operation objects appear in provider payloads.
+- [x] Generate matching draft-2020-12 schemas with nested `additionalProperties:false`; each role record points at one schema path and validator family.
+- [x] Run role/schema tests and commit: `Close every ADW role artifact contract`.
 
 ### Task 3: Role artifacts to closed operations
 
 **Files:**
 
+- Modify: `adw/roles.mjs`
 - Modify: `adw/core.mjs`
-- Modify: `adw/test/core.test.mjs`
+- Modify: `adw/test/roles.test.mjs`
 
-- [ ] Write failing tests for `reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessments })` covering every payload verdict and operation mapping.
-- [ ] Require selected assessment digests, exact current resource revisions, holds, and role operations before mapping.
-- [ ] Map owner-authenticated steering to comment/no-op; map triage/planning/maintenance/alert payloads to deterministic issue/comment/label/milestone/check/rerun/drift operations; map patch payloads to branch/PR/update operations plus bound patch metadata; map reviews to current-head App evidence/check/labels; map no-op to explicit `noop` only.
-- [ ] Encode pioneer exactly: `proved` closes the linked work-order only when its closing PR artifact qualifies; `disproved` leaves it open, adds `needs:spec`, and records the falsified claim; `inconclusive` leaves it open/retryable without proof labels or queue suppression.
-- [ ] Negative/security-high decisions dominate; protected fallback can report findings but cannot emit approval labels/check success.
-- [ ] Validate every emitted operation with `validateOperation`, then return a `validateDecision` record.
-- [ ] Run core tests and commit: `Reduce role artifacts into closed operations`.
+- [x] Write failing tests for `reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessments })` covering every payload verdict and operation mapping.
+- [x] Require selected assessment digests, exact current resource revisions, holds, and role operations before mapping.
+- [x] Map owner-authenticated steering to comment/no-op; map triage/planning/maintenance/alert payloads to deterministic issue/comment/label/milestone/check/rerun/drift operations; map patch payloads to branch/PR/update operations plus bound patch metadata; map reviews to current-head App evidence/check/labels; map no-op to explicit `noop` only.
+- [x] Encode pioneer exactly: `proved` closes the linked work-order only when its closing PR artifact qualifies; `disproved` leaves it open, adds `needs:spec`, and records the falsified claim; `inconclusive` leaves it open/retryable without proof labels or queue suppression.
+- [x] Negative/security-high decisions dominate; protected fallback can report findings but cannot emit approval labels/check success.
+- [x] Validate every emitted operation with `validateOperation`, then return a `validateDecision` record.
+- [x] Run core tests and commit: `Reduce role artifacts into closed operations`.
 
 ### Task 4: Legacy markers and bounded reconciliation
 

@@ -677,7 +677,8 @@
                 "advisory_unavailable",
                 "patch_conflict",
                 "stale",
-                "verification_failed"
+                "verification_failed",
+                "held"
               ]
             }
           }

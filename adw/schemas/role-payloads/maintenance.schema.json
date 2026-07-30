@@ -48,18 +48,11 @@
             "type": "object",
             "additionalProperties": false,
             "required": [
-              "verdict",
+              "kind",
               "entityId",
               "reason"
             ],
             "properties": {
-              "verdict": {
-                "enum": [
-                  "retry",
-                  "hold",
-                  "report"
-                ]
-              },
               "entityId": {
                 "type": "string",
                 "minLength": 1,
@@ -69,6 +62,13 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 16384
+              },
+              "kind": {
+                "enum": [
+                  "retry",
+                  "hold",
+                  "report"
+                ]
               }
             }
           }

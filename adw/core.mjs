@@ -503,7 +503,7 @@ const NOOP_REASONS = new Set(["already_complete", "not_applicable", "unchanged"]
 const TERMINAL_REASONS = new Set([
   "contract", "fallback_forbidden", "provider_unavailable", "providers_unavailable",
   "quorum_incomplete", "advisory_unavailable", "patch_conflict", "stale",
-  "verification_failed",
+  "verification_failed", "held",
 ]);
 
 function validateOperationShape(operation) {

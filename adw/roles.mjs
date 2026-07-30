@@ -1,4 +1,7 @@
-import { AdwError, canonicalBytes, validatePatchManifest } from "./core.mjs";
+import {
+  AdwError, canonicalBytes, digestJson, holdReasons, reduceAssessments, validateAssessment,
+  validateDecision, validateOperation, validatePatchManifest, validateSnapshot,
+} from "./core.mjs";
 
 export const PROVIDERS = Object.freeze(["claude", "codex"]);
 export const OPERATIONS = Object.freeze([
@@ -246,12 +249,14 @@ export function validateRolePayload(name, value) {
     if (!new Set(["proved", "disproved", "inconclusive"]).has(value.verdict)) payloadFail("pioneer verdict is invalid");
     payloadText(value.summary, "summary");
     payloadText(value.claim, "claim");
+    if (value.verdict !== "proved" && value.patch !== null) payloadFail("only proved pioneer artifacts may patch");
     if (value.patch !== null) {
       try { validatePatchManifest(value.patch, policy); } catch { payloadFail("pioneer patch is invalid"); }
     }
   } else if (family === "review") {
     payloadObject(value, ["verdict", "risk", "findings"]);
     if (!new Set(["approve", "reject"]).has(value.verdict) || !new Set(["none", "high"]).has(value.risk)) payloadFail("review verdict is invalid");
+    if (value.verdict === "approve" && value.risk === "high") payloadFail("high risk cannot approve");
     validateFindings(value.findings);
   } else if (family === "maintenance") {
     payloadObject(value, ["verdict", "summary", "actions"]);
@@ -278,6 +283,133 @@ export function validateRolePayload(name, value) {
   }
   if (canonicalBytes(value).length > 262_144) payloadFail("payload is oversized");
   return deepFreeze(structuredClone(value));
+}
+
+function operationMarker(assessmentDigest) {
+  return `smith:adw-artifact/v1:${assessmentDigest}`;
+}
+
+function reductionState(snapshot) {
+  const state = snapshot.state;
+  if (typeof state.entityId !== "string" || state.entityId.length === 0) payloadFail("snapshot entity is required");
+  if (state.labels !== undefined && !Array.isArray(state.labels)) payloadFail("snapshot labels are invalid");
+  return state;
+}
+
+function semanticOutcome(verdict) {
+  if (verdict === "noop") return "noop";
+  if (new Set(["blocked", "disproved", "inconclusive", "reject", "risky"]).has(verdict)) return "negative";
+  return "positive";
+}
+
+export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessments }) {
+  validateSnapshot(snapshot);
+  const canonicalPolicy = role(rolePolicy?.name);
+  if (digestJson(rolePolicy) !== digestJson(canonicalPolicy)) payloadFail("role policy is not canonical");
+  if (snapshot.routing.role !== rolePolicy.name || snapshot.routing.mode !== rolePolicy.mode || snapshot.routing.primary !== rolePolicy.primary) payloadFail("snapshot route does not match policy");
+  if (!reduction || reduction.status !== "artifact" || reduction.authoritative !== true || !Array.isArray(reduction.selected) || reduction.selected.length === 0) payloadFail("reduction is not authoritative");
+  if (!Array.isArray(assessments)) payloadFail("assessments are invalid");
+  const qualified = reduceAssessments({ snapshot, rolePolicy, assessments });
+  if (digestJson(qualified) !== digestJson(reduction)) payloadFail("reduction is not qualified from supplied artifacts");
+  const indexed = new Map();
+  for (const raw of assessments) {
+    const assessment = validateAssessment(raw?.assessment ?? raw);
+    indexed.set(digestJson(assessment), assessment);
+  }
+  const selected = reduction.selected.map(item => {
+    const assessment = indexed.get(item);
+    if (!assessment || assessment.controlSha !== snapshot.controlSha || assessment.snapshotDigest !== digestJson(snapshot) || assessment.role !== rolePolicy.name) payloadFail("selected assessment is invalid");
+    return assessment;
+  });
+  const assessment = selected[0];
+  const payload = validateRolePayload(rolePolicy.name, assessment.payload);
+  if (assessment.outcome !== semanticOutcome(payload.verdict)) payloadFail("assessment outcome contradicts payload");
+  if (rolePolicy.payloadFamily === "change" && (payload.verdict === "patch") !== (assessment.patch !== null)) payloadFail("change patch presence contradicts verdict");
+  const patchVerdict = (rolePolicy.payloadFamily === "change" && payload.verdict === "patch") || (rolePolicy.payloadFamily === "pioneer" && payload.verdict === "proved" && payload.patch !== null);
+  if ((assessment.patch !== null) !== patchVerdict) payloadFail("assessment patch contradicts payload");
+  if (digestJson(assessment.patch) !== digestJson(reduction.patch)) payloadFail("reduction patch does not match assessment");
+  if (payload.patch !== undefined && digestJson(payload.patch) !== digestJson(assessment.patch)) payloadFail("payload patch does not match assessment");
+  const state = reductionState(snapshot);
+  if (state.entityId !== snapshot.event.entityId) payloadFail("snapshot entity does not match event");
+  const marker = operationMarker(reduction.selected[0]);
+  if (assessment.patch && !snapshot.revisions.some(revision => revision.token === assessment.patch.baseSha)) payloadFail("patch base is not a snapshot revision");
+  let kind = assessment.patch ? "patch" : "state";
+  let operations = [];
+  if (payload.verdict === "noop") {
+    operations = [{ type: "noop", reason: "not_applicable" }];
+  } else if (holdReasons(state.labels ?? []).length > 0) {
+    kind = "terminal";
+    operations = [{ type: "terminal", reason: "held" }];
+  } else if (rolePolicy.payloadFamily === "steering") {
+    if (state.ownerAuthenticated !== true) payloadFail("steering actor is not owner-authenticated");
+    operations = [{ type: "comment", entityId: state.entityId, body: payload.body, marker }];
+  } else if (rolePolicy.payloadFamily === "triage") {
+    const required = { accept: "ready", needs_info: "needs:info", needs_spec: "needs:spec" }[payload.verdict];
+    operations = [
+      { type: "comment", entityId: state.entityId, body: payload.body, marker },
+      ...[...new Set([...payload.labels, required])].map(label => ({ type: "add_label", entityId: state.entityId, label })),
+    ];
+  } else if (rolePolicy.payloadFamily === "plan" || rolePolicy.payloadFamily === "survey") {
+    operations = payload.issues.map(issue => ({ type: "create_issue", ...issue, marker }));
+    if (payload.verdict === "blocked") operations.push({ type: "add_label", entityId: state.entityId, label: "blocked" });
+    operations.push({ type: "comment", entityId: state.entityId, body: payload.summary, marker });
+  } else if (rolePolicy.payloadFamily === "change") {
+    if (payload.verdict === "blocked") {
+      kind = "state";
+      operations = [{ type: "comment", entityId: state.entityId, body: payload.reason, marker }, { type: "add_label", entityId: state.entityId, label: "blocked" }];
+    } else if (rolePolicy.name === "reviser") {
+      operations = [{ type: "update_pr", prId: state.entityId, body: payload.summary }];
+    } else {
+      for (const key of ["headBranch", "baseBranch", "title", "body"]) payloadText(state[key], `snapshot ${key}`);
+      operations = [{ type: "create_pr", head: state.headBranch, base: state.baseBranch, title: state.title, body: state.body, marker }];
+    }
+  } else if (rolePolicy.payloadFamily === "pioneer") {
+    if (payload.verdict === "proved") {
+      if (state.closingArtifactQualifies === true) operations = [{ type: "close_issue", issueId: state.entityId, reason: "completed" }];
+      else if (assessment.patch) {
+        for (const key of ["headBranch", "baseBranch", "title", "body"]) payloadText(state[key], `snapshot ${key}`);
+        operations = [{ type: "create_pr", head: state.headBranch, base: state.baseBranch, title: state.title, body: state.body, marker }];
+      } else payloadFail("proof lacks a qualifying artifact");
+    } else if (payload.verdict === "disproved") {
+      operations = [{ type: "add_label", entityId: state.entityId, label: "needs:spec" }, { type: "comment", entityId: state.entityId, body: payload.summary, marker }];
+    } else operations = [{ type: "comment", entityId: state.entityId, body: payload.summary, marker }];
+  } else if (rolePolicy.payloadFamily === "review") {
+    if (!snapshot.revisions.some(revision => revision.token === state.headSha)) payloadFail("review head is not a snapshot revision");
+    const security = rolePolicy.name === "security-reviewer";
+    const approval = security ? "security-cleared" : "reviewed";
+    const rejected = payload.verdict === "reject" || payload.risk === "high";
+    operations = [
+      { type: "publish_check", headSha: state.headSha, name: rolePolicy.name, conclusion: rejected ? "failure" : "success", summary: rejected ? "rejected" : "approved", externalId: reduction.selected[0] },
+      rejected ? { type: "add_label", entityId: state.entityId, label: "changes-requested" } : { type: "add_label", entityId: state.entityId, label: approval },
+    ];
+    if (payload.risk === "high") operations.push({ type: "add_label", entityId: state.entityId, label: "risk:high" });
+    if (rejected) operations.push({ type: "remove_label", entityId: state.entityId, label: approval });
+    else operations.push({ type: "remove_label", entityId: state.entityId, label: "changes-requested" });
+  } else if (rolePolicy.payloadFamily === "maintenance") {
+    if (!Array.isArray(state.actionTargets) || payload.actions.some(action => !state.actionTargets.includes(action.entityId))) payloadFail("maintenance target is outside snapshot");
+    operations = payload.actions.map(action => action.kind === "retry"
+      ? { type: "rerun_check", runId: action.entityId }
+      : action.kind === "hold"
+        ? { type: "add_label", entityId: action.entityId, label: "hold" }
+        : { type: "create_issue", title: action.reason, body: payload.summary, labels: ["adw:drift"], marker });
+  } else if (rolePolicy.payloadFamily === "dependency") {
+    operations = [{ type: "comment", entityId: state.entityId, body: payload.summary, marker }];
+    if (payload.verdict === "risky") operations.push({ type: "add_label", entityId: state.entityId, label: "needs:spec" });
+  } else if (rolePolicy.payloadFamily === "alert") {
+    operations = payload.verdict === "issue"
+      ? [{ type: "create_issue", ...payload.issue, marker }]
+      : [{ type: "comment", entityId: state.entityId, body: payload.summary, marker }];
+  } else payloadFail("role payload family cannot be reduced");
+  operations = operations.map(operation => validateOperation(operation, rolePolicy));
+  return validateDecision({
+    schemaVersion: 1,
+    controlSha: snapshot.controlSha,
+    snapshotDigest: digestJson(snapshot),
+    assessmentDigests: [...reduction.selected],
+    kind,
+    operations,
+    patch: kind === "patch" ? assessment.patch : null,
+  });
 }
 
 export function role(name) {
