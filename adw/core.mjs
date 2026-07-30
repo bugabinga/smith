@@ -318,7 +318,7 @@ export function reduceAssessments({ snapshot, rolePolicy, assessments }) {
   });
 }
 
-const HOLD_LABELS = new Set(["hold", "needs:owner", "needs:spec", "needs:security", "risk:high"]);
+const HOLD_LABELS = new Set(["hold", "needs:owner", "needs:security", "risk:high", "blocked", "changes-requested", "needs:breakdown", "needs:info", "needs:spec", "needs:prototype"]);
 
 export function holdReasons(labels) {
   array(labels, "labels");
@@ -584,18 +584,87 @@ export function validatePatchManifest(manifest, rolePolicy) {
   return copy(manifest);
 }
 
+function canonicalInstant(value, name) {
+  string(value, name);
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) || new Date(value).toISOString() !== value) fail(`${name} must be a canonical UTC instant`);
+  return value;
+}
+
+function markerRecord(comment, kind, key, value) {
+  return { kind, key, commentId: comment.id, createdAt: comment.createdAt, value };
+}
+
+function latestMarkers(records) {
+  const groups = new Map();
+  for (const record of records) {
+    const id = `${record.kind}:${record.key}`;
+    const previous = groups.get(id);
+    if (!previous || record.createdAt > previous.createdAt || (record.createdAt === previous.createdAt && record.commentId > previous.commentId)) groups.set(id, record);
+    if (previous && record.createdAt === previous.createdAt && digestJson(record.value) !== digestJson(previous.value)) fail("marker conflict at equal authority order");
+  }
+  return [...groups.values()].sort((a, b) => canonicalBytes(a).compare(canonicalBytes(b)));
+}
+
+export function parseLegacyMarkers({ comments, trust }) {
+  array(comments, "marker comments", 1000);
+  validateTrust(trust);
+  const records = [];
+  for (const comment of comments) {
+    exact(comment, ["id", "actorId", "createdAt", "body", "repositoryId", "entityId"], "marker comment");
+    for (const key of ["id", "actorId", "body", "repositoryId", "entityId"]) string(comment[key], `marker comment.${key}`, key === "body" ? 65_536 : 4096);
+    canonicalInstant(comment.createdAt, "marker comment.createdAt");
+    if (comment.actorId !== trust.appId) continue;
+    let match;
+    if ((match = /^<!-- smith:claude-attempt\/v1 issue=([1-9][0-9]*) branch=claude\/issue-\1 head=([0-9a-f]{40}) outcome=(success|failure|cancelled|skipped) -->$/.exec(comment.body))) {
+      records.push(markerRecord(comment, "attempt", match[1], { issueId: match[1], branch: `claude/issue-${match[1]}`, headSha: match[2], outcome: match[3] }));
+    } else if ((match = /^<!-- smith:builder-route\/v1 issue=([1-9][0-9]*) id=([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}) source=claude\/issue-\1 target=codex\/issue-\1 phase=(prepared|armed|completed|cancelled) -->$/.exec(comment.body))) {
+      records.push(markerRecord(comment, "route", match[1], { issueId: match[1], routeId: match[2], source: `claude/issue-${match[1]}`, target: `codex/issue-${match[1]}`, phase: match[3] }));
+    } else if ((match = /^(Review|Security review): ([0-9a-f]{40})\nVERDICT: (reviewed|changes-requested|security-cleared|risk-high)(?:\n|$)/.exec(comment.body))) {
+      const kind = match[1] === "Review" ? "correctness" : "security";
+      const allowed = kind === "correctness" ? new Set(["reviewed", "changes-requested"]) : new Set(["security-cleared", "risk-high"]);
+      if (allowed.has(match[3])) records.push(markerRecord(comment, "review", `${comment.repositoryId}:${comment.entityId}:${kind}:${match[2]}`, { repositoryId: comment.repositoryId, prId: comment.entityId, kind, headSha: match[2], conclusion: new Set(["reviewed", "security-cleared"]).has(match[3]) ? "approve" : "reject", actorId: trust.appId, provider: "claude", authoritative: true, artifactDigest: digestJson({ commentId: comment.id, body: comment.body }) }));
+    } else if ((match = /^<!-- smith:review-evidence\/v1 kind=(correctness|security) head=([0-9a-f]{40}) conclusion=(approve|reject) provider=(claude|codex) authoritative=(true|false) artifact=([0-9a-f]{64}) -->$/.exec(comment.body))) {
+      records.push(markerRecord(comment, "review", `${comment.repositoryId}:${comment.entityId}:${match[1]}:${match[2]}`, { repositoryId: comment.repositoryId, prId: comment.entityId, kind: match[1], headSha: match[2], conclusion: match[3], actorId: trust.appId, provider: match[4], authoritative: match[5] === "true", artifactDigest: match[6] }));
+    } else if ((match = /^<!-- smith:risk\/v1 head=([0-9a-f]{40}) finding=([0-9a-f]{64}) status=(open|cleared) created=([^ ]+) cleared=([^ ]+) -->$/.exec(comment.body))) {
+      if ((match[3] === "open" && match[5] !== "-") || (match[3] === "cleared" && match[5] === "-")) continue;
+      try { canonicalInstant(match[4], "risk createdAt"); if (match[5] !== "-") canonicalInstant(match[5], "risk clearedAt"); } catch { continue; }
+      records.push(markerRecord(comment, "risk", match[1], { headSha: match[1], findingDigest: match[2], status: match[3], createdAt: match[4], clearedAt: match[5] === "-" ? null : match[5] }));
+    } else if ((match = /^<!-- smith:jam\/v1 entity=([^ ]+) head=([0-9a-f]{40}) status=(open|cleared) artifact=([0-9a-f]{64}) -->$/.exec(comment.body))) {
+      records.push(markerRecord(comment, "jam", `${match[1]}:${match[2]}`, { entityId: match[1], headSha: match[2], status: match[3], artifactDigest: match[4] }));
+    } else if ((match = /^<!-- smith:merge-finalization\/v1 pr=([1-9][0-9]*) merge=([0-9a-f]{40}) role=([a-z][a-z0-9-]*) status=(complete|failed) artifact=([0-9a-f]{64}|-) -->$/.exec(comment.body))) {
+      if ((match[4] === "complete") !== (match[5] !== "-")) continue;
+      records.push(markerRecord(comment, "finalization", `${comment.repositoryId}:${match[1]}:${match[3]}`, { repositoryId: comment.repositoryId, prId: match[1], mergeSha: match[2], role: match[3], status: match[4], artifactDigest: match[5] === "-" ? null : match[5] }));
+    }
+  }
+  return deepFreeze(latestMarkers(records));
+}
+
 export function planReconciliation(request) {
-  exact(request, ["snapshot", "routes", "pulls", "labelSync"], "reconciliation");
-  const { snapshot, routes, pulls, labelSync } = request;
+  exact(request, ["snapshot", "routes", "pulls", "labelSync", "comments", "trust", "reviews", "pioneers", "holds"], "reconciliation");
+  const { snapshot, routes, pulls, labelSync, comments, trust, reviews, pioneers, holds } = request;
+  const markers = parseLegacyMarkers({ comments, trust });
   validateSnapshot(snapshot);
   array(routes, "routes");
   array(pulls, "pulls");
+  array(reviews, "reconciliation reviews");
+  array(pioneers, "reconciliation pioneers");
+  array(holds, "reconciliation holds");
   const currentRevisions = snapshot.state.currentRevisions;
   if (!currentRevisions || Array.isArray(currentRevisions) || Object.getPrototypeOf(currentRevisions) !== Object.prototype) fail("snapshot current revisions are required");
   const intents = [];
+  const held = new Map();
+  for (const hold of holds) {
+    exact(hold, ["entityId", "reasons"], "reconciliation hold");
+    string(hold.entityId, "hold.entityId");
+    if (held.has(hold.entityId)) fail("duplicate reconciliation hold");
+    const reasons = holdReasons(hold.reasons);
+    if (reasons.length === 0) fail("reconciliation hold has no reason");
+    held.set(hold.entityId, reasons);
+    intents.push({ kind: "held", entityId: hold.entityId, reasons });
+  }
   const routeIds = new Set();
   for (const route of routes) {
-    exact(route, ["issueId", "sourceRevision", "status", "primary", "fallback", "artifactDigest"], "route");
+    exact(route, ["issueId", "sourceRevision", "status", "primary", "fallback", "primaryOutcome", "fallbackOutcome", "artifactDigest", "prId"], "route");
     string(route.issueId, "route.issueId");
     if (routeIds.has(route.issueId)) fail("duplicate route issue");
     routeIds.add(route.issueId);
@@ -603,21 +672,38 @@ export function planReconciliation(request) {
     oneOf(route.status, new Set(["unarmed", "primary", "fallback", "complete", "blocked"]), "route.status");
     oneOf(route.primary, PROVIDERS, "route.primary");
     if (route.fallback !== null) oneOf(route.fallback, PROVIDERS, "route.fallback");
+    for (const [name, outcome] of [["primary", route.primaryOutcome], ["fallback", route.fallbackOutcome]]) if (outcome !== null) oneOf(outcome, new Set(["artifact", "provider_failure"]), `route.${name}Outcome`);
     if (route.artifactDigest !== null) digest(route.artifactDigest, "route.artifactDigest");
-    if (route.status === "complete" && route.artifactDigest === null) fail("completed route lacks artifact");
-    if (route.status !== "complete" && route.artifactDigest !== null) fail("incomplete route has artifact");
+    if (route.prId !== null) string(route.prId, "route.prId");
+    const routeValid =
+      (route.status === "unarmed" && route.primaryOutcome === null && route.fallbackOutcome === null && route.artifactDigest === null && route.prId === null) ||
+      (route.status === "primary" && route.fallbackOutcome === null && route.artifactDigest === null && route.prId === null && (route.primaryOutcome !== "provider_failure" || route.fallback !== null)) ||
+      (route.status === "fallback" && route.fallback !== null && route.primaryOutcome === "provider_failure" && route.artifactDigest === null && route.prId === null) ||
+      (route.status === "blocked" && route.fallback !== null && route.primaryOutcome === "provider_failure" && route.fallbackOutcome === "provider_failure" && route.artifactDigest === null && route.prId === null) ||
+      (route.status === "complete" && route.artifactDigest !== null && route.prId !== null && (route.primaryOutcome === "artifact" || (route.primaryOutcome === "provider_failure" && route.fallbackOutcome === "artifact")));
+    if (!routeValid) fail("route state is inconsistent");
+    if (route.status === "complete") {
+      const qualifying = pulls.find(pull => pull.prId === route.prId);
+      if (!qualifying || qualifying.repositoryId !== snapshot.repository.id || qualifying.headRepositoryId !== snapshot.repository.id || qualifying.base !== snapshot.repository.defaultBranch || !Array.isArray(qualifying.closingIssues) || !qualifying.closingIssues.some(issue => issue.repositoryId === snapshot.repository.id && issue.issueId === route.issueId)) fail("completed route lacks qualifying pull request");
+    }
     const current = currentRevisions[`issue:${route.issueId}`];
     string(current, "current revision");
-    if (current !== route.sourceRevision) {
+    if (current !== route.sourceRevision && !held.has(`issue:${route.issueId}`) && !held.has("repository")) {
       intents.push({ kind: "retry_route", issueId: route.issueId, sourceRevision: current });
+    } else if (route.status === "primary" && route.primaryOutcome === "provider_failure" && !held.has(`issue:${route.issueId}`) && !held.has("repository")) {
+      intents.push({ kind: "fallback_route", issueId: route.issueId, sourceRevision: current, provider: route.fallback });
     }
   }
   const pullIds = new Set();
   for (const pull of pulls) {
-    exact(pull, ["prId", "headSha", "merged", "mergeSha", "obligations"], "pull");
+    exact(pull, ["prId", "repositoryId", "headRepositoryId", "base", "closingIssues", "headSha", "merged", "mergeSha", "obligations"], "pull");
     string(pull.prId, "pull.prId");
     if (pullIds.has(pull.prId)) fail("duplicate pull");
     pullIds.add(pull.prId);
+    for (const key of ["repositoryId", "headRepositoryId", "base"]) string(pull[key], `pull.${key}`);
+    if (pull.repositoryId !== snapshot.repository.id || pull.headRepositoryId !== snapshot.repository.id || pull.base !== snapshot.repository.defaultBranch) fail("pull is outside trusted repository route");
+    array(pull.closingIssues, "pull.closingIssues");
+    for (const issue of pull.closingIssues) { exact(issue, ["repositoryId", "issueId"], "closing issue"); string(issue.repositoryId, "closing issue.repositoryId"); string(issue.issueId, "closing issue.issueId"); }
     sha(pull.headSha, "pull.headSha");
     if (typeof pull.merged !== "boolean") fail("pull.merged must be boolean");
     if (pull.merged) sha(pull.mergeSha, "pull.mergeSha");
@@ -626,21 +712,51 @@ export function planReconciliation(request) {
     if (!pull.merged) continue;
     const obligationRoles = new Set();
     for (const obligation of pull.obligations) {
-      exact(obligation, ["role", "status", "artifactDigest"], "obligation");
+      exact(obligation, ["role", "status", "artifactDigest", "expectedArtifactDigest"], "obligation");
       string(obligation.role, "obligation.role");
       if (obligationRoles.has(obligation.role)) fail("duplicate pull obligation");
       obligationRoles.add(obligation.role);
       oneOf(obligation.status, new Set(["missing", "complete", "failed"]), "obligation.status");
       if (obligation.artifactDigest !== null) digest(obligation.artifactDigest, "obligation.artifactDigest");
-      if (obligation.status === "complete" && obligation.artifactDigest === null) fail("completed obligation lacks artifact");
+      digest(obligation.expectedArtifactDigest, "obligation.expectedArtifactDigest");
+      if (obligation.status === "complete" && obligation.artifactDigest !== obligation.expectedArtifactDigest) fail("completed obligation lacks expected artifact");
       if (obligation.status !== "complete" && obligation.artifactDigest !== null) fail("incomplete obligation has artifact");
-      if (obligation.status === "missing" || obligation.status === "failed") intents.push({ kind: "run_obligation", prId: pull.prId, mergeSha: pull.mergeSha, role: obligation.role });
+      const imported = markers.some(marker => marker.kind === "finalization" && marker.value.repositoryId === snapshot.repository.id && marker.value.prId === pull.prId && marker.value.mergeSha === pull.mergeSha && marker.value.role === obligation.role && marker.value.status === "complete" && marker.value.artifactDigest === obligation.expectedArtifactDigest);
+      if ((obligation.status === "missing" || obligation.status === "failed") && !imported && !held.has(`pr:${pull.prId}`) && !held.has("repository")) intents.push({ kind: "run_obligation", prId: pull.prId, mergeSha: pull.mergeSha, role: obligation.role });
     }
+  }
+  for (const review of reviews) {
+    exact(review, ["prId", "headSha", "evidence", "protectedInput"], "reconciliation review");
+    string(review.prId, "review.prId"); sha(review.headSha, "review.headSha");
+    array(review.evidence, "review.evidence");
+    if (typeof review.protectedInput !== "boolean") fail("review.protectedInput must be boolean");
+    const evidence = [...review.evidence, ...markers.filter(marker => marker.kind === "review" && marker.value.repositoryId === snapshot.repository.id && marker.value.prId === review.prId && marker.value.headSha === review.headSha).map(marker => ({ kind: marker.value.kind, headSha: marker.value.headSha, conclusion: marker.value.conclusion, actorId: marker.value.actorId, provider: marker.value.provider, authoritative: marker.value.authoritative, artifactDigest: marker.value.artifactDigest }))];
+    const result = reduceReviews({ evidence, headSha: review.headSha, trust, protectedInput: review.protectedInput });
+    if (!held.has(`pr:${review.prId}`) && !held.has("repository")) for (const reason of result.reasons.filter(reason => reason.endsWith("_missing"))) intents.push({ kind: "run_review", prId: review.prId, headSha: review.headSha, reviewKind: reason.slice(0, -8) });
+  }
+  const pioneerIds = new Set();
+  for (const pioneer of pioneers) {
+    exact(pioneer, ["issueId", "sourceRevision", "verdict", "artifactDigest", "closingPrId"], "reconciliation pioneer");
+    string(pioneer.issueId, "pioneer.issueId"); string(pioneer.sourceRevision, "pioneer.sourceRevision");
+    if (pioneerIds.has(pioneer.issueId)) fail("duplicate pioneer state");
+    pioneerIds.add(pioneer.issueId);
+    oneOf(pioneer.verdict, new Set(["missing", "proved", "disproved", "inconclusive"]), "pioneer.verdict");
+    if (pioneer.artifactDigest !== null) digest(pioneer.artifactDigest, "pioneer.artifactDigest");
+    if (pioneer.closingPrId !== null) string(pioneer.closingPrId, "pioneer.closingPrId");
+    if ((pioneer.verdict === "proved" || pioneer.verdict === "disproved") !== (pioneer.artifactDigest !== null)) fail("pioneer artifact state is inconsistent");
+    if (pioneer.verdict === "proved") {
+      const qualifying = pulls.find(pull => pull.prId === pioneer.closingPrId);
+      if (!qualifying || !qualifying.closingIssues.some(issue => issue.repositoryId === snapshot.repository.id && issue.issueId === pioneer.issueId)) fail("pioneer proof lacks qualifying closing pull request");
+    } else if (pioneer.closingPrId !== null) fail("non-proof pioneer has closing pull request");
+    const current = currentRevisions[`issue:${pioneer.issueId}`]; string(current, "pioneer current revision");
+    if (current !== pioneer.sourceRevision && !held.has(`issue:${pioneer.issueId}`) && !held.has("repository")) intents.push({ kind: "retry_pioneer", issueId: pioneer.issueId, sourceRevision: current });
+    else if (pioneer.verdict === "disproved" && !held.has(`issue:${pioneer.issueId}`) && !held.has("repository")) intents.push({ kind: "hold_spec", issueId: pioneer.issueId, artifactDigest: pioneer.artifactDigest });
+    else if ((pioneer.verdict === "missing" || pioneer.verdict === "inconclusive") && !held.has(`issue:${pioneer.issueId}`) && !held.has("repository")) intents.push({ kind: "retry_pioneer", issueId: pioneer.issueId, sourceRevision: current });
   }
   exact(labelSync, ["wantedDigest", "liveDigest"], "labelSync");
   digest(labelSync.wantedDigest, "labelSync.wantedDigest");
   digest(labelSync.liveDigest, "labelSync.liveDigest");
-  if (labelSync.wantedDigest !== labelSync.liveDigest) intents.push({ kind: "sync_labels", definitionsDigest: labelSync.wantedDigest });
+  if (labelSync.wantedDigest !== labelSync.liveDigest && !held.has("repository")) intents.push({ kind: "sync_labels", definitionsDigest: labelSync.wantedDigest });
   const unique = new Map(intents.map(intent => [digestJson(intent), intent]));
   return deepFreeze([...unique.values()].sort((a, b) => canonicalBytes(a).compare(canonicalBytes(b))));
 }

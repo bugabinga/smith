@@ -140,7 +140,7 @@ const BASE_ROLES = deepFreeze({
   "surveyor": config({ name: "surveyor", charter: ".claude/agents/surveyor.md", primary: "claude", fallback: "codex", claude: fable("high"), codex: sol("high"), capabilities: ["issues:read", "issues:write"], fields: ["issues", "milestones", "repository"], operations: stateOperations }),
   "builder": config({ name: "builder", charter: ".claude/agents/builder.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: terra("high"), capabilities: ["contents:write", "issues:read", "pulls:write"], fields: ["issue", "repository", "route"], operations: changeOperations, patch: patch(broadPrefixes) }),
   "codex-builder": config({ name: "codex-builder", charter: ".claude/agents/builder.md", primary: "codex", fallback: null, codex: terra("high"), capabilities: ["contents:write", "issues:read", "pulls:write"], fields: ["issue", "repository", "route"], operations: changeOperations, patch: patch(broadPrefixes) }),
-  "pioneer": config({ name: "pioneer", charter: ".claude/skills/pioneer/SKILL.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: sol("high"), capabilities: ["contents:write", "issues:write", "pulls:write"], fields: ["claim", "issue", "spec"], operations: sorted([...changeOperations, "close_issue", "update_issue"]), patch: patch(["prototypes/"]) }),
+  "pioneer": config({ name: "pioneer", charter: ".claude/skills/pioneer/SKILL.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: sol("high"), capabilities: ["contents:write", "issues:write", "pulls:write"], fields: ["claim", "issue", "spec"], operations: sorted([...changeOperations, "update_issue"]), patch: patch(["prototypes/"]) }),
   "reviewer": config({ name: "reviewer", charter: ".claude/agents/reviewer.md", primary: "claude", fallback: "codex", claude: opus("xhigh"), codex: sol("high"), capabilities: ["checks:write", "pulls:read"], fields: ["diff", "files", "pull", "reviews"], operations: ["add_label", "comment", "publish_check", "remove_label", "terminal", "noop"], limits: fallbackAuthority }),
   "security-reviewer": config({ name: "security-reviewer", charter: ".claude/agents/security-reviewer.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: sol("high"), capabilities: ["checks:write", "pulls:read"], fields: ["diff", "files", "pull", "security"], operations: ["add_label", "comment", "publish_check", "remove_label", "terminal", "noop"], limits: fallbackAuthority }),
   "reviser": config({ name: "reviser", charter: ".claude/agents/builder.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: terra("high"), capabilities: ["contents:write", "pulls:write"], fields: ["changed_paths", "findings", "pull"], operations: changeOperations, patch: patch(broadPrefixes) }),
@@ -365,7 +365,7 @@ export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessment
     }
   } else if (rolePolicy.payloadFamily === "pioneer") {
     if (payload.verdict === "proved") {
-      if (state.closingArtifactQualifies === true) operations = [{ type: "close_issue", issueId: state.entityId, reason: "completed" }];
+      if (state.closingArtifactQualifies === true) operations = [{ type: "noop", reason: "already_complete" }];
       else if (assessment.patch) {
         for (const key of ["headBranch", "baseBranch", "title", "body"]) payloadText(state[key], `snapshot ${key}`);
         operations = [{ type: "create_pr", head: state.headBranch, base: state.baseBranch, title: state.title, body: state.body, marker }];

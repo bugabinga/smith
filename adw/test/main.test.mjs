@@ -95,6 +95,8 @@ test("reconcile accepts normalized state", async () => {
     routes: [],
     pulls: [],
     labelSync: { wantedDigest: "f".repeat(64), liveDigest: "f".repeat(64) },
+    comments: [], trust: { ownerIds: ["U_owner"], appId: "A_smith" },
+    reviews: [], pioneers: [], holds: [],
   }));
   assert.deepEqual(JSON.parse(result.out), []);
 });

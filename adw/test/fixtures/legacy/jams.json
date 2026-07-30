@@ -1,0 +1,18 @@
+[
+  {
+    "id": "5",
+    "actorId": "A_smith",
+    "createdAt": "2026-07-28T10:04:00.000Z",
+    "body": "<!-- smith:jam/v1 entity=pr:9 head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb status=open artifact=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd -->",
+    "repositoryId": "R_1",
+    "entityId": "repository"
+  },
+  {
+    "id": "6",
+    "actorId": "A_smith",
+    "createdAt": "2026-07-28T10:05:00.000Z",
+    "body": "<!-- smith:merge-finalization/v1 pr=9 merge=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee role=docs-writer status=failed artifact=- -->",
+    "repositoryId": "R_1",
+    "entityId": "repository"
+  }
+]

@@ -19,6 +19,7 @@ import {
   reduceReviews,
   reduceRisk,
   idempotencyKey,
+  parseLegacyMarkers,
   planReconciliation,
   validateOperation,
   validatePatchManifest,
@@ -348,6 +349,9 @@ test("builder route follows one bounded fallback", () => {
 });
 
 const trust = { ownerIds: ["U_owner"], appId: "A_smith" };
+const reconcileRoute = overrides => ({ issueId: "1", sourceRevision: "r1", status: "primary", primary: "claude", fallback: "codex", primaryOutcome: null, fallbackOutcome: null, artifactDigest: null, prId: null, ...overrides });
+const reconcilePull = overrides => ({ prId: "2", repositoryId: "R_1", headRepositoryId: "R_1", base: "main", closingIssues: [{ repositoryId: "R_1", issueId: "1" }], headSha, merged: true, mergeSha: "c".repeat(40), obligations: [], ...overrides });
+const markerComment = overrides => ({ id: "1", actorId: trust.appId, createdAt: "2026-07-28T10:00:00.000Z", body: "marker", repositoryId: "R_1", entityId: "2", ...overrides });
 const correctness = {
   kind: "correctness",
   headSha,
@@ -484,21 +488,102 @@ test("patch manifest enforces role and global boundaries", () => {
   assert.throws(() => validatePatchManifest({ ...manifest, files: [{ ...manifest.files[0], kind: "binary" }] }, patchRole), error => error?.code === "contract");
 });
 
+test("legacy markers import only exact App-authored authority", async () => {
+  const comments = [];
+  for (const name of ["routes", "reviews", "jams"]) comments.push(...JSON.parse(await readFile(new URL(`fixtures/legacy/${name}.json`, import.meta.url))));
+  comments.push({ ...comments[0], id: "forged", actorId: "U_attacker" });
+  comments.push({ ...comments[0], id: "malformed", body: `${comments[0].body} trailing` });
+  const records = parseLegacyMarkers({ comments, trust });
+  assert.deepEqual(records.map(value => value.kind), ["attempt", "route", "review", "review", "jam", "finalization"]);
+  assert.equal(records.find(value => value.kind === "attempt").value.outcome, "failure");
+  assert.equal(records.filter(value => value.kind === "review").length, 2);
+  assert.equal(records.find(value => value.kind === "finalization").value.artifactDigest, null);
+});
+
+test("legacy marker ordering is deterministic and conflicts fail closed", () => {
+  const marker = "<!-- smith:jam/v1 entity=pr:9 head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb status=open artifact=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd -->";
+  const base = markerComment({ body: marker });
+  const newer = { ...base, id: "2", createdAt: "2026-07-28T10:01:00.000Z", body: marker.replace("status=open", "status=cleared") };
+  assert.equal(parseLegacyMarkers({ comments: [base, newer], trust })[0].value.status, "cleared");
+  assert.throws(
+    () => parseLegacyMarkers({ comments: [base, { ...newer, createdAt: base.createdAt }], trust }),
+    error => error?.code === "contract",
+  );
+});
+
 test("reconciliation emits only missing normalized obligations", () => {
   const request = {
     snapshot: { ...snapshot, state: { currentRevisions: { "issue:1": "r2" } } },
-    routes: [{ issueId: "1", sourceRevision: "r1", status: "primary", primary: "claude", fallback: "codex", artifactDigest: null }],
+    routes: [reconcileRoute()],
     pulls: [
-      { prId: "2", headSha, merged: true, mergeSha: "c".repeat(40), obligations: [{ role: "docs-writer", status: "missing", artifactDigest: null }] },
-      { prId: "3", headSha, merged: true, mergeSha: "d".repeat(40), obligations: [{ role: "docs-writer", status: "complete", artifactDigest: "e".repeat(64) }] },
+      reconcilePull({ obligations: [{ role: "docs-writer", status: "missing", artifactDigest: null, expectedArtifactDigest: "1".repeat(64) }] }),
+      reconcilePull({ prId: "3", mergeSha: "d".repeat(40), obligations: [{ role: "docs-writer", status: "complete", artifactDigest: "e".repeat(64), expectedArtifactDigest: "e".repeat(64) }] }),
     ],
     labelSync: { wantedDigest: "f".repeat(64), liveDigest: "0".repeat(64) },
+    comments: [], trust, reviews: [], pioneers: [], holds: [],
   };
   assert.deepEqual(planReconciliation(request), [
     { kind: "retry_route", issueId: "1", sourceRevision: "r2" },
     { kind: "run_obligation", prId: "2", mergeSha: "c".repeat(40), role: "docs-writer" },
     { kind: "sync_labels", definitionsDigest: "f".repeat(64) },
   ].sort((a, b) => canonicalBytes(a).compare(canonicalBytes(b))));
+});
+
+test("reconciliation derives reviews, holds, pioneer retries, and imported finalization", () => {
+  const finalization = markerComment({ id: "m1", body: `<!-- smith:merge-finalization/v1 pr=2 merge=${"c".repeat(40)} role=docs-writer status=complete artifact=${"d".repeat(64)} -->` });
+  const request = {
+    snapshot: { ...snapshot, state: { currentRevisions: { "issue:1": "r2", "issue:3": "r3" } } },
+    routes: [reconcileRoute()],
+    pulls: [reconcilePull({ obligations: [{ role: "docs-writer", status: "missing", artifactDigest: null, expectedArtifactDigest: "d".repeat(64) }] })],
+    labelSync: { wantedDigest: "f".repeat(64), liveDigest: "f".repeat(64) },
+    comments: [finalization], trust,
+    reviews: [{ prId: "2", headSha, evidence: [correctness], protectedInput: false }],
+    pioneers: [{ issueId: "3", sourceRevision: "r2", verdict: "inconclusive", artifactDigest: null, closingPrId: null }],
+    holds: [{ entityId: "issue:1", reasons: ["needs:spec"] }],
+  };
+  assert.deepEqual(planReconciliation(request), [
+    { kind: "held", entityId: "issue:1", reasons: ["needs:spec"] },
+    { kind: "retry_pioneer", issueId: "3", sourceRevision: "r3" },
+    { kind: "run_review", prId: "2", headSha, reviewKind: "security" },
+  ].sort((a, b) => canonicalBytes(a).compare(canonicalBytes(b))));
+});
+
+test("reconciliation rejects cross-resource authority and stale verdicts", () => {
+  const wrongPrReview = markerComment({ entityId: "99", body: `Review: ${headSha}\nVERDICT: reviewed` });
+  const staleDisproof = {
+    snapshot: { ...snapshot, state: { currentRevisions: { "issue:3": "r3" } } }, routes: [], pulls: [],
+    labelSync: { wantedDigest: "f".repeat(64), liveDigest: "f".repeat(64) }, comments: [wrongPrReview], trust,
+    reviews: [{ prId: "2", headSha, evidence: [security], protectedInput: false }],
+    pioneers: [{ issueId: "3", sourceRevision: "r2", verdict: "disproved", artifactDigest: "a".repeat(64), closingPrId: null }], holds: [],
+  };
+  const intents = planReconciliation(staleDisproof);
+  assert.ok(intents.some(value => value.kind === "run_review" && value.reviewKind === "correctness"));
+  assert.ok(intents.some(value => value.kind === "retry_pioneer"));
+  assert.equal(intents.some(value => value.kind === "hold_spec"), false);
+
+  assert.throws(
+    () => parseLegacyMarkers({ comments: [markerComment({ createdAt: "tomorrow" })], trust }),
+    error => error?.code === "contract",
+  );
+  assert.throws(
+    () => planReconciliation({ ...staleDisproof, pioneers: [], routes: [reconcileRoute({ status: "fallback", fallback: null, primaryOutcome: "provider_failure" })] }),
+    error => error?.code === "contract",
+  );
+  assert.throws(
+    () => planReconciliation({ ...staleDisproof, pioneers: [], pulls: [reconcilePull({ headRepositoryId: "R_fork" })] }),
+    error => error?.code === "contract",
+  );
+});
+
+test("repository and PR holds suppress reconciliation writes", () => {
+  const request = {
+    snapshot: { ...snapshot, state: { currentRevisions: { "issue:1": "r2" } } }, routes: [reconcileRoute()],
+    pulls: [reconcilePull({ obligations: [{ role: "docs-writer", status: "missing", artifactDigest: null, expectedArtifactDigest: "1".repeat(64) }] })],
+    labelSync: { wantedDigest: "1".repeat(64), liveDigest: "2".repeat(64) }, comments: [], trust,
+    reviews: [{ prId: "2", headSha, evidence: [], protectedInput: false }], pioneers: [],
+    holds: [{ entityId: "repository", reasons: ["hold"] }, { entityId: "pr:2", reasons: ["needs:owner"] }],
+  };
+  assert.deepEqual(planReconciliation(request).map(value => value.kind), ["held", "held"]);
 });
 
 test("transition reducers reject malformed normalized evidence", () => {
@@ -667,17 +752,18 @@ test("idempotency keys cannot collide through delimiters", () => {
 test("reconciliation rejects malformed forge state and retries stale completed artifacts", () => {
   const base = {
     snapshot: { ...snapshot, state: { currentRevisions: { "issue:1": "r2" } } },
-    routes: [{ issueId: "1", sourceRevision: "r1", status: "complete", primary: "claude", fallback: "codex", artifactDigest: "a".repeat(64) }],
-    pulls: [],
+    routes: [reconcileRoute({ status: "complete", primaryOutcome: "artifact", artifactDigest: "a".repeat(64), prId: "2" })],
+    pulls: [reconcilePull({ merged: false, mergeSha: null })],
     labelSync: { wantedDigest: "f".repeat(64), liveDigest: "f".repeat(64) },
+    comments: [], trust, reviews: [], pioneers: [], holds: [],
   };
   assert.deepEqual(planReconciliation(base), [{ kind: "retry_route", issueId: "1", sourceRevision: "r2" }]);
   assert.throws(() => planReconciliation({ ...base, snapshot: { ...base.snapshot, state: {} } }), error => error?.code === "contract");
-  assert.throws(() => planReconciliation({ ...base, pulls: [{ prId: {}, headSha, merged: "false", mergeSha: null, obligations: [] }] }), error => error?.code === "contract");
+  assert.throws(() => planReconciliation({ ...base, routes: [], pulls: [{ ...reconcilePull(), prId: {}, merged: "false" }] }), error => error?.code === "contract");
   const failed = {
     ...base,
     routes: [],
-    pulls: [{ prId: "2", headSha, merged: true, mergeSha: "c".repeat(40), obligations: [{ role: "docs-writer", status: "failed", artifactDigest: null }] }],
+    pulls: [reconcilePull({ obligations: [{ role: "docs-writer", status: "failed", artifactDigest: null, expectedArtifactDigest: "1".repeat(64) }] })],
   };
   assert.deepEqual(planReconciliation(failed), [{ kind: "run_obligation", prId: "2", mergeSha: "c".repeat(40), role: "docs-writer" }]);
   assert.throws(() => planReconciliation({ ...base, routes: [base.routes[0], base.routes[0]] }), error => error?.code === "contract");

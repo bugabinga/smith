@@ -218,7 +218,7 @@ test("pioneer verdicts preserve proof authority", () => {
   const disproved = reduceRoleArtifact(roleCase("pioneer", { verdict: "disproved", summary: "False", claim: "claim", patch: null }, { entityId: "1", labels: [] }));
   assert.equal(disproved.operations[0].label, "needs:spec");
   const proved = reduceRoleArtifact(roleCase("pioneer", { verdict: "proved", summary: "True", claim: "claim", patch: null }, { entityId: "1", labels: [], closingArtifactQualifies: true }));
-  assert.deepEqual(proved.operations, [{ type: "close_issue", issueId: "1", reason: "completed" }]);
+  assert.deepEqual(proved.operations, [{ type: "noop", reason: "already_complete" }]);
 });
 
 test("deterministic roles remain provider-free", () => {

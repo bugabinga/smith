@@ -94,7 +94,7 @@
 - [x] Write failing tests for `reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessments })` covering every payload verdict and operation mapping.
 - [x] Require selected assessment digests, exact current resource revisions, holds, and role operations before mapping.
 - [x] Map owner-authenticated steering to comment/no-op; map triage/planning/maintenance/alert payloads to deterministic issue/comment/label/milestone/check/rerun/drift operations; map patch payloads to branch/PR/update operations plus bound patch metadata; map reviews to current-head App evidence/check/labels; map no-op to explicit `noop` only.
-- [x] Encode pioneer exactly: `proved` closes the linked work-order only when its closing PR artifact qualifies; `disproved` leaves it open, adds `needs:spec`, and records the falsified claim; `inconclusive` leaves it open/retryable without proof labels or queue suppression.
+- [x] Encode pioneer exactly: `proved` creates or recognizes a same-repository closing PR but never closes the issue directly (merge does); `disproved` leaves it open, adds `needs:spec`, and records the falsified claim; `inconclusive` leaves it open/retryable without proof labels or queue suppression.
 - [x] Negative/security-high decisions dominate; protected fallback can report findings but cannot emit approval labels/check success.
 - [x] Validate every emitted operation with `validateOperation`, then return a `validateDecision` record.
 - [x] Run core tests and commit: `Reduce role artifacts into closed operations`.
@@ -109,11 +109,11 @@
 - Create: `adw/test/fixtures/legacy/jams.json`
 - Modify: `adw/test/core.test.mjs`
 
-- [ ] Write failing tests for strict parsing of `smith:claude-attempt/v1`, `smith:builder-route/v1`, current-head reviewer/security evidence, sticky risk, jam, and merge-finalization markers; malformed/forged/stale markers are data, never authority.
-- [ ] Parse only App-authored markers with exact version/fields and bounded scan order; latest valid marker wins, conflicts fail closed.
-- [ ] Expand reconciliation to derive stale routes, missing current-head reviews, dropped label sync, failed/missing post-merge obligations, held work, pioneer verdict state, and equivalent completed artifacts without replacing label sets.
-- [ ] Preserve one fallback maximum and deterministic route branches; fork PRs and wrong-repository closing issues never qualify.
-- [ ] Run marker/reconciliation tests and commit: `Import legacy ADW state without trusting labels`.
+- [x] Write failing tests for strict parsing of `smith:claude-attempt/v1`, `smith:builder-route/v1`, current-head reviewer/security evidence, sticky risk, jam, and merge-finalization markers; malformed/forged/stale markers are data, never authority.
+- [x] Parse only App-authored markers with exact version/fields and bounded scan order; latest valid marker wins, conflicts fail closed.
+- [x] Expand reconciliation to derive stale routes, missing current-head reviews, dropped label sync, failed/missing post-merge obligations, held work, pioneer verdict state, and equivalent completed artifacts without replacing label sets.
+- [x] Preserve one fallback maximum and deterministic route branches; fork PRs and wrong-repository closing issues never qualify.
+- [x] Run marker/reconciliation tests and commit: `Import legacy ADW state without trusting labels`.
 
 ### Task 5: Bounded normalized role snapshots
 

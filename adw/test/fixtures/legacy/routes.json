@@ -1,0 +1,18 @@
+[
+  {
+    "id": "1",
+    "actorId": "A_smith",
+    "createdAt": "2026-07-28T10:00:00.000Z",
+    "body": "<!-- smith:claude-attempt/v1 issue=7 branch=claude/issue-7 head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa outcome=failure -->",
+    "repositoryId": "R_1",
+    "entityId": "repository"
+  },
+  {
+    "id": "2",
+    "actorId": "A_smith",
+    "createdAt": "2026-07-28T10:01:00.000Z",
+    "body": "<!-- smith:builder-route/v1 issue=7 id=123e4567-e89b-12d3-a456-426614174000 source=claude/issue-7 target=codex/issue-7 phase=armed -->",
+    "repositoryId": "R_1",
+    "entityId": "repository"
+  }
+]
