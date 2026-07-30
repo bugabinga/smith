@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "smith:adw:role:alert:v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "reason"
+      ],
+      "properties": {
+        "verdict": {
+          "enum": [
+            "noop"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "summary",
+        "issue"
+      ],
+      "properties": {
+        "verdict": {
+          "enum": [
+            "covered",
+            "issue"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "issue": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "title",
+                "body",
+                "labels"
+              ],
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 16384
+                },
+                "body": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 16384
+                },
+                "labels": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 4096
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

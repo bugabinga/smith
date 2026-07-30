@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "smith:adw:role:dependency:v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "reason"
+      ],
+      "properties": {
+        "verdict": {
+          "enum": [
+            "noop"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "summary",
+        "reason"
+      ],
+      "properties": {
+        "verdict": {
+          "enum": [
+            "safe",
+            "risky"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        }
+      }
+    }
+  ]
+}

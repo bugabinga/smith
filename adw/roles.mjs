@@ -1,4 +1,4 @@
-import { AdwError } from "./core.mjs";
+import { AdwError, canonicalBytes, validatePatchManifest } from "./core.mjs";
 
 export const PROVIDERS = Object.freeze(["claude", "codex"]);
 export const OPERATIONS = Object.freeze([
@@ -130,7 +130,7 @@ const sol = effort => ({ model: "gpt-5.6-sol", effort });
 const terra = effort => ({ model: "gpt-5.6-terra", effort });
 const patch = allowedPrefixes => ({ maxBytes: 1_048_576, maxFiles: 100, allowedPrefixes: sorted(allowedPrefixes), deniedPaths: [...deniedPaths] });
 
-const ROLES = deepFreeze({
+const BASE_ROLES = deepFreeze({
   "steerer": config({ name: "steerer", charter: ".claude/agents/steerer.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: sol("high"), capabilities: ["comments:read", "comments:write"], fields: ["comment", "entity", "owner"], operations: ["comment", "noop", "terminal"] }),
   "triager": config({ name: "triager", charter: ".claude/agents/triager.md", primary: "codex", fallback: "claude", claude: opus("high"), codex: luna("medium"), capabilities: ["issues:read", "issues:write"], fields: ["issue", "labels", "milestones"], operations: stateOperations }),
   "planner": config({ name: "planner", charter: ".claude/agents/planner.md", primary: "claude", fallback: "codex", claude: fable("xhigh"), codex: sol("xhigh"), capabilities: ["issues:read", "issues:write", "milestones:write"], fields: ["issues", "milestones", "spec_change"], operations: stateOperations }),
@@ -148,11 +148,137 @@ const ROLES = deepFreeze({
   "alert-triager": config({ name: "alert-triager", charter: ".claude/agents/security-reviewer.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: sol("high"), capabilities: ["alerts:read", "issues:write"], fields: ["alert", "issues", "pulls"], operations: stateOperations }),
 });
 
+const ROLE_FAMILIES = Object.freeze({
+  "steerer": "steering", "triager": "triage", "planner": "plan", "surveyor": "survey",
+  "builder": "change", "codex-builder": "change", "pioneer": "pioneer", "reviewer": "review",
+  "security-reviewer": "review", "reviser": "change", "sweeper": "maintenance",
+  "adw-doctor": "maintenance", "docs-writer": "change", "dependency-manager": "dependency",
+  "alert-triager": "alert",
+});
+const ROLES = deepFreeze(Object.fromEntries(Object.entries(BASE_ROLES).map(([name, value]) => [name, {
+  ...value,
+  payloadFamily: ROLE_FAMILIES[name],
+  payloadSchema: `adw/schemas/role-payloads/${ROLE_FAMILIES[name]}.schema.json`,
+}])));
+
 const DETERMINISTIC_ROLES = deepFreeze({
   "jam-detector": { name: "jam-detector", payloadFamily: "jam", capabilities: ["actions:read", "issues:write", "pulls:read"], operations: ["comment", "noop", "terminal"] },
   "label-sync": { name: "label-sync", payloadFamily: "labels", capabilities: ["issues:write"], operations: ["noop", "sync_labels", "terminal"] },
   "settings-auditor": { name: "settings-auditor", payloadFamily: "drift", capabilities: ["settings:read"], operations: ["noop", "report_drift", "terminal"] },
 });
+
+function payloadFail(message) {
+  throw new AdwError("contract", message);
+}
+
+function payloadObject(value, keys, name = "payload") {
+  if (!value || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) payloadFail(`${name} must be an object`);
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  if (actual.length !== expected.length || actual.some((key, i) => key !== expected[i])) payloadFail(`${name} has invalid fields`);
+}
+
+function payloadText(value, name) {
+  if (typeof value !== "string" || value.length === 0 || value.length > 16_384) payloadFail(`${name} is invalid`);
+}
+
+function payloadArray(value, name, max = 100) {
+  if (!Array.isArray(value) || value.length > max) payloadFail(`${name} is invalid`);
+}
+
+function validateFindings(findings) {
+  payloadArray(findings, "findings");
+  for (const finding of findings) {
+    payloadObject(finding, ["severity", "path", "line", "message"], "finding");
+    if (!new Set(["low", "medium", "high"]).has(finding.severity)) payloadFail("finding severity is invalid");
+    payloadText(finding.path, "finding path");
+    if (!Number.isSafeInteger(finding.line) || finding.line < 1) payloadFail("finding line is invalid");
+    payloadText(finding.message, "finding message");
+  }
+}
+
+function validateNoop(value) {
+  payloadObject(value, ["verdict", "reason"]);
+  if (value.verdict !== "noop") payloadFail("no-op verdict is invalid");
+  payloadText(value.reason, "reason");
+}
+
+function validateIssue(value) {
+  payloadObject(value, ["title", "body", "labels"], "issue");
+  payloadText(value.title, "issue title");
+  payloadText(value.body, "issue body");
+  payloadArray(value.labels, "issue labels", 20);
+  value.labels.forEach(label => payloadText(label, "issue label"));
+}
+
+export function validateRolePayload(name, value) {
+  const policy = role(name);
+  const family = policy.payloadFamily;
+  if (value?.verdict === "noop") {
+    validateNoop(value);
+  } else if (family === "steering") {
+    payloadObject(value, ["verdict", "body"]);
+    if (value.verdict !== "comment") payloadFail("steering verdict is invalid");
+    payloadText(value.body, "body");
+  } else if (family === "triage") {
+    payloadObject(value, ["verdict", "body", "labels"]);
+    if (!new Set(["accept", "needs_info", "needs_spec"]).has(value.verdict)) payloadFail("triage verdict is invalid");
+    payloadText(value.body, "body");
+    payloadArray(value.labels, "labels", 20);
+    value.labels.forEach(label => payloadText(label, "label"));
+  } else if (family === "plan" || family === "survey") {
+    payloadObject(value, ["verdict", "summary", "issues"]);
+    if (!new Set(family === "plan" ? ["planned", "blocked"] : ["proposal", "blocked"]).has(value.verdict)) payloadFail(`${family} verdict is invalid`);
+    payloadText(value.summary, "summary");
+    payloadArray(value.issues, "issues", 50);
+    value.issues.forEach(validateIssue);
+  } else if (family === "change") {
+    if (value?.verdict === "blocked") {
+      payloadObject(value, ["verdict", "reason"]); payloadText(value.reason, "reason");
+    } else {
+      payloadObject(value, ["verdict", "summary", "patch"]);
+      if (value.verdict !== "patch") payloadFail("change verdict is invalid");
+      payloadText(value.summary, "summary");
+      try { validatePatchManifest(value.patch, policy); } catch { payloadFail("patch is invalid"); }
+    }
+  } else if (family === "pioneer") {
+    payloadObject(value, ["verdict", "summary", "claim", "patch"]);
+    if (!new Set(["proved", "disproved", "inconclusive"]).has(value.verdict)) payloadFail("pioneer verdict is invalid");
+    payloadText(value.summary, "summary");
+    payloadText(value.claim, "claim");
+    if (value.patch !== null) {
+      try { validatePatchManifest(value.patch, policy); } catch { payloadFail("pioneer patch is invalid"); }
+    }
+  } else if (family === "review") {
+    payloadObject(value, ["verdict", "risk", "findings"]);
+    if (!new Set(["approve", "reject"]).has(value.verdict) || !new Set(["none", "high"]).has(value.risk)) payloadFail("review verdict is invalid");
+    validateFindings(value.findings);
+  } else if (family === "maintenance") {
+    payloadObject(value, ["verdict", "summary", "actions"]);
+    if (value.verdict !== "action") payloadFail("maintenance verdict is invalid");
+    payloadText(value.summary, "summary");
+    payloadArray(value.actions, "actions", 50);
+    for (const action of value.actions) {
+      payloadObject(action, ["kind", "entityId", "reason"], "action");
+      if (!new Set(["retry", "hold", "report"]).has(action.kind)) payloadFail("action kind is invalid");
+      payloadText(action.entityId, "action entity"); payloadText(action.reason, "action reason");
+    }
+  } else if (family === "dependency") {
+    payloadObject(value, ["verdict", "summary", "reason"]);
+    if (!new Set(["safe", "risky"]).has(value.verdict)) payloadFail("dependency verdict is invalid");
+    payloadText(value.summary, "summary"); payloadText(value.reason, "reason");
+  } else if (family === "alert") {
+    payloadObject(value, ["verdict", "summary", "issue"]);
+    if (!new Set(["covered", "issue"]).has(value.verdict)) payloadFail("alert verdict is invalid");
+    payloadText(value.summary, "summary");
+    if (value.verdict === "issue") validateIssue(value.issue);
+    else if (value.issue !== null) payloadFail("covered alert cannot create issue");
+  } else {
+    payloadFail("payload family is unsupported");
+  }
+  if (canonicalBytes(value).length > 262_144) payloadFail("payload is oversized");
+  return deepFreeze(structuredClone(value));
+}
 
 export function role(name) {
   const value = ROLES[name];

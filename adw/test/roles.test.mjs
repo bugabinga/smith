@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   OPERATIONS, PROVIDERS, defineRole, deterministicRole, listDeterministicRoles,
-  listRoles, role,
+  listRoles, role, validateRolePayload,
 } from "../roles.mjs";
 
 const policy = {
@@ -92,6 +92,37 @@ test("production provider routes preserve current model assignments", () => {
   assert.deepEqual(role("sweeper").providers, ["codex"]);
   assert.equal(role("adw-doctor").patch, null);
   assert.deepEqual(role("pioneer").patch.allowedPrefixes, ["prototypes/"]);
+});
+
+test("role payload families accept only exact semantic artifacts", () => {
+  const patch = { baseSha: "a".repeat(40), digest: "b".repeat(64), size: 1, files: [{ path: "smith/src/lib.rs", kind: "regular", oldMode: "100644", newMode: "100644" }] };
+  const samples = {
+    steerer: { verdict: "comment", body: "Use the planner." },
+    triager: { verdict: "accept", body: "Ready", labels: ["ready"] },
+    planner: { verdict: "planned", summary: "Plan", issues: [{ title: "Slice", body: "Body", labels: ["planned"] }] },
+    surveyor: { verdict: "proposal", summary: "Gap", issues: [] },
+    builder: { verdict: "patch", summary: "Change", patch },
+    pioneer: { verdict: "disproved", summary: "False", claim: "claim", patch: null },
+    reviewer: { verdict: "approve", risk: "none", findings: [] },
+    sweeper: { verdict: "action", summary: "Retry", actions: [{ kind: "retry", entityId: "1", reason: "stale" }] },
+    "dependency-manager": { verdict: "safe", summary: "Compatible", reason: "semver" },
+    "alert-triager": { verdict: "covered", summary: "Existing PR", issue: null },
+  };
+  for (const [name, payload] of Object.entries(samples)) assert.deepEqual(validateRolePayload(name, payload), payload);
+  assert.throws(() => validateRolePayload("reviewer", { verdict: "approve", risk: "none", findings: [], command: "merge" }), error => error?.code === "contract");
+  assert.throws(() => validateRolePayload("builder", { verdict: "patch", summary: "x", patch: { ...patch, files: [{ ...patch.files[0], path: "adw/core.mjs" }] } }), error => error?.code === "contract");
+});
+
+test("payload schema files exist for every family", async () => {
+  for (const name of listRoles()) {
+    const schema = JSON.parse(await readFile(role(name).payloadSchema, "utf8"));
+    assert.equal(schema.$schema, "https://json-schema.org/draft/2020-12/schema");
+    assert.ok(schema.oneOf.every(shape => shape.additionalProperties === false));
+  }
+});
+
+test("explicit no-op is valid for every provider role", () => {
+  for (const name of listRoles()) assert.deepEqual(validateRolePayload(name, { verdict: "noop", reason: "not applicable" }), { verdict: "noop", reason: "not applicable" });
 });
 
 test("deterministic roles remain provider-free", () => {
