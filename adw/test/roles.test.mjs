@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { access } from "node:fs/promises";
 import test from "node:test";
-import { OPERATIONS, PROVIDERS, defineRole } from "../roles.mjs";
+import {
+  OPERATIONS, PROVIDERS, defineRole, deterministicRole, listDeterministicRoles,
+  listRoles, role,
+} from "../roles.mjs";
 
 const policy = {
   name: "fixture-reviewer",
@@ -60,4 +64,43 @@ test("patch policy is bounded and cannot erase global denials", () => {
   assert.deepEqual(defineRole({ ...policy, patch }).patch, patch);
   assert.throws(() => defineRole({ ...policy, patch: { ...patch, maxFiles: 101 } }), error => error?.code === "role");
   assert.throws(() => defineRole({ ...policy, patch: { ...patch, deniedPaths: [] } }), error => error?.code === "role");
+});
+
+const productionRoles = [
+  "adw-doctor", "alert-triager", "builder", "codex-builder", "dependency-manager",
+  "docs-writer", "pioneer", "planner", "reviewer", "reviser", "security-reviewer",
+  "steerer", "surveyor", "sweeper", "triager",
+];
+
+test("production role registry is complete and charter-backed", async () => {
+  assert.deepEqual(listRoles(), productionRoles);
+  for (const name of productionRoles) {
+    const value = role(name);
+    assert.equal(value.name, name);
+    assert.ok(Object.isFrozen(value));
+    await access(value.charter);
+    assert.ok(value.providerConfig[value.primary]);
+  }
+  assert.throws(() => role("release-manager"), error => error?.code === "role");
+});
+
+test("production provider routes preserve current model assignments", () => {
+  assert.deepEqual(role("planner").providerConfig.claude, { model: "claude-fable-5", effort: "xhigh", timeoutSeconds: 300 });
+  assert.deepEqual(role("planner").providerConfig.codex, { model: "gpt-5.6-sol", effort: "xhigh", timeoutSeconds: 300 });
+  assert.equal(role("codex-builder").fallback, null);
+  assert.equal(role("reviewer").fallbackAuthority.protected, false);
+  assert.deepEqual(role("sweeper").providers, ["codex"]);
+  assert.equal(role("adw-doctor").patch, null);
+  assert.deepEqual(role("pioneer").patch.allowedPrefixes, ["prototypes/"]);
+});
+
+test("deterministic roles remain provider-free", () => {
+  assert.deepEqual(listDeterministicRoles(), ["jam-detector", "label-sync", "settings-auditor"]);
+  for (const name of listDeterministicRoles()) {
+    const value = deterministicRole(name);
+    assert.equal(value.name, name);
+    assert.ok(Object.isFrozen(value));
+    assert.equal(Object.hasOwn(value, "providers"), false);
+  }
+  assert.throws(() => deterministicRole("release-manager"), error => error?.code === "role");
 });
