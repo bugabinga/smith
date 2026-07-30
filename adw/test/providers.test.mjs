@@ -4,8 +4,8 @@ import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { digestJson } from "../core.mjs";
-import { defineRole } from "../roles.mjs";
+import { canonicalBytes, digestJson } from "../core.mjs";
+import { role as productionRole } from "../roles.mjs";
 import { PROVIDER_PINS, installProvider, invokeProvider, runProcess } from "../providers.mjs";
 
 const base = {
@@ -92,36 +92,23 @@ test("provider pins install into an external temporary prefix", async t => {
   );
 });
 
-function role(provider) {
-  const fallback = provider === "claude" ? "codex" : "claude";
-  return defineRole({
-    name: "reviewer",
-    charter: ".claude/agents/reviewer.md",
-    mode: "single",
-    primary: provider,
-    fallback,
-    providers: ["claude", "codex"],
-    providerConfig: {
-      claude: { model: "claude-model", effort: "high", timeoutSeconds: 300 },
-      codex: { model: "codex-model", effort: "high", timeoutSeconds: 300 },
-    },
-    capabilities: ["pulls:read"],
-    snapshot: { fields: ["pull"], maxBytes: 262144 },
-    payload: { outcomes: ["negative", "noop", "positive", "unable"], requiredKeys: ["verdict"] },
-    operations: ["publish_check", "terminal"],
-    fallbackAuthority: { protected: false, incomplete: false, fork: false, binary: false, oversized: false },
-    patch: null,
-  });
-}
-
+const reviewSchema = await readFile(new URL("../schemas/role-payloads/review.schema.json", import.meta.url), "utf8");
+const trusted = (source, data) => ({ trust: "trusted", source, bytes: canonicalBytes(data).length, digest: digestJson(data), data });
 const snapshot = {
   schemaVersion: 1,
   controlSha: "a".repeat(40),
   event: { kind: "pull_request", action: "synchronize", entityId: "42" },
   repository: { id: "R_1", owner: "bugabinga", name: "smith", defaultBranch: "main" },
-  revisions: [{ resource: "pull:42", kind: "pull", token: "b".repeat(40) }],
+  revisions: [
+    { resource: "pull:42", kind: "pull", token: "b".repeat(40) },
+    { resource: "trusted:.claude/agents/reviewer.md", kind: "control", token: "c".repeat(40) },
+    { resource: "trusted:adw/schemas/role-payloads/review.schema.json", kind: "control", token: "d".repeat(40) },
+  ],
   routing: { role: "reviewer", mode: "single", primary: "claude" },
-  state: {},
+  state: { resources: {
+    "trusted:.claude/agents/reviewer.md": trusted(".claude/agents/reviewer.md", "trusted review charter"),
+    "trusted:adw/schemas/role-payloads/review.schema.json": trusted("adw/schemas/role-payloads/review.schema.json", reviewSchema),
+  } },
 };
 
 test("Claude invocation receives only Claude credential and stamps envelope", async t => {
@@ -130,11 +117,11 @@ test("Claude invocation receives only Claude credential and stamps envelope", as
   let call;
   const run = async request => {
     call = request;
-    return { code: 0, signal: null, stdout: JSON.stringify({ structured_output: { outcome: "positive", payload: { verdict: "approve" }, patch: null } }), stderr: "" };
+    return { code: 0, signal: null, stdout: JSON.stringify({ structured_output: { outcome: "positive", payload: { verdict: "approve", risk: "none", findings: [] }, patch: null } }), stderr: "" };
   };
   const result = await invokeProvider({
-    provider: "claude", executable: process.execPath, cliVersion: "2.1.220", rolePolicy: role("claude"), snapshot,
-    idempotencyKey: "review:42", prompt: "review", schemaPath: join(process.cwd(), "adw/schemas/assessment.schema.json"),
+    provider: "claude", executable: process.execPath, cliVersion: "2.1.220", rolePolicy: productionRole("reviewer"), snapshot,
+    idempotencyKey: "review:42",
     home, repository: process.cwd(), credential: { CLAUDE_CODE_OAUTH_TOKEN: "claude-secret" },
     runIdentity: { id: "run", job: "claude", attempt: 1 }, baseEnv: base.env, now: () => "2026-07-28T10:00:00.000Z", run,
   });
@@ -144,14 +131,18 @@ test("Claude invocation receives only Claude credential and stamps envelope", as
   assert.equal(Object.hasOwn(call.env, "GH_TOKEN"), false);
   assert.equal(call.args.includes("--bare"), false);
   assert.ok(call.args.includes("--json-schema"));
+  const providerPrompt = call.args[call.args.indexOf("-p") + 1];
+  assert.match(providerPrompt, /Every other snapshot value/);
+  assert.match(providerPrompt, /NORMALIZED SNAPSHOT/);
+  assert.match(providerPrompt, /"entityId":"42"/);
 });
 
 test("provider invocation enforces role payload keys", async () => {
   const home = await mkdtemp(join(tmpdir(), "smith-adw-payload-"));
   await assert.rejects(
     () => invokeProvider({
-      provider: "claude", executable: process.execPath, cliVersion: "2.1.220", rolePolicy: role("claude"), snapshot,
-      idempotencyKey: "review:42", prompt: "review", schemaPath: join(process.cwd(), "adw/schemas/assessment.schema.json"),
+      provider: "claude", executable: process.execPath, cliVersion: "2.1.220", rolePolicy: productionRole("reviewer"), snapshot,
+      idempotencyKey: "review:42",
       home, repository: process.cwd(), credential: { CLAUDE_CODE_OAUTH_TOKEN: "secret" },
       runIdentity: { id: "run", job: "claude", attempt: 1 }, baseEnv: base.env, now: () => "2026-07-28T10:00:00.000Z",
       run: async () => ({ code: 0, signal: null, stdout: JSON.stringify({ structured_output: { outcome: "positive", payload: {}, patch: null } }), stderr: "" }),
@@ -164,11 +155,11 @@ test("provider cleanup failure cannot report success", async () => {
   const home = await mkdtemp(join(tmpdir(), "smith-adw-cleanup-"));
   await assert.rejects(
     () => invokeProvider({
-      provider: "claude", executable: process.execPath, cliVersion: "2.1.220", rolePolicy: role("claude"), snapshot,
-      idempotencyKey: "review:42", prompt: "review", schemaPath: join(process.cwd(), "adw/schemas/assessment.schema.json"),
+      provider: "claude", executable: process.execPath, cliVersion: "2.1.220", rolePolicy: productionRole("reviewer"), snapshot,
+      idempotencyKey: "review:42",
       home, repository: process.cwd(), credential: { CLAUDE_CODE_OAUTH_TOKEN: "secret" },
       runIdentity: { id: "run", job: "claude", attempt: 1 }, baseEnv: base.env, now: () => "2026-07-28T10:00:00.000Z",
-      run: async () => ({ code: 0, signal: null, stdout: JSON.stringify({ structured_output: { outcome: "positive", payload: { verdict: "approve" }, patch: null } }), stderr: "" }),
+      run: async () => ({ code: 0, signal: null, stdout: JSON.stringify({ structured_output: { outcome: "positive", payload: { verdict: "approve", risk: "none", findings: [] }, patch: null } }), stderr: "" }),
       remove: async () => { throw new Error("denied"); },
     }),
     error => error?.code === "provider" && error.message === "cleanup",
@@ -183,12 +174,12 @@ test("Codex auth file is mode-0600 and removed in finally", async () => {
     const auth = join(home, ".codex", "auth.json");
     authMode = (await import("node:fs/promises")).stat(auth).then(value => value.mode & 0o777);
     const output = request.args[request.args.indexOf("--output-last-message") + 1];
-    await writeFile(output, JSON.stringify({ outcome: "positive", payload: { verdict: "approve" }, patch: null }));
+    await writeFile(output, JSON.stringify({ outcome: "positive", payload: { verdict: "approve", risk: "none", findings: [] }, patch: null }));
     return { code: 0, signal: null, stdout: "", stderr: "" };
   };
   const result = await invokeProvider({
-    provider: "codex", executable: process.execPath, cliVersion: "0.145.0", rolePolicy: role("codex"), snapshot: { ...snapshot, routing: { ...snapshot.routing, primary: "codex" } },
-    idempotencyKey: "review:42", prompt: "review", schemaPath: join(process.cwd(), "adw/schemas/assessment.schema.json"),
+    provider: "codex", executable: process.execPath, cliVersion: "0.145.0", rolePolicy: productionRole("reviewer"), snapshot,
+    idempotencyKey: "review:42",
     home, repository: process.cwd(), credential: { CODEX_AUTH_JSON: "{\"token\":\"secret\"}" },
     runIdentity: { id: "run", job: "codex", attempt: 1 }, baseEnv: base.env, now: () => "2026-07-28T10:00:00.000Z", run,
   });

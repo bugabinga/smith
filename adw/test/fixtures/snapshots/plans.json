@@ -1,0 +1,140 @@
+[
+  {
+    "role": "adw-doctor",
+    "event": "schedule",
+    "fields": [
+      "config",
+      "runs",
+      "settings"
+    ]
+  },
+  {
+    "role": "alert-triager",
+    "event": "alert",
+    "fields": [
+      "alert",
+      "issues",
+      "pulls"
+    ]
+  },
+  {
+    "role": "builder",
+    "event": "issue",
+    "fields": [
+      "issue",
+      "repository",
+      "route"
+    ]
+  },
+  {
+    "role": "codex-builder",
+    "event": "issue",
+    "fields": [
+      "issue",
+      "repository",
+      "route"
+    ]
+  },
+  {
+    "role": "dependency-manager",
+    "event": "pull_request",
+    "fields": [
+      "dependency",
+      "diff",
+      "pull"
+    ]
+  },
+  {
+    "role": "docs-writer",
+    "event": "pull_request",
+    "fields": [
+      "diff",
+      "docs",
+      "pull"
+    ]
+  },
+  {
+    "role": "pioneer",
+    "event": "issue",
+    "fields": [
+      "claim",
+      "issue",
+      "spec"
+    ]
+  },
+  {
+    "role": "planner",
+    "event": "push",
+    "fields": [
+      "issues",
+      "milestones",
+      "spec_change"
+    ]
+  },
+  {
+    "role": "reviewer",
+    "event": "pull_request",
+    "fields": [
+      "diff",
+      "files",
+      "pull",
+      "reviews"
+    ]
+  },
+  {
+    "role": "reviser",
+    "event": "pull_request_review",
+    "fields": [
+      "changed_paths",
+      "findings",
+      "pull"
+    ]
+  },
+  {
+    "role": "security-reviewer",
+    "event": "pull_request",
+    "fields": [
+      "diff",
+      "files",
+      "pull",
+      "security"
+    ]
+  },
+  {
+    "role": "steerer",
+    "event": "issue_comment",
+    "fields": [
+      "comment",
+      "entity",
+      "owner"
+    ]
+  },
+  {
+    "role": "surveyor",
+    "event": "schedule",
+    "fields": [
+      "issues",
+      "milestones",
+      "repository"
+    ]
+  },
+  {
+    "role": "sweeper",
+    "event": "schedule",
+    "fields": [
+      "issues",
+      "pulls",
+      "routes",
+      "runs"
+    ]
+  },
+  {
+    "role": "triager",
+    "event": "issue",
+    "fields": [
+      "issue",
+      "labels",
+      "milestones"
+    ]
+  }
+]

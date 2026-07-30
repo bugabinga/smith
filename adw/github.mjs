@@ -1,6 +1,6 @@
 import { isAbsolute } from "node:path";
-import { AdwError, digestJson, validateOperation } from "./core.mjs";
-import { OPERATIONS } from "./roles.mjs";
+import { AdwError, canonicalBytes, digestJson, validateOperation, validateSnapshot } from "./core.mjs";
+import { OPERATIONS, role } from "./roles.mjs";
 import { runProcess } from "./providers.mjs";
 
 const EVENTS = new Set([
@@ -8,6 +8,20 @@ const EVENTS = new Set([
   "pull_request_review_comment", "check_suite", "check_run", "workflow_run",
   "push", "schedule", "dependabot_alert", "code_scanning_alert", "workflow_dispatch",
 ]);
+
+const ROLE_EVENTS = Object.freeze({
+  "steerer": ["issue_comment"], "triager": ["issue"], "planner": ["issue", "push", "schedule"],
+  "surveyor": ["schedule"], "builder": ["issue"], "codex-builder": ["issue"], "pioneer": ["issue"],
+  "reviewer": ["pull_request"], "security-reviewer": ["pull_request"], "reviser": ["pull_request", "pull_request_review"],
+  "sweeper": ["schedule"], "adw-doctor": ["schedule"], "docs-writer": ["pull_request"],
+  "dependency-manager": ["pull_request"], "alert-triager": ["alert", "schedule"],
+});
+
+export function roleSnapshotPlan(roleName, eventKind) {
+  const events = ROLE_EVENTS[roleName];
+  contract(events?.includes(eventKind), "role event is unsupported");
+  return Object.freeze({ role: roleName, eventKind, fields: Object.freeze([...role(roleName).snapshot.fields]) });
+}
 
 function contract(condition, message) {
   if (!condition) throw new AdwError("contract", message);
@@ -79,6 +93,14 @@ export function normalizeEvent(name, payload) {
   return Object.freeze({ kind, action, entityId, repository, actor, revisionHints: Object.freeze(revisionHints) });
 }
 
+function contentEnvelope(data, trust, source) {
+  contract(trust === "trusted" || trust === "untrusted", "content trust is invalid");
+  text(source, "content source");
+  const bytes = canonicalBytes(data);
+  contract(bytes.length <= 65_536, "content is oversized");
+  return Object.freeze({ trust, source, bytes: bytes.length, digest: digestJson(data), data });
+}
+
 function forgeReason(status) {
   if (status === 404) return "not_found";
   if (status === 401) return "auth";
@@ -110,6 +132,22 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       throw new AdwError("forge", forgeReason(error?.details?.httpStatus ?? 0));
     }
     try { return JSON.parse(result.stdout); } catch { throw new AdwError("forge", "malformed"); }
+  }
+
+  const CLOSING_ISSUES_QUERY = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:100){nodes{number repository{id}} pageInfo{hasNextPage}}}}}";
+  async function closingIssues(number) {
+    let result;
+    try {
+      result = await run({ file: ghPath, args: ["api", "graphql", "-f", `query=${CLOSING_ISSUES_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${positiveInteger(number)}`], cwd: process.cwd(), env, input: "", timeoutMs: 120_000, maxOutputBytes: 1_048_576, captureHttpStatus: true });
+    } catch (error) { throw new AdwError("forge", forgeReason(error?.details?.httpStatus ?? 0)); }
+    let value;
+    try { value = JSON.parse(result.stdout)?.data?.repository?.pullRequest?.closingIssuesReferences; } catch { throw new AdwError("forge", "malformed"); }
+    if (!value || !Array.isArray(value.nodes) || value.nodes.length > 100 || value.pageInfo?.hasNextPage !== false) throw new AdwError("forge", "overflow");
+    return value.nodes.map(issue => Object.freeze({ repositoryId: id(issue.repository?.id, "closing issue repository"), issueId: id(issue.number, "closing issue number") }));
+  }
+
+  async function optional(endpoint) {
+    try { return await page(endpoint); } catch (error) { if (error?.code === "forge" && error.message === "not_found") return null; throw error; }
   }
 
   async function request(endpoint, collection = false) {
@@ -151,9 +189,36 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       contract(kind === "dependabot_alert" || kind === "code_scanning_alert", "alert kind is invalid");
       return request(`/repos/${owner}/${name}/${kind === "dependabot_alert" ? "dependabot/alerts" : "code-scanning/alerts"}/${positiveInteger(number)}`);
     },
+    alerts: kind => {
+      contract(kind === "dependabot_alert" || kind === "code_scanning_alert", "alert kind is invalid");
+      return request(`/repos/${owner}/${name}/${kind === "dependabot_alert" ? "dependabot/alerts" : "code-scanning/alerts"}?state=open`, true);
+    },
     comments: (kind, number) => {
       contract(kind === "issues" || kind === "pulls", "comment kind is invalid");
       return request(`/repos/${owner}/${name}/${kind}/${positiveInteger(number)}/comments`, true);
+    },
+    issueTimeline: number => request(`/repos/${owner}/${name}/issues/${positiveInteger(number)}/timeline`, true),
+    issueParent: number => optional(`/repos/${owner}/${name}/issues/${positiveInteger(number)}/parent`),
+    subIssues: number => request(`/repos/${owner}/${name}/issues/${positiveInteger(number)}/sub_issues`, true),
+    issues: () => request(`/repos/${owner}/${name}/issues?state=all`, true),
+    pulls: () => request(`/repos/${owner}/${name}/pulls?state=all`, true),
+    milestones: () => request(`/repos/${owner}/${name}/milestones?state=all`, true),
+    pullFiles: number => request(`/repos/${owner}/${name}/pulls/${positiveInteger(number)}/files`, true),
+    pullReviews: number => request(`/repos/${owner}/${name}/pulls/${positiveInteger(number)}/reviews`, true),
+    commitChecks: headSha => {
+      contract(typeof headSha === "string" && /^[0-9a-f]{40}$/.test(headSha), "head SHA is invalid");
+      return request(`/repos/${owner}/${name}/commits/${headSha}/check-runs`, "check_runs");
+    },
+    rulesets: () => request(`/repos/${owner}/${name}/rulesets`, true),
+    trustedFile: (path, ref) => {
+      contract(typeof path === "string" && path.split("/").every(part => /^[A-Za-z0-9_.-]+$/.test(part) && part !== "." && part !== ".."), "trusted path is invalid");
+      contract(typeof ref === "string" && /^[0-9a-f]{40}$/.test(ref), "trusted ref is invalid");
+      return request(`/repos/${owner}/${name}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${ref}`);
+    },
+    closingIssues,
+    branchRef: branch => {
+      contract(typeof branch === "string" && /^[A-Za-z0-9._/-]+$/.test(branch) && !branch.includes(".."), "branch is invalid");
+      return request(`/repos/${owner}/${name}/git/ref/heads/${branch.split("/").map(encodeURIComponent).join("/")}`);
     },
     runs: () => request(`/repos/${owner}/${name}/actions/runs`, "workflow_runs"),
   };
@@ -165,8 +230,61 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     if (value.state) resource.state = value.state;
     return Object.freeze(resource);
   };
+  const normalizedContent = (value, source) => contentEnvelope(value ?? "", "untrusted", source);
+  const normalizeLabels = value => {
+    contract(Array.isArray(value), "labels are malformed");
+    return value.map(label => text(typeof label === "string" ? label : label?.name, "label")).sort();
+  };
+  const normalizeIssue = value => {
+    contract(value && Number.isSafeInteger(value.number), "issue is malformed");
+    return Object.freeze({
+      id: id(value.node_id ?? value.id, "issue id"), number: String(value.number), state: text(value.state, "issue state"),
+      updatedAt: text(value.updated_at, "issue updatedAt"), actorId: id(value.user?.node_id ?? value.user?.id, "issue actor"),
+      title: normalizedContent(value.title, `issue:${value.number}:title`), body: normalizedContent(value.body ?? "", `issue:${value.number}:body`),
+      labels: Object.freeze(normalizeLabels(value.labels ?? [])), milestoneId: value.milestone ? id(value.milestone.node_id ?? value.milestone.id ?? value.milestone.number, "milestone id") : null,
+    });
+  };
+  const normalizeComment = (value, entityId, repositoryId) => Object.freeze({
+    id: id(value.node_id ?? value.id, "comment id"), actorId: id(value.user?.node_id ?? value.user?.id, "comment actor"),
+    createdAt: text(value.created_at, "comment createdAt"), updatedAt: text(value.updated_at ?? value.created_at, "comment updatedAt"),
+    entityId: String(entityId), repositoryId,
+    body: normalizedContent(value.body ?? "", `comment:${value.id}:body`),
+  });
+  const normalizePull = value => {
+    contract(value && Number.isSafeInteger(value.number), "pull is malformed");
+    const headSha = text(value.head?.sha, "pull head SHA");
+    contract(/^[0-9a-f]{40}$/.test(headSha), "pull head SHA is malformed");
+    const mergeSha = value.merge_commit_sha === null || value.merge_commit_sha === undefined ? null : text(value.merge_commit_sha, "pull merge SHA");
+    contract(mergeSha === null || /^[0-9a-f]{40}$/.test(mergeSha), "pull merge SHA is malformed");
+    return Object.freeze({
+      id: id(value.node_id ?? value.id, "pull id"), number: String(value.number), state: text(value.state, "pull state"), merged: value.merged === true,
+      mergeSha,
+      updatedAt: text(value.updated_at, "pull updatedAt"), headSha, base: text(value.base?.ref, "pull base"),
+      headRepository: text(value.head?.repo?.full_name, "pull head repository"),
+      title: normalizedContent(value.title, `pull:${value.number}:title`), body: normalizedContent(value.body ?? "", `pull:${value.number}:body`),
+      labels: Object.freeze(normalizeLabels(value.labels ?? [])),
+    });
+  };
+  const normalizeFile = (value, pull) => Object.freeze({
+    path: text(value.filename, "file path"), status: text(value.status, "file status"), additions: Number(value.additions ?? 0), deletions: Number(value.deletions ?? 0),
+    patch: normalizedContent(value.patch ?? "", `pull:${pull}:file:${value.filename}`),
+  });
+  const normalizeReview = (value, pull) => Object.freeze({
+    id: id(value.node_id ?? value.id, "review id"), actorId: id(value.user?.node_id ?? value.user?.id, "review actor"), state: text(value.state, "review state"),
+    headSha: text(value.commit_id, "review head"), submittedAt: text(value.submitted_at, "review submittedAt"), body: normalizedContent(value.body ?? "", `pull:${pull}:review:${value.id}`),
+  });
+  const normalizeCheck = value => Object.freeze({ id: id(value.node_id ?? value.id, "check id"), name: text(value.name, "check name"), headSha: text(value.head_sha, "check head"), status: text(value.status, "check status"), conclusion: value.conclusion === null ? null : text(value.conclusion, "check conclusion") });
+  const normalizeRun = value => Object.freeze({ id: id(value.id, "run id"), name: text(value.name, "run name"), event: text(value.event, "run event"), status: text(value.status, "run status"), conclusion: value.conclusion === null ? null : text(value.conclusion, "run conclusion"), headSha: text(value.head_sha, "run head"), attempt: Number(value.run_attempt ?? 1) });
+  const enrichPull = async (raw, files = null) => {
+    const pull = normalizePull(raw);
+    const rawFiles = files ?? await methods.pullFiles(Number(pull.number));
+    const changedPaths = rawFiles.map(file => text(file.filename, "changed path")).sort();
+    const closing = await methods.closingIssues(Number(pull.number));
+    if (pull.merged && !pull.mergeSha) throw new AdwError("forge", "merged pull lacks merge SHA");
+    const obligations = pull.merged ? ["linked-work", "docs-writer"].map(roleName => Object.freeze({ role: roleName, status: "missing", artifactDigest: null, expectedArtifactDigest: null })) : [];
+    return Object.freeze({ ...pull, changedPaths: Object.freeze(changedPaths), closingIssues: Object.freeze(closing), obligations: Object.freeze(obligations) });
+  };
   const api = {
-    ...methods,
     async readSnapshot(event) {
       const repositoryValue = await methods.repository();
       const normalizedRepository = {
@@ -186,12 +304,182 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       else if (event.kind === "alert") entity = await methods.alert(event.revisionHints.alertKind, Number(event.entityId));
       return Object.freeze({ repository: Object.freeze(normalizedRepository), entity: entity === null ? null : normalizeResource(entity) });
     },
+    async readRoleSnapshot(event, rolePolicy, { controlSha, appId } = {}) {
+      const canonicalPolicy = role(rolePolicy?.name);
+      roleSnapshotPlan(rolePolicy.name, event.kind);
+      contract(digestJson(rolePolicy) === digestJson(canonicalPolicy), "role policy is not canonical");
+      contract(typeof controlSha === "string" && /^[0-9a-f]{40}$/.test(controlSha), "control SHA is invalid");
+      contract(appId === appIdentity.id, "snapshot trust is invalid");
+      const repositoryValue = await methods.repository();
+      const repositoryOwnerId = id(repositoryValue.owner?.node_id ?? repositoryValue.owner?.id, "repository owner id");
+      const normalizedRepository = {
+        id: id(repositoryValue.node_id ?? repositoryValue.id, "repository id"),
+        owner: text(repositoryValue.owner?.login, "repository owner"),
+        name: text(repositoryValue.name, "repository name"),
+        defaultBranch: text(repositoryValue.default_branch, "default branch"),
+      };
+      contract(normalizedRepository.id === event.repository.id && normalizedRepository.owner === event.repository.owner && normalizedRepository.name === event.repository.name, "event repository drifted");
+      const fields = new Set(rolePolicy.snapshot.fields);
+      const satisfied = new Set(["repository"]);
+      const resources = {};
+      const revisions = [];
+      const put = (key, kind, value, token) => {
+        contract(!Object.hasOwn(resources, key), "duplicate snapshot resource");
+        resources[key] = value;
+        revisions.push({ resource: key, kind, token: String(token ?? digestJson(value)) });
+      };
+      put("repository", "repository", Object.freeze(normalizedRepository), digestJson(normalizedRepository));
+      const trustedPaths = [rolePolicy.charter, rolePolicy.payloadSchema];
+      if (rolePolicy.snapshot.fields.includes("spec") || rolePolicy.snapshot.fields.includes("spec_change")) trustedPaths.push("docs/SPEC.md");
+      for (const path of [...new Set(trustedPaths)]) {
+        const input = await methods.trustedFile(path, controlSha);
+        contract(input?.encoding === "base64" && typeof input.content === "string" && typeof input.sha === "string" && /^[0-9a-f]{40}$/.test(input.sha), "trusted content is malformed");
+        const encoded = input.content.replace(/\n/g, "");
+        contract(encoded.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(encoded), "trusted content encoding is malformed");
+        const bytes = Buffer.from(encoded, "base64");
+        contract(bytes.toString("base64") === encoded, "trusted content encoding is malformed");
+        let data;
+        try { data = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { throw new AdwError("forge", "trusted content is not UTF-8"); }
+        contract(Buffer.byteLength(data) <= 65_536, "trusted content is oversized");
+        put(`trusted:${path}`, "control", contentEnvelope(data, "trusted", path), input.sha);
+      }
+      const issueRelated = ["issue", "issue_comment"].includes(event.kind);
+      const pullRelated = ["pull_request", "pull_request_review", "pull_request_review_comment"].includes(event.kind);
+      let issueValue = null;
+      let pullValue = null;
+      let fileValues = [];
+      if (issueRelated && ["issue", "issues", "claim", "spec", "labels", "milestones", "comment", "entity", "owner"].some(field => fields.has(field))) {
+        issueValue = normalizeIssue(await methods.issue(Number(event.entityId)));
+        put(`issue:${event.entityId}`, "issue", issueValue, issueValue.updatedAt);
+        const comments = (await methods.comments("issues", Number(event.entityId))).map(value => normalizeComment(value, event.entityId, normalizedRepository.id));
+        put(`issue:${event.entityId}:comments`, "comments", Object.freeze(comments), digestJson(comments));
+        const timeline = (await methods.issueTimeline(Number(event.entityId))).map(value => Object.freeze({ id: id(value.node_id ?? value.id, "timeline id"), event: text(value.event, "timeline event"), actorId: value.actor ? id(value.actor.node_id ?? value.actor.id, "timeline actor") : null, createdAt: text(value.created_at, "timeline createdAt"), label: value.label?.name ?? null, commitSha: value.commit_id ?? null }));
+        put(`issue:${event.entityId}:timeline`, "timeline", Object.freeze(timeline), digestJson(timeline));
+        const parentValue = await methods.issueParent(Number(event.entityId));
+        const parent = parentValue === null ? null : normalizeIssue(parentValue);
+        put(`issue:${event.entityId}:parent`, "parent_issue", parent, digestJson(parent));
+        const children = (await methods.subIssues(Number(event.entityId))).map(normalizeIssue);
+        put(`issue:${event.entityId}:children`, "sub_issues", Object.freeze(children), digestJson(children));
+        for (const field of ["issue", "claim", "spec", "labels", "comment", "entity", "owner", "route"]) if (fields.has(field)) satisfied.add(field);
+        if (event.kind === "issue" && event.revisionHints.updatedAt && issueValue.updatedAt !== event.revisionHints.updatedAt) throw new AdwError("forge", "stale");
+        if (event.revisionHints.commentId && !comments.some(comment => comment.id === event.revisionHints.commentId && comment.updatedAt === event.revisionHints.updatedAt)) throw new AdwError("forge", "stale");
+      }
+      if (fields.has("issues")) {
+        const issues = (await methods.issues()).filter(value => !value.pull_request).map(normalizeIssue);
+        put("issues", "issues", Object.freeze(issues), digestJson(issues));
+        satisfied.add("issues");
+      }
+      if (fields.has("pulls")) {
+        const rawPulls = await methods.pulls();
+        if (rawPulls.length > 100) throw new AdwError("forge", "overflow");
+        const pulls = [];
+        for (const rawPull of rawPulls) pulls.push(await enrichPull(rawPull));
+        put("pulls", "pulls", Object.freeze(pulls), digestJson(pulls));
+        satisfied.add("pulls");
+      }
+      if (fields.has("milestones")) {
+        const milestones = (await methods.milestones()).map(value => Object.freeze({ id: id(value.node_id ?? value.id ?? value.number, "milestone id"), number: id(value.number, "milestone number"), state: text(value.state, "milestone state"), dueOn: value.due_on ?? null, title: normalizedContent(value.title, `milestone:${value.number}:title`), description: normalizedContent(value.description ?? "", `milestone:${value.number}:description`) }));
+        put("milestones", "milestones", Object.freeze(milestones), digestJson(milestones));
+        satisfied.add("milestones");
+      }
+      if (["pull", "diff", "files", "reviews", "security", "changed_paths", "findings", "docs", "dependency"].some(field => fields.has(field)) && pullRelated) {
+        const rawPull = await methods.pull(Number(event.entityId));
+        const rawFiles = await methods.pullFiles(Number(event.entityId));
+        pullValue = await enrichPull(rawPull, rawFiles);
+        put(`pull:${event.entityId}`, "pull", pullValue, pullValue.headSha);
+        fileValues = rawFiles.map(value => normalizeFile(value, event.entityId));
+        put(`pull:${event.entityId}:files`, "files", Object.freeze(fileValues), digestJson(fileValues));
+        const reviews = (await methods.pullReviews(Number(event.entityId))).map(value => normalizeReview(value, event.entityId));
+        put(`pull:${event.entityId}:reviews`, "reviews", Object.freeze(reviews), digestJson(reviews));
+        const comments = (await methods.comments("issues", Number(event.entityId))).map(value => normalizeComment(value, event.entityId, normalizedRepository.id));
+        put(`pull:${event.entityId}:comments`, "comments", Object.freeze(comments), digestJson(comments));
+        const checks = (await methods.commitChecks(pullValue.headSha)).map(normalizeCheck);
+        put(`pull:${event.entityId}:checks`, "checks", Object.freeze(checks), digestJson(checks));
+        for (const field of ["pull", "diff", "files", "reviews", "security", "changed_paths", "findings", "docs", "dependency"]) if (fields.has(field)) satisfied.add(field);
+        if (event.revisionHints.headSha && pullValue.headSha !== event.revisionHints.headSha) throw new AdwError("forge", "stale");
+        if (event.revisionHints.baseRef && pullValue.base !== event.revisionHints.baseRef) throw new AdwError("forge", "stale");
+        if (event.revisionHints.headRepository && pullValue.headRepository !== event.revisionHints.headRepository) throw new AdwError("forge", "stale");
+        if (event.revisionHints.reviewId && !reviews.some(review => review.id === event.revisionHints.reviewId && review.headSha === event.revisionHints.headSha)) throw new AdwError("forge", "stale");
+      }
+      if (fields.has("runs") || fields.has("routes")) {
+        const runs = (await methods.runs()).map(normalizeRun);
+        put("runs", "workflow_runs", Object.freeze(runs), digestJson(runs));
+        if (fields.has("runs")) satisfied.add("runs");
+        if (fields.has("routes")) satisfied.add("routes");
+      }
+      if (fields.has("alert")) {
+        const alertValues = event.kind === "alert"
+          ? [await methods.alert(event.revisionHints.alertKind, Number(event.entityId))]
+          : [...await methods.alerts("dependabot_alert"), ...await methods.alerts("code_scanning_alert")];
+        const alerts = alertValues.map(alert => Object.freeze({ id: id(alert.node_id ?? alert.number, "alert id"), state: text(alert.state, "alert state"), updatedAt: text(alert.updated_at, "alert updatedAt"), details: normalizedContent(alert, `alert:${alert.number}`) }));
+        put("alerts", "alerts", Object.freeze(alerts), digestJson(alerts));
+        satisfied.add("alert");
+        if (event.kind === "alert" && !alerts.some(alert => alert.updatedAt === event.revisionHints.updatedAt)) throw new AdwError("forge", "stale");
+      }
+      if (fields.has("settings") || fields.has("config")) {
+        const rulesets = (await methods.rulesets()).map(value => Object.freeze({ id: id(value.id, "ruleset id"), name: text(value.name, "ruleset name"), enforcement: text(value.enforcement, "ruleset enforcement"), target: text(value.target, "ruleset target"), sourceType: text(value.source_type, "ruleset source type") }));
+        put("rulesets", "settings", Object.freeze(rulesets), digestJson(rulesets));
+        if (fields.has("settings")) satisfied.add("settings");
+        if (fields.has("config")) satisfied.add("config");
+      }
+      if (fields.has("spec_change")) satisfied.add("spec_change");
+      if (event.kind === "push") {
+        const ref = await methods.branchRef(normalizedRepository.defaultBranch);
+        const liveHead = text(ref.object?.sha, "branch head");
+        if (liveHead !== event.revisionHints.headSha) throw new AdwError("forge", "stale");
+        put(`ref:${normalizedRepository.defaultBranch}`, "git_ref", Object.freeze({ headSha: liveHead }), liveHead);
+      }
+      let patchBase = null;
+      if (rolePolicy.patch !== null && rolePolicy.name !== "reviser") {
+        const ref = await methods.branchRef(normalizedRepository.defaultBranch);
+        patchBase = text(ref.object?.sha, "patch base head");
+        contract(/^[0-9a-f]{40}$/.test(patchBase), "patch base head is malformed");
+        put(`patch-base:${normalizedRepository.defaultBranch}`, "git_ref", Object.freeze({ headSha: patchBase }), patchBase);
+      }
+      for (const field of fields) if (!satisfied.has(field)) throw new AdwError("forge", `unsupported role field: ${field}`);
+      const labels = issueValue?.labels ?? pullValue?.labels ?? [];
+      const protectedPrefixes = ["adw/", ".claude/", ".github/"];
+      const protectedFiles = ["docs/SPEC.md", "docs/PROJECT-INVARIANTS.md"];
+      const missingPatches = fileValues.filter(file => file.patch.data === "");
+      const input = {
+        protected: fileValues.some(file => protectedPrefixes.some(prefix => file.path.startsWith(prefix)) || protectedFiles.includes(file.path)),
+        incomplete: missingPatches.length > 0,
+        fork: pullValue ? pullValue.headRepository !== `${owner}/${name}` : false,
+        binary: missingPatches.length > 0,
+        oversized: false,
+      };
+      const state = {
+        entityId: event.entityId, labels, input: Object.freeze(input), resources: Object.freeze(resources),
+        actionTargets: Object.freeze(resources.runs?.map(run => run.id) ?? []),
+        ownerAuthenticated: event.actor.type === "User" && event.actor.login === normalizedRepository.owner && event.actor.id === repositoryOwnerId,
+        trust: Object.freeze({ ownerIds: [repositoryOwnerId], appId }),
+      };
+      if (pullValue) state.headSha = pullValue.headSha;
+      if (patchBase !== null) {
+        const source = issueValue ?? pullValue;
+        contract(source !== null, "patch role lacks source entity");
+        state.baseBranch = normalizedRepository.defaultBranch;
+        state.headBranch = rolePolicy.name === "docs-writer" ? `docs/pr-${event.entityId}` : rolePolicy.name === "pioneer" ? `pioneer/issue-${event.entityId}` : `${rolePolicy.primary}/issue-${event.entityId}`;
+        state.title = source.title;
+        state.body = source.body;
+      }
+      const snapshot = validateSnapshot({
+        schemaVersion: 1, controlSha,
+        event: { kind: event.kind, action: event.action, entityId: event.entityId },
+        repository: normalizedRepository,
+        revisions: revisions.sort((a, b) => a.resource.localeCompare(b.resource)),
+        routing: { role: rolePolicy.name, mode: rolePolicy.mode, primary: rolePolicy.primary },
+        state,
+      });
+      contract(canonicalBytes(snapshot).length <= rolePolicy.snapshot.maxBytes, "role snapshot is oversized");
+      return snapshot;
+    },
     record(operation) {
       const value = validateOperation(operation, policy);
       intentsByDigest.set(digestJson(value), value);
     },
     intents: () => Object.freeze([...intentsByDigest.values()].sort((a, b) => digestJson(a).localeCompare(digestJson(b)))),
-    capabilities: () => Object.freeze(["actions:read", "checks:read", "issues:read", "pulls:read", "repository:read"]),
+    capabilities: () => Object.freeze(["actions:read", "alerts:read", "checks:read", "issues:read", "pulls:read", "repository:read", "settings:read"]),
   };
   return Object.freeze(api);
 }

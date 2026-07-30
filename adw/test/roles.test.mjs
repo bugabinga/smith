@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
-import { digestBytes, digestJson } from "../core.mjs";
+import { canonicalBytes, digestBytes, digestJson } from "../core.mjs";
 import {
   OPERATIONS, PROVIDERS, defineRole, deterministicRole, listDeterministicRoles,
   listRoles, reduceRoleArtifact, role, validateRolePayload,
@@ -111,7 +111,9 @@ test("role payload families accept only exact semantic artifacts", () => {
   };
   for (const [name, payload] of Object.entries(samples)) assert.deepEqual(validateRolePayload(name, payload), payload);
   assert.throws(() => validateRolePayload("reviewer", { verdict: "approve", risk: "none", findings: [], command: "merge" }), error => error?.code === "contract");
-  assert.throws(() => validateRolePayload("builder", { verdict: "patch", summary: "x", patch: { ...patch, files: [{ ...patch.files[0], path: "adw/core.mjs" }] } }), error => error?.code === "contract");
+  for (const path of ["adw/core.mjs", ".claude/agents/builder.md", ".github/workflows/ci.yml"]) {
+    assert.throws(() => validateRolePayload("builder", { verdict: "patch", summary: "x", patch: { ...patch, files: [{ ...patch.files[0], path }] } }), error => error?.code === "contract");
+  }
 });
 
 test("payload schema files exist for every family", async () => {
@@ -141,6 +143,8 @@ test("explicit no-op is valid for every provider role", () => {
 
 function roleCase(name, payload, state, patch = null, patchBytes = null) {
   const policy = role(name);
+  state = { ...state };
+  for (const key of ["title", "body"]) if (typeof state[key] === "string") state[key] = { trust: "untrusted", source: `fixture:${key}`, bytes: canonicalBytes(state[key]).length, digest: digestJson(state[key]), data: state[key] };
   const snapshot = {
     schemaVersion: 1,
     controlSha: "a".repeat(40),

@@ -123,11 +123,11 @@
 - Modify: `adw/test/github.test.mjs`
 - Create: `adw/test/fixtures/snapshots/*.json`
 
-- [ ] Write failing tests for role/event snapshot plans covering owner-authenticated steering comments, issue comments/timeline/labels/milestones/parent links, PR diff metadata/reviews/checks/files, workflow runs, alerts, settings/rulesets read-only, and merged-PR obligations.
-- [ ] Add only closed adapter methods and normalized records; no generic endpoint/path or raw GitHub JSON escapes. Every content field is an exact envelope `{ trust: "trusted|untrusted", source, bytes, digest, data }`: base-branch charters/config are trusted; issue/PR/comment/diff/provider text is untrusted and prompt assembly states that boundary explicitly.
-- [ ] Enforce each role’s declared fields/max bytes, page/record/scan caps, trusted App/owner IDs, control SHA, and resource revision list.
-- [ ] Required truncation/overflow/unsupported capability fails `forge`; optional absent data is explicit null/empty.
-- [ ] Run GitHub snapshot tests and commit: `Build bounded role snapshots from forge state`.
+- [x] Write failing tests for role/event snapshot plans covering owner-authenticated steering comments, issue comments/timeline/labels/milestones/parent links, PR diff metadata/reviews/checks/files, workflow runs, alerts, settings/rulesets read-only, and merged-PR obligations.
+- [x] Add only closed adapter methods and normalized records; no generic endpoint/path or raw GitHub JSON escapes. Every content field is an exact envelope `{ trust: "trusted|untrusted", source, bytes, digest, data }`: base-branch charters/config are trusted; issue/PR/comment/diff/provider text is untrusted and prompt assembly states that boundary explicitly.
+- [x] Enforce each role’s declared fields/max bytes, page/record/scan caps, trusted App/owner IDs, control SHA, and resource revision list.
+- [x] Required truncation/overflow/unsupported capability fails `forge`; optional absent data is explicit null/empty.
+- [x] Run GitHub snapshot tests and commit: `Build bounded role snapshots from forge state`.
 
 ### Task 6: Full offline role scenarios and parity
 

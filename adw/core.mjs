@@ -558,7 +558,7 @@ const GLOBAL_DENIED_PATHS = [
   ".claude/settings.json", ".github/workflows/adw-issues.yml",
   ".github/workflows/adw-pulls.yml", ".github/workflows/adw-maintenance.yml",
 ];
-const GLOBAL_DENIED_PREFIXES = ["adw/", ".github/rulesets/"];
+const GLOBAL_DENIED_PREFIXES = ["adw/", ".claude/", ".github/"];
 
 function matchesRule(path, rule) {
   return rule.endsWith("/**") ? path.startsWith(rule.slice(0, -2)) : path === rule;
@@ -718,10 +718,10 @@ export function planReconciliation(request) {
       obligationRoles.add(obligation.role);
       oneOf(obligation.status, new Set(["missing", "complete", "failed"]), "obligation.status");
       if (obligation.artifactDigest !== null) digest(obligation.artifactDigest, "obligation.artifactDigest");
-      digest(obligation.expectedArtifactDigest, "obligation.expectedArtifactDigest");
-      if (obligation.status === "complete" && obligation.artifactDigest !== obligation.expectedArtifactDigest) fail("completed obligation lacks expected artifact");
+      if (obligation.expectedArtifactDigest !== null) digest(obligation.expectedArtifactDigest, "obligation.expectedArtifactDigest");
+      if (obligation.status === "complete" && (obligation.artifactDigest === null || (obligation.expectedArtifactDigest !== null && obligation.artifactDigest !== obligation.expectedArtifactDigest))) fail("completed obligation lacks expected artifact");
       if (obligation.status !== "complete" && obligation.artifactDigest !== null) fail("incomplete obligation has artifact");
-      const imported = markers.some(marker => marker.kind === "finalization" && marker.value.repositoryId === snapshot.repository.id && marker.value.prId === pull.prId && marker.value.mergeSha === pull.mergeSha && marker.value.role === obligation.role && marker.value.status === "complete" && marker.value.artifactDigest === obligation.expectedArtifactDigest);
+      const imported = markers.some(marker => marker.kind === "finalization" && marker.value.repositoryId === snapshot.repository.id && marker.value.prId === pull.prId && marker.value.mergeSha === pull.mergeSha && marker.value.role === obligation.role && marker.value.status === "complete" && marker.value.artifactDigest !== null && (obligation.expectedArtifactDigest === null || marker.value.artifactDigest === obligation.expectedArtifactDigest));
       if ((obligation.status === "missing" || obligation.status === "failed") && !imported && !held.has(`pr:${pull.prId}`) && !held.has("repository")) intents.push({ kind: "run_obligation", prId: pull.prId, mergeSha: pull.mergeSha, role: obligation.role });
     }
   }

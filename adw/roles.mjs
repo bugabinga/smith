@@ -289,6 +289,12 @@ function operationMarker(assessmentDigest) {
   return `smith:adw-artifact/v1:${assessmentDigest}`;
 }
 
+function stateContent(value, name) {
+  if (!value || Object.keys(value).sort().join(",") !== "bytes,data,digest,source,trust" || value.trust !== "untrusted" || typeof value.data !== "string" || value.bytes !== canonicalBytes(value.data).length || value.digest !== digestJson(value.data)) payloadFail(`${name} is not bound untrusted content`);
+  payloadText(value.data, name);
+  return value.data;
+}
+
 function reductionState(snapshot) {
   const state = snapshot.state;
   if (typeof state.entityId !== "string" || state.entityId.length === 0) payloadFail("snapshot entity is required");
@@ -360,15 +366,15 @@ export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessment
     } else if (rolePolicy.name === "reviser") {
       operations = [{ type: "update_pr", prId: state.entityId, body: payload.summary }];
     } else {
-      for (const key of ["headBranch", "baseBranch", "title", "body"]) payloadText(state[key], `snapshot ${key}`);
-      operations = [{ type: "create_pr", head: state.headBranch, base: state.baseBranch, title: state.title, body: state.body, marker }];
+      for (const key of ["headBranch", "baseBranch"]) payloadText(state[key], `snapshot ${key}`);
+      operations = [{ type: "create_pr", head: state.headBranch, base: state.baseBranch, title: stateContent(state.title, "snapshot title"), body: stateContent(state.body, "snapshot body"), marker }];
     }
   } else if (rolePolicy.payloadFamily === "pioneer") {
     if (payload.verdict === "proved") {
       if (state.closingArtifactQualifies === true) operations = [{ type: "noop", reason: "already_complete" }];
       else if (assessment.patch) {
-        for (const key of ["headBranch", "baseBranch", "title", "body"]) payloadText(state[key], `snapshot ${key}`);
-        operations = [{ type: "create_pr", head: state.headBranch, base: state.baseBranch, title: state.title, body: state.body, marker }];
+        for (const key of ["headBranch", "baseBranch"]) payloadText(state[key], `snapshot ${key}`);
+        operations = [{ type: "create_pr", head: state.headBranch, base: state.baseBranch, title: stateContent(state.title, "snapshot title"), body: stateContent(state.body, "snapshot body"), marker }];
       } else payloadFail("proof lacks a qualifying artifact");
     } else if (payload.verdict === "disproved") {
       operations = [{ type: "add_label", entityId: state.entityId, label: "needs:spec" }, { type: "comment", entityId: state.entityId, body: payload.summary, marker }];
