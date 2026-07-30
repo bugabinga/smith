@@ -478,7 +478,7 @@ test("patch manifest enforces role and global boundaries", () => {
     files: [{ path: "docs/guide.md", kind: "regular", oldMode: "100644", newMode: "100644" }],
   };
   assert.deepEqual(validatePatchManifest(manifest, patchRole), manifest);
-  for (const path of ["../secret", "/tmp/x", ".git/config", ".gitmodules", "adw/core.mjs", "docs/SPEC.md", "site/index.html"]) {
+  for (const path of ["../secret", "/tmp/x", ".git/config", ".gitmodules", "adw/core.mjs", "docs/SPEC.md", "site/index.html", "docs-evil/guide.md"]) {
     assert.throws(() => validatePatchManifest({ ...manifest, files: [{ ...manifest.files[0], path }] }, patchRole), error => error?.code === "contract");
   }
   assert.throws(() => validatePatchManifest({ ...manifest, files: [{ ...manifest.files[0], kind: "binary" }] }, patchRole), error => error?.code === "contract");

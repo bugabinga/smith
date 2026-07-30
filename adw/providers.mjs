@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
-import { chmod, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, sep } from "node:path";
-import { AdwError, digestJson, validateAssessmentArtifact } from "./core.mjs";
+import { constants } from "node:fs";
+import { chmod, lstat, mkdir, open, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { AdwError, digestJson, validateAssessmentArtifact, validatePatchManifest } from "./core.mjs";
 
 export const PROVIDER_PINS = Object.freeze({
   claude: Object.freeze({ package: "@anthropic-ai/claude-code", version: "2.1.220", executable: "claude" }),
@@ -22,6 +23,7 @@ function validateRequest(request) {
   if (!Number.isInteger(request.timeoutMs) || request.timeoutMs < 1 || request.timeoutMs > 300_000) rejectRequest("timeout");
   if (!Number.isInteger(request.maxOutputBytes) || request.maxOutputBytes < 1 || request.maxOutputBytes > 1_048_576) rejectRequest("output");
   if (request.captureHttpStatus !== undefined && typeof request.captureHttpStatus !== "boolean") rejectRequest("http status");
+  if (request.signal !== undefined && !(request.signal instanceof AbortSignal)) rejectRequest("signal");
 }
 
 function terminate(child) {
@@ -61,6 +63,12 @@ export async function runProcess(request, spawnImpl = spawn) {
     let stderrBytes = 0;
     let failure = null;
     let killTimer;
+    const abort = () => {
+      failure ??= "timeout";
+      killTimer ??= terminate(child);
+    };
+    request.signal?.addEventListener("abort", abort, { once: true });
+    if (request.signal?.aborted) abort();
     const timeout = setTimeout(() => {
       failure ??= "timeout";
       killTimer ??= terminate(child);
@@ -71,7 +79,7 @@ export async function runProcess(request, spawnImpl = spawn) {
       const bytes = Buffer.from(chunk);
       if (stream === "stdout") stdoutBytes += bytes.length;
       else stderrBytes += bytes.length;
-      if (stdoutBytes > request.maxOutputBytes || stderrBytes > request.maxOutputBytes) {
+      if (stdoutBytes + stderrBytes > request.maxOutputBytes) {
         failure ??= "output";
         killTimer ??= terminate(child);
         return;
@@ -86,7 +94,7 @@ export async function runProcess(request, spawnImpl = spawn) {
     });
     child.once("close", (code, signal) => {
       clearTimeout(timeout);
-      if (killTimer) clearTimeout(killTimer);
+      request.signal?.removeEventListener("abort", abort);
       const details = { code, signal };
       if (request.captureHttpStatus) {
         const matches = `${Buffer.concat(stdout)}\n${Buffer.concat(stderr)}`.matchAll(/HTTP\/\S+\s+(\d{3})/g);
@@ -117,12 +125,20 @@ function baseEnvironment(input, home) {
   return env;
 }
 
-async function externalPath(path, repository) {
+async function externalPath(path, repository, allowSymlink = false) {
   if (!isAbsolute(path) || !isAbsolute(repository)) rejectRequest("path");
   const repo = await realpath(repository);
   const parent = await realpath(dirname(path));
-  if (parent === repo || parent.startsWith(`${repo}${sep}`)) rejectRequest("path");
-  return { repo, parent };
+  let target = resolve(parent, basename(path));
+  try {
+    const stat = await lstat(path);
+    if (stat.isSymbolicLink() && !allowSymlink) rejectRequest("path");
+    target = await realpath(path);
+  } catch (error) {
+    if (error instanceof AdwError || error?.code !== "ENOENT") throw error;
+  }
+  if (target === repo || target.startsWith(`${repo}${sep}`) || repo.startsWith(`${target}${sep}`)) rejectRequest("path");
+  return { repo, parent, target };
 }
 
 export async function installProvider({ provider, prefix, npmPath, repository, run = runProcess, baseEnv }) {
@@ -137,7 +153,7 @@ export async function installProvider({ provider, prefix, npmPath, repository, r
   });
   const executable = join(prefix, "node_modules", ".bin", pin.executable);
   const version = await run({ file: executable, args: ["--version"], cwd: dirname(prefix), env, input: "", timeoutMs: 30_000, maxOutputBytes: 4096 });
-  if (!new RegExp(`(^|[^0-9])${pin.version.replaceAll(".", "\\.")}([^0-9]|$)`).test(`${version.stdout}\n${version.stderr}`)) rejectRequest("version");
+  if (!new RegExp(`(^|\\s)${pin.version.replaceAll(".", "\\.")}(?=$|\\s|\\()`, "m").test(`${version.stdout}\n${version.stderr}`)) rejectRequest("version");
   return Object.freeze({ executable, version: pin.version });
 }
 
@@ -157,26 +173,28 @@ function parsePayload(text) {
 
 export async function invokeProvider({
   provider, executable, cliVersion, rolePolicy, snapshot, idempotencyKey, prompt,
-  schemaPath, home, repository, credential, runIdentity, baseEnv, now, run = runProcess,
+  schemaPath, home, repository, credential, runIdentity, baseEnv, now,
+  patchBytes, run = runProcess, remove = rm,
 }) {
   const pin = PROVIDER_PINS[provider];
   if (!pin || !isAbsolute(executable) || !isAbsolute(schemaPath) || !isAbsolute(home)) rejectRequest("invoke");
   if (cliVersion !== pin.version || rolePolicy.providerConfig[provider]?.model === undefined) rejectRequest("version");
+  const tool = (await externalPath(executable, repository, true)).target;
   if (typeof prompt !== "string" || Buffer.byteLength(prompt) > 262_144) rejectRequest("prompt");
   await externalPath(home, repository);
   const auth = exactCredential(provider, credential);
-  const schema = await readFile(schemaPath, "utf8");
-  if (Buffer.byteLength(schema) > 262_144) rejectRequest("schema");
   const startedAt = now();
   let raw;
   try {
     await mkdir(home, { recursive: true, mode: 0o700 });
+    const schema = await readFile(schemaPath, "utf8");
+    if (Buffer.byteLength(schema) > 262_144) rejectRequest("schema");
     const env = baseEnvironment(baseEnv, home);
     env[auth.key] = auth.value;
     const config = rolePolicy.providerConfig[provider];
     if (provider === "claude") {
       const result = await run({
-        file: executable,
+        file: tool,
         args: ["-p", prompt, "--output-format", "json", "--json-schema", schema, "--model", config.model],
         cwd: repository, env, input: "", timeoutMs: config.timeoutSeconds * 1000, maxOutputBytes: 262_144,
       });
@@ -191,13 +209,25 @@ export async function invokeProvider({
       delete env.CODEX_AUTH_JSON;
       const output = join(home, "result.json");
       await run({
-        file: executable,
+        file: tool,
         args: ["exec", "-m", config.model, "-c", `model_reasoning_effort=${config.effort}`, "--sandbox", "workspace-write", "--output-schema", schemaPath, "--output-last-message", output, prompt],
         cwd: repository, env, input: "", timeoutMs: config.timeoutSeconds * 1000, maxOutputBytes: 262_144,
       });
-      raw = parsePayload(await readFile(output, "utf8"));
+      let outputFile;
+      try {
+        outputFile = await open(output, constants.O_RDONLY | constants.O_NOFOLLOW);
+        const outputStat = await outputFile.stat();
+        if (!outputStat.isFile() || outputStat.size > 262_144) rejectRequest("output");
+        raw = parsePayload(await outputFile.readFile("utf8"));
+      } finally {
+        await outputFile?.close();
+      }
     }
     if (!raw || Array.isArray(raw) || !rolePolicy.payload.outcomes.includes(raw.outcome) || typeof raw.payload !== "object" || raw.payload === null) rejectRequest("malformed");
+    if (rolePolicy.payload.requiredKeys.some(key => !Object.hasOwn(raw.payload, key))) rejectRequest("malformed");
+    if (raw.patch !== null && raw.patch !== undefined) {
+      try { validatePatchManifest(raw.patch, rolePolicy); } catch { rejectRequest("malformed"); }
+    }
     const assessment = {
       schemaVersion: 1,
       controlSha: snapshot.controlSha,
@@ -215,11 +245,15 @@ export async function invokeProvider({
       startedAt,
       completedAt: now(),
     };
-    return validateAssessmentArtifact({ assessment, patchBytes: undefined });
+    return validateAssessmentArtifact({ assessment, patchBytes });
   } catch (error) {
     if (error instanceof AdwError && error.code === "provider") throw error;
     throw new AdwError("provider", "malformed");
   } finally {
-    await rm(home, { recursive: true, force: true }).catch(() => {});
+    try {
+      await remove(home, { recursive: true, force: true });
+    } catch {
+      throw new AdwError("provider", "cleanup");
+    }
   }
 }

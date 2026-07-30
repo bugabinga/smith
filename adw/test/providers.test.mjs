@@ -86,6 +86,10 @@ test("provider pins install into an external temporary prefix", async t => {
   assert.equal(result.version, "0.145.0");
   assert.deepEqual(calls[0].args, ["install", "--prefix", prefix, "--no-save", "--package-lock=false", "@openai/codex@0.145.0"]);
   assert.ok(calls[1].file.endsWith("node_modules/.bin/codex"));
+  await assert.rejects(
+    () => installProvider({ provider: "codex", prefix: process.cwd(), npmPath: process.execPath, repository: process.cwd(), run: fakeRun, baseEnv: base.env }),
+    error => error?.code === "provider" && error.message === "path",
+  );
 });
 
 function role(provider) {
@@ -140,6 +144,36 @@ test("Claude invocation receives only Claude credential and stamps envelope", as
   assert.equal(Object.hasOwn(call.env, "GH_TOKEN"), false);
   assert.equal(call.args.includes("--bare"), false);
   assert.ok(call.args.includes("--json-schema"));
+});
+
+test("provider invocation enforces role payload keys", async () => {
+  const home = await mkdtemp(join(tmpdir(), "smith-adw-payload-"));
+  await assert.rejects(
+    () => invokeProvider({
+      provider: "claude", executable: process.execPath, cliVersion: "2.1.220", rolePolicy: role("claude"), snapshot,
+      idempotencyKey: "review:42", prompt: "review", schemaPath: join(process.cwd(), "adw/schemas/assessment.schema.json"),
+      home, repository: process.cwd(), credential: { CLAUDE_CODE_OAUTH_TOKEN: "secret" },
+      runIdentity: { id: "run", job: "claude", attempt: 1 }, baseEnv: base.env, now: () => "2026-07-28T10:00:00.000Z",
+      run: async () => ({ code: 0, signal: null, stdout: JSON.stringify({ structured_output: { outcome: "positive", payload: {}, patch: null } }), stderr: "" }),
+    }),
+    error => error?.code === "provider" && error.message === "malformed",
+  );
+});
+
+test("provider cleanup failure cannot report success", async () => {
+  const home = await mkdtemp(join(tmpdir(), "smith-adw-cleanup-"));
+  await assert.rejects(
+    () => invokeProvider({
+      provider: "claude", executable: process.execPath, cliVersion: "2.1.220", rolePolicy: role("claude"), snapshot,
+      idempotencyKey: "review:42", prompt: "review", schemaPath: join(process.cwd(), "adw/schemas/assessment.schema.json"),
+      home, repository: process.cwd(), credential: { CLAUDE_CODE_OAUTH_TOKEN: "secret" },
+      runIdentity: { id: "run", job: "claude", attempt: 1 }, baseEnv: base.env, now: () => "2026-07-28T10:00:00.000Z",
+      run: async () => ({ code: 0, signal: null, stdout: JSON.stringify({ structured_output: { outcome: "positive", payload: { verdict: "approve" }, patch: null } }), stderr: "" }),
+      remove: async () => { throw new Error("denied"); },
+    }),
+    error => error?.code === "provider" && error.message === "cleanup",
+  );
+  await rm(home, { recursive: true, force: true });
 });
 
 test("Codex auth file is mode-0600 and removed in finally", async () => {

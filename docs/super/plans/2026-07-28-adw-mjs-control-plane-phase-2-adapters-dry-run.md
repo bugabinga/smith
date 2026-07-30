@@ -1,6 +1,6 @@
 # ADW Credential-Isolated Adapters and Dry-Run Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use /skill:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use /skill:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Add bounded GitHub, VCS, and provider adapters plus a read-only dry-run without granting the inert Phase 1 core production authority.
 
@@ -33,7 +33,7 @@
 - Create: `adw/providers.mjs`
 - Create: `adw/test/providers.test.mjs`
 
-- [ ] **Step 1: Write failing process-runner tests**
+- [x] **Step 1: Write failing process-runner tests**
 
 Test `runProcess(request, spawnImpl)` with an injected fake child and one real `process.execPath -e` control. Exact request:
 
@@ -51,17 +51,17 @@ Test `runProcess(request, spawnImpl)` with an injected fake child and one real `
 
 Assert `shell: false`, `windowsHide: true`, piped stdin/stdout/stderr, exact argv/env, output capture, nonzero exit classification, spawn error, timeout/abort, stdout/stderr overflow, and no inherited `GH_TOKEN`, provider credential, SSH agent, or arbitrary process env.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `node --test adw/test/providers.test.mjs`
 
 Expected: FAIL because `adw/providers.mjs` does not exist.
 
-- [ ] **Step 3: Implement `runProcess`**
+- [x] **Step 3: Implement `runProcess`**
 
 Use `spawn(file, args, { cwd, env, shell: false, detached: process.platform !== "win32", windowsHide: true, stdio: ["pipe", "pipe", "pipe"] })`. Reject non-absolute `file`/`cwd`, non-string argv/env/input, timeout outside 1–300,000 ms, and output limits outside 1–1,048,576 bytes. On timeout/overflow, send SIGTERM then SIGKILL to the detached process group (`process.kill(-pid, ...)`) or child on Windows; clear timers/listeners and await close in `finally`. Throw `AdwError("provider", reason)` with only `spawn|timeout|exit|output`; retain numeric exit/signal in `details`, never stderr text.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 Run: `node --test adw/test/providers.test.mjs`
 
@@ -79,7 +79,7 @@ git commit -S -m "Add the bounded provider process boundary"
 - Modify: `adw/providers.mjs`
 - Modify: `adw/test/providers.test.mjs`
 
-- [ ] **Step 1: Write failing provider tests**
+- [x] **Step 1: Write failing provider tests**
 
 Assert exported immutable pins:
 
@@ -100,17 +100,17 @@ Test `invokeProvider` with injected runner/filesystem:
 - Malformed/oversized/missing payload, wrong schema outcome, version failure, auth/429 exit, timeout, and cleanup failure return sanitized provider failure.
 - Success stamps schema version, role/provider/model, control SHA, snapshot/idempotency/payload digests, CLI version, run identity, and timestamps; provider output cannot set envelope fields.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `node --test --test-name-pattern='install|Claude|Codex|envelope' adw/test/providers.test.mjs`
 
 Expected: FAIL because provider APIs are missing.
 
-- [ ] **Step 3: Implement install/auth/invocation**
+- [x] **Step 3: Implement install/auth/invocation**
 
 Use temporary prefixes/homes supplied by caller, validate their `realpath` parent is outside the repository realpath, then use `mkdir`/`writeFile`/`chmod`/`rm` from `node:fs/promises` and the Task 1 runner. Parse only the schema-constrained final payload, cap prompt/schema/payload at 256 KiB, validate outcome/payload against the supplied frozen role policy, and call `validateAssessmentArtifact` before returning. Installation runs with no provider/forge secret. Provider invocation receives exactly one provider credential; missing/extra credential keys fail before spawn.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 Run: `node --test adw/test/providers.test.mjs`
 
@@ -129,7 +129,7 @@ git commit -S -m "Isolate exact-pinned provider assessments"
 - Create: `adw/test/github.test.mjs`
 - Create: `adw/test/fixtures/events/*.json`
 
-- [ ] **Step 1: Write failing event and API tests**
+- [x] **Step 1: Write failing event and API tests**
 
 Test `normalizeEvent(name, payload)` for issue, issue-comment, pull-request, review, review-comment, check/workflow, push, schedule, Dependabot/code-scanning alert, and dispatch fixtures. Output is exact `{ kind, action, entityId, repository, actor, revisionHints }`; absent IDs/repository/action and unsupported events throw `AdwError("contract", ...)`.
 
@@ -143,17 +143,17 @@ Test `createGitHub({ repository, token, appIdentity, ghPath, runProcess })`:
 - `capabilities()` is frozen and advertises Phase 2 read capabilities only;
 - `record(operation)` validates the closed operation, stores canonical deduplicated intents, and never invokes `gh`.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `node --test adw/test/github.test.mjs`
 
 Expected: FAIL because `adw/github.mjs` does not exist.
 
-- [ ] **Step 3: Implement the adapter**
+- [x] **Step 3: Implement the adapter**
 
 Keep every `gh`, `GH_TOKEN`, GitHub event key, closed endpoint, pagination flag, and App identity field in this file. Use injected `runProcess`; never concatenate shell commands. `readSnapshot(event)` dispatches only to the closed methods above and reads repository metadata plus the event entity; Phase 3 adds role-specific expansion. Mutator methods do not exist in Phase 2—only `record` and `intents`.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 Run: `node --test adw/test/github.test.mjs`
 
@@ -171,7 +171,7 @@ git commit -S -m "Bound GitHub reads behind one adapter"
 - Create: `adw/vcs.mjs`
 - Create: `adw/test/vcs.test.mjs`
 
-- [ ] **Step 1: Write failing VCS tests**
+- [x] **Step 1: Write failing VCS tests**
 
 Create a temporary real Git repository with one committed file using `mkdtemp`; never clone. Test `verifyPatch({ repository, baseSha, patchBytes, manifest, rolePolicy, temporaryDirectory, runProcess })`:
 
@@ -183,17 +183,17 @@ Create a temporary real Git repository with one committed file using `mkdtemp`; 
 - no target file, hook, build, test, or executable runs;
 - worktree and patch are removed in `finally`, including failure paths.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `node --test adw/test/vcs.test.mjs`
 
 Expected: FAIL because `adw/vcs.mjs` does not exist.
 
-- [ ] **Step 3: Implement `verifyPatch`**
+- [x] **Step 3: Implement `verifyPatch`**
 
 Use `validatePatchManifest` and `digestBytes`; use only `git worktree add --detach`, `git apply`, `git diff --cached --raw -z`, `git write-tree`, `git status --porcelain`, and `git worktree remove --force`. Return a Phase 1 `validateVerification` record. The adapter accepts no token/env secret and enforces the realpath containment rules from Step 1 before writing.
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 Run: `node --test adw/test/vcs.test.mjs`
 
@@ -212,7 +212,7 @@ git commit -S -m "Attest patches without executing target code"
 - Create: `adw/test/dry-run.test.mjs`
 - Modify: `docs/super/plans/2026-07-28-adw-mjs-control-plane-phase-2-adapters-dry-run.md`
 
-- [ ] **Step 1: Write failing dry-run tests**
+- [x] **Step 1: Write failing dry-run tests**
 
 Add exact command input:
 
@@ -233,17 +233,17 @@ Test `run({ argv: ["dry-run", "--output", absoluteDirectory], stdin, stdout, std
 
 Test checked-in event fixtures through the real normalizer and checked-in reviewer/reconcile fixtures through current validators so fixture drift fails CI.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `node --test adw/test/dry-run.test.mjs`
 
 Expected: FAIL because `dry-run` is unsupported.
 
-- [ ] **Step 3: Implement dry-run composition**
+- [x] **Step 3: Implement dry-run composition**
 
 Extend the existing `run(io)` object with `adapters: { githubFactory, vcs }` and `writeArtifact`; do not change its calling convention. Default executable adapters are imported only for `dry-run`. Offline fixture mode uses injected VCS/head and requires no env/secrets or subprocess; live mode uses absolute `gh`/`git` paths and may use existing local GitHub auth or `GH_TOKEN` for closed GET methods only. Output directory must be absolute, external to the repository realpath, and created by the injected writer. No `apply` or mutating GitHub/VCS method is exposed in Phase 2.
 
-- [ ] **Step 4: Run the phase verification**
+- [x] **Step 4: Run the phase verification**
 
 Run:
 
@@ -259,7 +259,7 @@ git grep -n 'git ' -- adw ':!adw/vcs.mjs' ':!adw/test'
 
 Expected: all tests pass; both boundary greps print nothing; no package manifest/lockfile exists; no production workflow invokes the new control plane except self-test.
 
-- [ ] **Step 5: Record result and commit**
+- [x] **Step 5: Record result and commit**
 
 Mark completed checkboxes and append exact Node/legacy test counts, commit range, and dry-run evidence. State explicitly that writes, production role parity, wrappers, and authority remain deferred.
 
@@ -267,3 +267,7 @@ Mark completed checkboxes and append exact Node/legacy test counts, commit range
 git add adw/main.mjs adw/test/dry-run.test.mjs docs/super/plans/2026-07-28-adw-mjs-control-plane-phase-2-adapters-dry-run.md
 git commit -S -m "Expose the read-only ADW dry-run"
 ```
+
+## Result
+
+Implemented in `9e71122..HEAD`. Offline coverage: 76 tests passed with zero failures/skips/cancellations/todos; all three legacy ADW suites, boundary greps, and `git diff --check` passed. VCS verification deliberately uses an external temporary index instead of a checked-out worktree: it applies the exact patch to the base tree and attests paths, modes, and resulting tree without invoking checkout filters, fsmonitor, hooks, or target code. Production writes, canonical role parity, and wrappers remain deferred to Phase 3+.

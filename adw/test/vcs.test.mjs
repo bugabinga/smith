@@ -83,8 +83,23 @@ test("patch verification attests exact resulting tree without target execution",
   assert.equal(result.kind, "patch");
   assert.match(result.resultTree, /^[0-9a-f]{40}$/);
   assert.ok(calls.every(call => call.file === value.executable && call.args.includes("core.hooksPath=/dev/null")));
+  assert.equal(calls.some(call => call.args.includes("worktree") || call.args.includes("status")), false);
+  assert.ok(calls.some(call => call.args.includes("read-tree")));
+  assert.ok(calls.filter(call => call.args.includes("apply")).every(call => call.args.includes("--cached")));
   assert.deepEqual(await readdir(value.temporaryDirectory), []);
   assert.equal(await readFile(join(value.repository, "file.txt"), "utf8"), "before\n");
+});
+
+test("patch policy treats file prefixes as path boundaries", async t => {
+  const value = await fixture(t);
+  await assert.rejects(
+    () => verifyPatch({
+      ...value,
+      manifest: { ...value.manifest, files: [{ ...value.manifest.files[0], path: "file.txt.evil" }] },
+      rolePolicy: role(), controlSha: "a".repeat(40), decisionDigest: "b".repeat(64), preconditionDigest: "c".repeat(64),
+    }),
+    error => error?.code === "verification",
+  );
 });
 
 test("patch verification rejects digest mismatch before git", async t => {
@@ -98,6 +113,22 @@ test("patch verification rejects digest mismatch before git", async t => {
       run: async request => { calls++; return runProcess(request); },
     }),
     error => error?.code === "verification",
+  );
+  assert.equal(calls, 0);
+});
+
+test("patch verification rejects NUL-bearing binary input before git", async t => {
+  const value = await fixture(t);
+  let calls = 0;
+  const bytes = Buffer.from([0, 1, 2]);
+  await assert.rejects(
+    () => verifyPatch({
+      ...value, patchBytes: bytes,
+      manifest: { ...value.manifest, digest: digestBytes(bytes), size: bytes.length },
+      rolePolicy: role(), controlSha: "a".repeat(40), decisionDigest: "b".repeat(64), preconditionDigest: "c".repeat(64),
+      run: async request => { calls++; return runProcess(request); },
+    }),
+    error => error?.code === "verification" && error.message === "binary",
   );
   assert.equal(calls, 0);
 });

@@ -40,6 +40,13 @@ function adapter(run, token = "token") {
   });
 }
 
+test("adapter rejects repository traversal segments", () => {
+  assert.throws(
+    () => createGitHub({ repository: "../smith", token: null, appIdentity: { id: "A", login: "bot" }, ghPath: process.execPath, run: async () => {}, baseEnv: {} }),
+    error => error?.code === "contract",
+  );
+});
+
 test("closed reads use exact gh argv and environment", async () => {
   const calls = [];
   const github = adapter(async request => {
@@ -54,13 +61,41 @@ test("closed reads use exact gh argv and environment", async () => {
   assert.equal(github.get, undefined);
 });
 
-test("paginated reads flatten bounded pages", async () => {
+test("paginated reads stop without gh auto-pagination", async () => {
+  let page = 0;
   const github = adapter(async request => {
-    assert.ok(request.args.includes("--paginate"));
-    assert.ok(request.args.includes("--slurp"));
-    return { code: 0, signal: null, stdout: JSON.stringify([[{ id: 1 }], [{ id: 2 }]]), stderr: "" };
+    page++;
+    assert.equal(request.args.includes("--paginate"), false);
+    assert.match(request.args.at(-1), /per_page=100&page=\d+$/);
+    const records = page === 1 ? Array.from({ length: 100 }, (_, id) => ({ id })) : [{ id: 100 }];
+    return { code: 0, signal: null, stdout: JSON.stringify(records), stderr: "" };
   });
-  assert.deepEqual(await github.comments("issues", 1), [{ id: 1 }, { id: 2 }]);
+  assert.equal((await github.comments("issues", 1)).length, 101);
+  assert.equal(page, 2);
+});
+
+test("workflow run pagination unwraps GitHub collection objects", async () => {
+  const github = adapter(async () => ({ code: 0, signal: null, stdout: JSON.stringify({ workflow_runs: [{ id: 1 }] }), stderr: "" }));
+  assert.deepEqual(await github.runs(), [{ id: 1 }]);
+});
+
+test("live snapshot dispatches and normalizes the event entity", async () => {
+  const github = adapter(async request => {
+    const endpoint = request.args.at(-1);
+    if (endpoint === "/repos/bugabinga/smith") {
+      return { code: 0, signal: null, stdout: JSON.stringify({ id: 1, owner: { login: "bugabinga" }, name: "smith", default_branch: "main" }), stderr: "" };
+    }
+    assert.equal(endpoint, "/repos/bugabinga/smith/pulls/2");
+    return { code: 0, signal: null, stdout: JSON.stringify({ id: 2, head: { sha: "b".repeat(40) }, state: "open" }), stderr: "" };
+  });
+  const event = normalizeEvent("pull_request", {
+    action: "synchronize", repository, sender,
+    pull_request: { number: 2, head: { sha: "b".repeat(40), repo: { full_name: "bugabinga/smith" } }, base: { ref: "main" }, updated_at: "2026-07-28T00:00:00Z" },
+  });
+  assert.deepEqual(await github.readSnapshot(event), {
+    repository: { id: "1", owner: "bugabinga", name: "smith", defaultBranch: "main" },
+    entity: { id: "2", headSha: "b".repeat(40), state: "open" },
+  });
 });
 
 test("HTTP failures become sanitized forge classes", async () => {

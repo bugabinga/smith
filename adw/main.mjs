@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 
-import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
+import { lstat, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
+import { basename, dirname, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   AdwError,
   canonicalBytes,
+  digestBytes,
   planReconciliation,
   reduceAssessments,
   validateAssessment,
@@ -13,7 +14,9 @@ import {
   validateSnapshot,
   validateVerification,
 } from "./core.mjs";
+import { createDefaultGitHub, createDryRunGitHub, normalizeEvent } from "./github.mjs";
 import { defineRole } from "./roles.mjs";
+import { createDefaultVcs } from "./vcs.mjs";
 
 const MAX_INPUT = 262_144;
 
@@ -75,16 +78,21 @@ async function source(argv, stdin, readFixture) {
   }
 }
 
-export async function run({ argv, stdin, stdout, stderr, readFixture }) {
+export async function run({ argv, stdin, stdout, stderr, readFixture, adapters, writeArtifact }) {
   let artifactInput = false;
   try {
     if (!Array.isArray(argv) || argv.length === 0) inputError("command is required");
-    const args = argv.includes("--fixture") ? argv.slice(0, argv.indexOf("--fixture")) : argv;
+    const fixtureIndex = argv.indexOf("--fixture");
+    const withoutFixture = fixtureIndex === -1 ? [...argv] : argv.slice(0, fixtureIndex);
+    const outputIndex = withoutFixture.indexOf("--output");
+    const outputDirectory = outputIndex === -1 ? null : withoutFixture[outputIndex + 1];
+    const args = outputIndex === -1 ? withoutFixture : [...withoutFixture.slice(0, outputIndex), ...withoutFixture.slice(outputIndex + 2)];
     const recordTypes = new Set(["snapshot", "assessment", "decision", "verification"]);
     const supported =
       (args[0] === "validate" && args.length === 2 && recordTypes.has(args[1])) ||
       (args[0] === "reduce" && args.length === 1) ||
-      (args[0] === "reconcile" && args.length === 1);
+      (args[0] === "reconcile" && args.length === 1) ||
+      (args[0] === "dry-run" && args.length === 1 && typeof outputDirectory === "string" && outputDirectory.startsWith("/"));
     if (!supported) inputError("command is unsupported");
     artifactInput = args[0] === "reduce" || (args[0] === "validate" && args[1] !== "snapshot");
     const text = await source(argv, stdin, readFixture);
@@ -114,6 +122,29 @@ export async function run({ argv, stdin, stdout, stderr, readFixture }) {
       });
     } else if (args[0] === "reconcile" && args.length === 1) {
       result = planReconciliation(value);
+    } else if (args[0] === "dry-run") {
+      if (!value || Array.isArray(value) || typeof value !== "object") inputError("dry-run request must be an object");
+      const keys = Object.keys(value).sort();
+      const expected = ["controlSha", "event", "eventName", "live", "operations", "repository", "repositoryPath", "schemaVersion"].sort();
+      if (keys.length !== expected.length || keys.some((key, i) => key !== expected[i])) inputError("dry-run request has invalid fields");
+      if (value.schemaVersion !== 1 || !/^[0-9a-f]{40}$/.test(value.controlSha) || typeof value.live !== "boolean" || !Array.isArray(value.operations)) inputError("dry-run request is invalid");
+      const activeAdapters = adapters ?? { vcs: createDefaultVcs(), githubFactory: value.live ? createDefaultGitHub : createDryRunGitHub };
+      const artifactWriter = writeArtifact ?? writeDryRunArtifact;
+      if (!activeAdapters?.vcs?.head || !activeAdapters?.githubFactory || typeof artifactWriter !== "function") inputError("dry-run adapters are unavailable");
+      const liveHead = await activeAdapters.vcs.head(value.repositoryPath);
+      if (liveHead !== value.controlSha) throw new AdwError("stale", "control SHA changed");
+      const event = normalizeEvent(value.eventName, value.event);
+      if (`${event.repository.owner}/${event.repository.name}` !== value.repository) inputError("event repository does not match request");
+      const github = activeAdapters.githubFactory(value.repository);
+      for (const operation of value.operations) github.record(operation);
+      let live = null;
+      if (value.live) {
+        if (typeof github.readSnapshot !== "function") inputError("live snapshot reader is unavailable");
+        live = await github.readSnapshot(event);
+      }
+      result = { schemaVersion: 1, controlSha: value.controlSha, event, snapshot: { live }, intents: github.intents() };
+      const bytes = canonicalBytes(result);
+      await artifactWriter(outputDirectory, bytes, digestBytes(bytes), value.repositoryPath);
     } else {
       inputError("command is unsupported");
     }
@@ -135,9 +166,21 @@ async function localFixture(name) {
   return readFile(new URL(`./test/fixtures/${name}`, import.meta.url), "utf8");
 }
 
-export async function execute({ argv, stdin, stdout, stderr, readFixture }) {
+export async function writeDryRunArtifact(directory, bytes, digest, repositoryPath) {
+  const repository = await realpath(repositoryPath);
+  const parent = await realpath(dirname(directory));
+  if (parent === repository || parent.startsWith(`${repository}${sep}`)) inputError("artifact path is inside repository");
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  if ((await lstat(directory)).isSymbolicLink()) inputError("artifact directory is a symlink");
+  const output = await realpath(directory);
+  if (output === repository || output.startsWith(`${repository}${sep}`) || repository.startsWith(`${output}${sep}`)) inputError("artifact path overlaps repository");
+  await writeFile(`${output}/dry-run.json`, bytes, { mode: 0o600, flag: "wx" });
+  await writeFile(`${output}/dry-run.sha256`, `${digest}\n`, { mode: 0o600, flag: "wx" });
+}
+
+export async function execute({ argv, stdin, stdout, stderr, readFixture, adapters, writeArtifact }) {
   try {
-    return await run({ argv, stdin: await readBounded(stdin), stdout, stderr, readFixture });
+    return await run({ argv, stdin: await readBounded(stdin), stdout, stderr, readFixture, adapters, writeArtifact });
   } catch (error) {
     const category = error instanceof AdwError ? error.code : "input";
     stderr.write(`${canonicalBytes({ error: category, message: safeMessage(error) }).toString()}\n`);

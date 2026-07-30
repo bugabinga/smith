@@ -579,7 +579,7 @@ export function validatePatchManifest(manifest, rolePolicy) {
     if (!safePatchPath(file.path) || file.path === ".gitmodules") fail("patch path is unsafe");
     if (GLOBAL_DENIED_PATHS.includes(file.path) || GLOBAL_DENIED_PREFIXES.some(prefix => file.path.startsWith(prefix))) fail("patch path is globally denied");
     if (rolePolicy.patch.deniedPaths.some(rule => matchesRule(file.path, rule))) fail("patch path is denied by role");
-    if (!rolePolicy.patch.allowedPrefixes.some(prefix => file.path.startsWith(prefix))) fail("patch path is outside role prefixes");
+    if (!rolePolicy.patch.allowedPrefixes.some(prefix => prefix.endsWith("/") ? file.path.startsWith(prefix) : file.path === prefix)) fail("patch path is outside role prefixes");
   }
   return copy(manifest);
 }

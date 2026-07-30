@@ -61,7 +61,7 @@ export function normalizeEvent(name, payload) {
     kind = "pull_request_review_comment"; entityId = id(payload.pull_request?.number, "pull number"); revisionHints = { commentId: id(payload.comment?.id, "comment id"), headSha: payload.comment?.commit_id ?? payload.pull_request.head?.sha };
   } else if (name === "check_suite" || name === "check_run") {
     const check = payload.check_suite ?? payload.check_run;
-    kind = "check"; entityId = id(check?.id, "check id"); revisionHints = { headSha: check?.head_sha };
+    kind = "check"; entityId = id(check?.id, "check id"); revisionHints = { headSha: check?.head_sha, checkKind: name };
   } else if (name === "workflow_run") {
     kind = "workflow"; entityId = id(payload.workflow_run?.id, "workflow run id"); revisionHints = { headSha: payload.workflow_run?.head_sha };
   } else if (name === "push") {
@@ -90,6 +90,7 @@ function forgeReason(status) {
 
 export function createGitHub({ repository, token, appIdentity, ghPath, run = runProcess, baseEnv }) {
   contract(typeof repository === "string" && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository), "repository is invalid");
+  contract(repository.split("/").every(segment => segment !== "." && segment !== ".."), "repository is invalid");
   contract(typeof token === "string" || token === null, "token is invalid");
   contract(appIdentity && typeof appIdentity.id === "string" && typeof appIdentity.login === "string", "App identity is invalid");
   contract(typeof ghPath === "string" && isAbsolute(ghPath), "gh path is invalid");
@@ -101,22 +102,32 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
   env.GH_HOST = "github.com";
   env.NO_COLOR = "1";
 
-  async function request(endpoint, paginate = false) {
-    const args = ["api", "--method", "GET", endpoint];
-    if (paginate) args.push("--paginate", "--slurp");
+  async function page(endpoint) {
     let result;
     try {
-      result = await run({ file: ghPath, args, cwd: process.cwd(), env, input: "", timeoutMs: 120_000, maxOutputBytes: 1_048_576, captureHttpStatus: true });
+      result = await run({ file: ghPath, args: ["api", "--method", "GET", endpoint], cwd: process.cwd(), env, input: "", timeoutMs: 120_000, maxOutputBytes: 1_048_576, captureHttpStatus: true });
     } catch (error) {
       throw new AdwError("forge", forgeReason(error?.details?.httpStatus ?? 0));
     }
-    let value;
-    try { value = JSON.parse(result.stdout); } catch { throw new AdwError("forge", "malformed"); }
-    if (!paginate) return value;
-    contract(Array.isArray(value) && value.length <= 100 && value.every(Array.isArray), "pagination is malformed");
-    const flat = value.flat();
-    if (flat.length > 10_000) throw new AdwError("forge", "overflow");
-    return flat;
+    try { return JSON.parse(result.stdout); } catch { throw new AdwError("forge", "malformed"); }
+  }
+
+  async function request(endpoint, collection = false) {
+    if (!collection) return page(endpoint);
+    const key = typeof collection === "string" ? collection : null;
+    const records = [];
+    let bytes = 0;
+    for (let number = 1; number <= 100; number++) {
+      const separator = endpoint.includes("?") ? "&" : "?";
+      const response = await page(`${endpoint}${separator}per_page=100&page=${number}`);
+      const value = key === null ? response : response?.[key];
+      if (!Array.isArray(value)) throw new AdwError("forge", "malformed");
+      bytes += Buffer.byteLength(JSON.stringify(value));
+      records.push(...value);
+      if (records.length > 10_000 || bytes > 1_048_576) throw new AdwError("forge", "overflow");
+      if (value.length < 100) return records;
+    }
+    throw new AdwError("forge", "overflow");
   }
 
   const positiveInteger = value => {
@@ -124,20 +135,93 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     return value;
   };
   const policy = { operations: OPERATIONS };
-  return Object.freeze({
+  const methods = {
     repository: () => request(`/repos/${owner}/${name}`),
     issue: number => request(`/repos/${owner}/${name}/issues/${positiveInteger(number)}`),
     pull: number => request(`/repos/${owner}/${name}/pulls/${positiveInteger(number)}`),
+    issueComment: number => request(`/repos/${owner}/${name}/issues/comments/${positiveInteger(number)}`),
+    review: (pull, review) => request(`/repos/${owner}/${name}/pulls/${positiveInteger(pull)}/reviews/${positiveInteger(review)}`),
+    reviewComment: number => request(`/repos/${owner}/${name}/pulls/comments/${positiveInteger(number)}`),
+    check: (kind, number) => {
+      contract(kind === "check_suite" || kind === "check_run", "check kind is invalid");
+      return request(`/repos/${owner}/${name}/${kind === "check_suite" ? "check-suites" : "check-runs"}/${positiveInteger(number)}`);
+    },
+    workflowRun: number => request(`/repos/${owner}/${name}/actions/runs/${positiveInteger(number)}`),
+    alert: (kind, number) => {
+      contract(kind === "dependabot_alert" || kind === "code_scanning_alert", "alert kind is invalid");
+      return request(`/repos/${owner}/${name}/${kind === "dependabot_alert" ? "dependabot/alerts" : "code-scanning/alerts"}/${positiveInteger(number)}`);
+    },
     comments: (kind, number) => {
       contract(kind === "issues" || kind === "pulls", "comment kind is invalid");
       return request(`/repos/${owner}/${name}/${kind}/${positiveInteger(number)}/comments`, true);
     },
-    runs: () => request(`/repos/${owner}/${name}/actions/runs?per_page=100`, true),
+    runs: () => request(`/repos/${owner}/${name}/actions/runs`, "workflow_runs"),
+  };
+  const normalizeResource = value => {
+    contract(value && typeof value === "object" && !Array.isArray(value), "resource is malformed");
+    const resource = { id: id(value.node_id ?? value.id ?? value.number, "resource id") };
+    if (value.updated_at) resource.updatedAt = value.updated_at;
+    if (value.head_sha ?? value.head?.sha ?? value.commit_id) resource.headSha = value.head_sha ?? value.head?.sha ?? value.commit_id;
+    if (value.state) resource.state = value.state;
+    return Object.freeze(resource);
+  };
+  const api = {
+    ...methods,
+    async readSnapshot(event) {
+      const repositoryValue = await methods.repository();
+      const normalizedRepository = {
+        id: id(repositoryValue.node_id ?? repositoryValue.id, "repository id"),
+        owner: text(repositoryValue.owner?.login, "repository owner"),
+        name: text(repositoryValue.name, "repository name"),
+        defaultBranch: text(repositoryValue.default_branch, "default branch"),
+      };
+      let entity = null;
+      if (event.kind === "issue") entity = await methods.issue(Number(event.entityId));
+      else if (event.kind === "issue_comment") entity = await methods.issueComment(Number(event.revisionHints.commentId));
+      else if (event.kind === "pull_request") entity = await methods.pull(Number(event.entityId));
+      else if (event.kind === "pull_request_review") entity = await methods.review(Number(event.entityId), Number(event.revisionHints.reviewId));
+      else if (event.kind === "pull_request_review_comment") entity = await methods.reviewComment(Number(event.revisionHints.commentId));
+      else if (event.kind === "check") entity = await methods.check(event.revisionHints.checkKind, Number(event.entityId));
+      else if (event.kind === "workflow") entity = await methods.workflowRun(Number(event.entityId));
+      else if (event.kind === "alert") entity = await methods.alert(event.revisionHints.alertKind, Number(event.entityId));
+      return Object.freeze({ repository: Object.freeze(normalizedRepository), entity: entity === null ? null : normalizeResource(entity) });
+    },
     record(operation) {
       const value = validateOperation(operation, policy);
       intentsByDigest.set(digestJson(value), value);
     },
     intents: () => Object.freeze([...intentsByDigest.values()].sort((a, b) => digestJson(a).localeCompare(digestJson(b)))),
     capabilities: () => Object.freeze(["actions:read", "checks:read", "issues:read", "pulls:read", "repository:read"]),
+  };
+  return Object.freeze(api);
+}
+
+export function createDryRunGitHub(repository) {
+  return createGitHub({
+    repository,
+    token: null,
+    appIdentity: { id: "offline", login: "offline" },
+    ghPath: "/nonexistent/gh",
+    baseEnv: { PATH: "", HOME: "/tmp", LANG: "C.UTF-8", TMPDIR: "/tmp" },
+  });
+}
+
+export function createDefaultGitHub(repository) {
+  const ghPath = process.env.ADW_GH_PATH;
+  contract(typeof ghPath === "string" && isAbsolute(ghPath), "gh path is unavailable");
+  const appId = process.env.ADW_APP_ID;
+  const appLogin = process.env.ADW_APP_LOGIN;
+  contract(typeof appId === "string" && typeof appLogin === "string", "App identity is unavailable");
+  return createGitHub({
+    repository,
+    token: process.env.GH_TOKEN ?? null,
+    appIdentity: { id: appId, login: appLogin },
+    ghPath,
+    baseEnv: {
+      PATH: process.env.PATH ?? "",
+      HOME: process.env.HOME ?? "/tmp",
+      LANG: process.env.LANG ?? "C.UTF-8",
+      TMPDIR: process.env.TMPDIR ?? "/tmp",
+    },
   });
 }
