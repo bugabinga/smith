@@ -40,6 +40,13 @@ test("process runner rejects unsafe requests", async () => {
   await assert.rejects(() => runProcess({ ...base, env: { OK: 1 } }), error => error?.code === "provider");
 });
 
+test("process runner extracts HTTP status without retaining failure output", async () => {
+  await assert.rejects(
+    () => runProcess({ ...base, args: ["-e", "console.error('HTTP/2.0 404 Not Found');process.exit(1)"], input: "", captureHttpStatus: true }),
+    error => error?.details?.httpStatus === 404 && !JSON.stringify(error).includes("Not Found"),
+  );
+});
+
 test("process runner classifies exit without leaking stderr", async () => {
   await assert.rejects(
     () => runProcess({ ...base, args: ["-e", "console.error('secret');process.exit(7)"], input: "" }),

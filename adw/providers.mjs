@@ -21,6 +21,7 @@ function validateRequest(request) {
   if (typeof request.input !== "string") rejectRequest("input");
   if (!Number.isInteger(request.timeoutMs) || request.timeoutMs < 1 || request.timeoutMs > 300_000) rejectRequest("timeout");
   if (!Number.isInteger(request.maxOutputBytes) || request.maxOutputBytes < 1 || request.maxOutputBytes > 1_048_576) rejectRequest("output");
+  if (request.captureHttpStatus !== undefined && typeof request.captureHttpStatus !== "boolean") rejectRequest("http status");
 }
 
 function terminate(child) {
@@ -86,10 +87,15 @@ export async function runProcess(request, spawnImpl = spawn) {
     child.once("close", (code, signal) => {
       clearTimeout(timeout);
       if (killTimer) clearTimeout(killTimer);
+      const details = { code, signal };
+      if (request.captureHttpStatus) {
+        const matches = `${Buffer.concat(stdout)}\n${Buffer.concat(stderr)}`.matchAll(/HTTP\/\S+\s+(\d{3})/g);
+        for (const match of matches) details.httpStatus = Number(match[1]);
+      }
       if (failure) {
-        reject(new AdwError("provider", failure, { code, signal }));
+        reject(new AdwError("provider", failure, details));
       } else if (code !== 0) {
-        reject(new AdwError("provider", "exit", { code, signal }));
+        reject(new AdwError("provider", "exit", details));
       } else {
         resolve({
           code,
