@@ -2355,3 +2355,106 @@ complete
 - Split standing prototype CI (`prototypes.yml`, evidence bit-rot guard) from
   the p34-specific cross/arch evidence (`ci-prototype.yml`, path-scoped).
   deleted now that its evidence is recorded.
+
+## i161 — `i161-review-event-delivery`
+
+Issue-driven (bugabinga/smith#161, `needs:prototype`). Phase 4 of the ADW MJS
+control-plane roadmap. Directory named for the issue, not the next `pNN`:
+concurrent pioneer runs cannot see each other's unmerged branches to agree a
+sequential number.
+
+### SPEC claims
+
+- `pull_request_review:submitted` and `pull_request_review_comment:created`
+  both normalize into bounded role snapshots (issue #161 acceptance 1).
+- Missed review delivery is recovered by reconciliation without duplicate
+  writes; evidence records current-head behavior and retry semantics.
+- Anchor: roadmap Phase 4; design L173 (`adw-pulls.yml` handles pull request,
+  review, review-comment, and check events).
+
+### Risk
+
+The role matrix (`adw/github.mjs` `ROLE_EVENTS`) may not cover every event the
+`pulls` wrapper is said to handle, so an event could arrive with no role to
+dispatch it to.
+
+### Minimal artifact
+
+```text
+i161-review-event-delivery/
+  verify.mjs   # drives real ../../adw/{github,core,roles}.mjs with a fake gh
+  NOTES.md
+```
+
+### Verify
+
+```
+cd prototypes/i161-review-event-delivery && node verify.mjs   # exit 0, PASS lines
+```
+
+### Pass evidence
+
+10/10 PASS, exit 0. `pull_request_review:submitted` → `reviser` → 3347 B
+snapshot (bound 262144 B), current head pinned, stale head rejected.
+Reconciliation recovers a dropped review (`run_review` × {correctness,security}
+at current head), is idempotent, suppresses re-run when evidence is posted, and
+ignores stale-head evidence. `pull_request_review_comment` is accepted by **no**
+role — `roleSnapshotPlan` throws for all 15, reviser throws
+`contract: role event is unsupported`.
+
+### SPEC impact
+
+Disproves acceptance criterion 1 as stated. `pull_request_review_comment`
+behaves like `check`/`check_suite`/`check_run`: a `pulls`-wrapper trigger with
+no consuming role. Either the reviser gains `pull_request_review_comment` in its
+`ROLE_EVENTS`, or criterion 1 is corrected to the reconcile-trigger reading.
+Owner decides — escalated as a `needs:spec` issue citing #161.
+
+## Result — i161 `i161-review-event-delivery` (2026-07-31)
+
+### Status
+complete
+
+### Proved
+- `pull_request_review:submitted` normalizes to a bounded `reviser` role
+  snapshot (3347 B ≤ 262144 B), pinning the current head; a stale review head is
+  rejected `forge/stale` before any snapshot is emitted.
+- Missed review delivery is recovered by `planReconciliation`, which schedules
+  `run_review` for correctness + security at the current head; the intent set is
+  idempotent (deduped) and is suppressed once evidence markers land at that head.
+- Stale-head review evidence is ignored and the review retries against the
+  advanced head — current-head + retry semantics.
+
+### Disproved
+- Acceptance criterion 1 ("Both events normalize into bounded role snapshots"):
+  `pull_request_review_comment:created` is accepted by **no** role.
+  `roleSnapshotPlan(*, "pull_request_review_comment")` throws for all 15 roles;
+  `reviser.readRoleSnapshot` on the event throws
+  `contract: role event is unsupported`. It is half-wired — event kind,
+  `normalizeEvent`, non-role `readSnapshot`, and `pullRelated` all include it,
+  but no role can be dispatched.
+
+### Spec Issues
+- `docs/super/specs/2026-07-28-adw-mjs-control-plane-design.md` (L173) and issue
+  #161 acceptance 1
+  - Issue: the `pulls` wrapper is specified to handle review-comment events, and
+    #161 requires both review events to produce bounded role snapshots, but no
+    role's `ROLE_EVENTS` includes `pull_request_review_comment`. It patterns with
+    `check` events (also role-less), suggesting it is a reconcile-only trigger —
+    which contradicts "normalize into bounded role snapshots".
+  - Evidence: `prototypes/i161-review-event-delivery/verify.mjs`, `node verify.mjs`
+    (10/10 PASS); `roleSnapshotPlan` acceptance table in NOTES.md.
+  - Severity: P2
+
+### Prototype Artifacts
+- `prototypes/i161-review-event-delivery/verify.mjs`
+- `prototypes/i161-review-event-delivery/NOTES.md`
+
+### Commands
+- `cd prototypes/i161-review-event-delivery && node verify.mjs` → exit 0
+
+### Next Steps
+- Owner decides (via the `needs:spec` escalation citing #161): either add
+  `pull_request_review_comment` to the reviser's `ROLE_EVENTS` (making it a real
+  role-snapshot event), or amend #161 acceptance 1 to the reconcile-trigger
+  reading and reclassify review-comment alongside `check` events.
