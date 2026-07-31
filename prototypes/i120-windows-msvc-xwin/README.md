@@ -46,8 +46,9 @@ cd prototypes/i120-windows-msvc-xwin
 
 `verify.sh` (1) cross-builds `control/` for both triples and asserts each `.exe`
 is the right machine type importing `VCRUNTIME140.dll` + `api-ms-win-crt-*` (MSVC
-ABI, never mingw `msvcrt.dll`); (2) asserts the mlua build *fails* inside
-`luajit-src` with `failed to find cl`; (3) asserts `msvcbuild.bat` drives `cl`.
+ABI, never mingw `msvcrt.dll`); (2) asserts the mlua build *fails* for both
+triples inside `luajit-src` with `failed to find cl`; (3) asserts `msvcbuild.bat`
+drives `cl`.
 
 ## Artifacts observed (MSVC-ABI PE, control crate)
 
