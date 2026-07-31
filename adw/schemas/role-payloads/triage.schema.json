@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "smith:adw:role:triage:v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "reason"
+      ],
+      "properties": {
+        "verdict": {
+          "enum": [
+            "noop"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "body",
+        "labels"
+      ],
+      "properties": {
+        "verdict": {
+          "enum": [
+            "accept",
+            "needs_info",
+            "needs_spec"
+          ]
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16384
+        },
+        "labels": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        }
+      }
+    }
+  ]
+}
