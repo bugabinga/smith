@@ -4,6 +4,7 @@ import test from "node:test";
 import { canonicalBytes, digestJson } from "../core.mjs";
 import * as githubAdapter from "../github.mjs";
 import { createApplyReceipt, createGitHub, GITHUB_OPERATION_TRANSITIONS, operationCapabilities } from "../github.mjs";
+import { applyVerifiedPatch } from "../vcs.mjs";
 
 const validateAutoMergeMarkers = request => githubAdapter.validateAutoMergeMarkers(request);
 
@@ -194,6 +195,24 @@ test("every ordinary GitHub-owned operation uses one fixed method, endpoint, and
       assert.equal(calls.some(call => endpoint(call).includes("/milestones/2002")), false);
     }
   }
+});
+
+test("state-only verified apply is a credential-free no-op subreceipt", async () => {
+  const value = snapshot();
+  const operation = { type: "noop", reason: "unchanged" };
+  const canonicalDecision = decision(value, [operation]);
+  let credentials = 0;
+  let calls = 0;
+  const receipt = await applyVerifiedPatch({
+    snapshot: value, decision: canonicalDecision, verification: verification(value, canonicalDecision),
+    operationIndex: 0, credential: async () => { credentials++; }, run: async () => { calls++; },
+  });
+  assert.deepEqual(receipt, {
+    operationDigest: digestJson(operation), projection: "state", status: "complete",
+    beforeRevision: digestJson(value.revisions), preparedRevision: digestJson(value.revisions), afterRevision: digestJson(value.revisions), headSha: null,
+  });
+  assert.equal(credentials, 0);
+  assert.equal(calls, 0);
 });
 
 test("no-op is receipt-only and terminal fails without forge mutation", async () => {

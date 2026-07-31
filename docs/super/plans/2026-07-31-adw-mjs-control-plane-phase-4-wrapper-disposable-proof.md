@@ -124,14 +124,14 @@ adw-source/{control/**,target.bundle,manifest.json,manifest.sha256}
 - Modify: `adw/test/vcs.test.mjs`
 - Modify: `adw/test/apply.test.mjs`
 
-- [ ] Write failing real-temporary-repository tests for state-only decisions, new branch/PR patches, reviser updates, retries, stale base/head, non-fast-forward rejection, signing behavior, and cleanup.
-- [ ] Add `applyVerifiedPatch(...)` that owns `create_branch` and the `headSha` projection of patch-bearing `update_pr`: it reuses exact attested bytes and expected `resultTree`, then creates the commit through Git plumbing with hooks, filters, fsmonitor, credential helpers, file protocol, and target execution disabled. `main.mjs` decomposes one `update_pr` operation digest into ordered VCS-head and GitHub-metadata subreceipts; complete means both subreceipts reached their expected post-state. `github.mjs` owns only optional title/body projection and subsequent PR create/metadata; it never creates or moves patch branches.
-- [ ] Permit only the verified branch/ref target from the decision. Push through an injected short-lived credential configuration; never write credentials into repository config, remote URLs, worktrees, or artifacts.
-- [ ] Treat an existing branch whose head tree equals the attested `resultTree` and whose parent/base matches the decision as idempotent success regardless of commit timestamp/ID; any different tree/parent is stale/conflict. This deterministic post-state is the durable VCS receipt. Never force-push.
-- [ ] Verify the resulting commit/tree before push and remove every temporary index, patch, auth file, and worktree in `finally`; cleanup failure is terminal.
-- [ ] Assert no checked-out target executable, build script, hook, filter, test, or package command runs.
-- [ ] Run `node --test adw/test/{vcs,apply}.test.mjs`; expect PASS.
-- [ ] Commit: `Push only attested ADW patch trees`.
+- [x] Write failing real-temporary-repository tests for state-only decisions, new branch/PR patches, reviser updates, retries, stale base/head, non-fast-forward rejection, signing behavior, and cleanup.
+- [x] Add `applyVerifiedPatch(...)` that owns `create_branch` and the `headSha` projection of patch-bearing `update_pr`: it reuses exact attested bytes and expected `resultTree`, then creates the commit through Git plumbing with hooks, filters, fsmonitor, credential helpers, file protocol, and target execution disabled. `main.mjs` decomposes one `update_pr` operation digest into ordered VCS-head and GitHub-metadata subreceipts; complete means both subreceipts reached their expected post-state. `github.mjs` owns only optional title/body projection and subsequent PR create/metadata; it never creates or moves patch branches.
+- [x] Permit only the verified branch/ref target from the decision. Push through an injected short-lived credential configuration; never write credentials into repository config, remote URLs, worktrees, or artifacts.
+- [x] Treat an existing branch whose head tree equals the attested `resultTree` and whose parent/base matches the decision as idempotent success regardless of commit timestamp/ID; any different tree/parent is stale/conflict. This deterministic post-state is the durable VCS receipt. Never force-push.
+- [x] Verify the resulting commit/tree before push and remove every temporary index, patch, auth file, and worktree in `finally`; cleanup failure is terminal.
+- [x] Assert no checked-out target executable, build script, hook, filter, test, or package command runs.
+- [x] Run `node --test adw/test/{vcs,apply}.test.mjs`; expect PASS.
+- [x] Commit: `Push only attested ADW patch trees`.
 
 ### Task 5: Apply, reconcile, and audit composition
 
