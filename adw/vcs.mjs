@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, sep } from "node:path";
+import { constants } from "node:fs";
+import { lstat, mkdir, mkdtemp, open, readdir, readlink, realpath, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import {
   AdwError,
   canonicalBytes,
@@ -20,13 +22,14 @@ function outside(repository, temporary) {
 
 export async function readHead({ executable, repository, run = runProcess }) {
   if (typeof executable !== "string" || !isAbsolute(executable) || typeof repository !== "string" || !isAbsolute(repository)) verification("path");
-  const repo = await realpath(repository).catch(() => verification("path"));
+  const repo = await canonicalExisting(repository, "directory");
+  const tool = await canonicalExisting(executable, "file");
   try {
     const result = await run({
-      file: executable,
+      file: tool,
       args: ["-c", "core.hooksPath=/dev/null", "-c", "credential.helper=", "-C", repo, "rev-parse", "HEAD"],
       cwd: repo,
-      env: { PATH: dirname(executable), HOME: repo, LANG: "C.UTF-8", TMPDIR: repo, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" },
+      env: { PATH: dirname(tool), HOME: repo, LANG: "C.UTF-8", TMPDIR: repo, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_NO_REPLACE_OBJECTS: "1" },
       input: "", timeoutMs: 30_000, maxOutputBytes: 4096,
     });
     const head = result.stdout.trim();
@@ -38,13 +41,372 @@ export async function readHead({ executable, repository, run = runProcess }) {
   }
 }
 
-export function createDefaultVcs() {
-  const executable = process.env.ADW_GIT_PATH;
+const SHA = /^[0-9a-f]{40}$/;
+const HARDENING = Object.freeze({ hooks: false, filters: false, fsmonitor: false, credentials: false, fileProtocol: false });
+const EMPTY_BUNDLE = Buffer.from("# v2 git bundle\n\n");
+const PREFIX = [
+  "-c", "core.hooksPath=/dev/null", "-c", "credential.helper=", "-c", "protocol.file.allow=never",
+  "-c", "core.fsmonitor=false", "-c", "diff.external=", "-c", "core.attributesFile=/dev/null",
+];
+
+function exactHardening(value) {
+  if (!value || !canonicalBytes(value).equals(canonicalBytes(HARDENING))) verification("hardening");
+}
+
+function safePath(path) {
+  return typeof path === "string" && path.length > 0 && path.length <= 4096 && !isAbsolute(path) && !path.includes("\\") && !path.includes("\0") && !path.includes("\n") && path.split("/").every(part => part && part !== "." && part !== ".." && part !== ".git");
+}
+
+async function canonicalExisting(path, kind) {
+  if (typeof path !== "string" || !isAbsolute(path) || resolve(path) !== path) verification("path");
+  const value = await realpath(path).catch(() => verification("path"));
+  if (value !== path) verification("path");
+  const stat = await lstat(path).catch(() => verification("path"));
+  if (stat.isSymbolicLink() || (kind === "directory" ? !stat.isDirectory() : !stat.isFile())) verification("path");
+  return value;
+}
+
+function sameInode(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+async function directoryIdentity(path) {
+  const before = await lstat(path).catch(() => verification("path"));
+  if (!before.isDirectory() || before.isSymbolicLink() || await realpath(path).catch(() => verification("path")) !== path) verification("path");
+  const after = await lstat(path).catch(() => verification("path"));
+  if (!after.isDirectory() || after.isSymbolicLink() || !sameInode(before, after)) verification("path");
+  return { path, stat: after };
+}
+
+async function assertDirectoryIdentity(claim) {
+  const current = await directoryIdentity(claim.path);
+  if (!sameInode(current.stat, claim.stat)) verification("path");
+}
+
+async function privateTemporary(prefix, boundaries) {
+  const root = await directoryIdentity(await canonicalExisting(tmpdir(), "directory"));
+  const directory = await mkdtemp(join(root.path, prefix));
+  const claim = await directoryIdentity(await canonicalExisting(directory, "directory"));
+  await assertDirectoryIdentity(root);
+  if (boundaries.some(boundary => !outside(boundary, claim.path))) {
+    await rm(claim.path, { recursive: true, force: true }).catch(() => {});
+    verification("path");
+  }
+  return { ...claim, parentClaim: root };
+}
+
+async function claimDirectory(path) {
+  if (typeof path !== "string" || !isAbsolute(path) || resolve(path) !== path) verification("path");
+  const parentClaim = await directoryIdentity(await canonicalExisting(dirname(path), "directory"));
+  const target = join(parentClaim.path, path.slice(dirname(path).length + 1));
+  try { await mkdir(target, { mode: 0o700 }); } catch { verification("path"); }
+  const claim = await directoryIdentity(target);
+  await assertDirectoryIdentity(parentClaim);
+  return { ...claim, parentClaim };
+}
+
+async function assertClaim(claim) {
+  await assertDirectoryIdentity(claim.parentClaim);
+  await assertDirectoryIdentity(claim);
+}
+
+async function createPrivateFile(claim, path, bytes, mode = 0o600) {
+  await assertClaim(claim);
+  let handle;
+  try {
+    handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode);
+    const before = await handle.stat();
+    if (!before.isFile()) verification("path");
+    await handle.writeFile(bytes);
+    const after = await handle.stat();
+    if (!after.isFile() || !sameInode(before, after)) verification("path");
+  } catch (error) {
+    if (error instanceof AdwError) throw error;
+    verification("path");
+  } finally { await handle?.close(); }
+  await assertClaim(claim);
+}
+
+function gitEnvironment(executable, temporary, extra = {}) {
+  return {
+    PATH: dirname(executable), HOME: temporary, LANG: "C.UTF-8", TMPDIR: temporary,
+    GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GIT_NO_REPLACE_OBJECTS: "1", ...extra,
+  };
+}
+
+async function gitRun({ executable, repository, args, run = runProcess, temporary = repository, extraEnv = {}, binaryStdout = false, maxOutputBytes = 1_048_576 }) {
+  try {
+    return await run({
+      file: executable, args: [...PREFIX, "-C", repository, ...args], cwd: repository,
+      env: gitEnvironment(executable, temporary, extraEnv), input: "", timeoutMs: 120_000, maxOutputBytes, binaryStdout,
+    });
+  } catch (error) {
+    if (error instanceof AdwError && error.code === "verification") throw error;
+    verification("git");
+  }
+}
+
+async function blobBytes(executable, repository, blob, run, temporary = repository) {
+  const result = await gitRun({ executable, repository, args: ["cat-file", "blob", blob], run, temporary, binaryStdout: true, maxOutputBytes: 1_073_741_824 });
+  return Buffer.from(result.stdout);
+}
+
+function parseTree(buffer, tree, strict = false) {
+  const raw = Buffer.from(buffer);
+  const text = raw.toString("utf8");
+  if (!Buffer.from(text).equals(raw)) verification("manifest");
+  const fields = text.split("\0");
+  if (fields.at(-1) === "") fields.pop();
+  const paths = [];
+  for (const field of fields) {
+    const match = /^(\d{6}) (blob|tree|commit) ([0-9a-f]{40})\t(.+)$/.exec(field);
+    if (!match || !safePath(match[4])) verification("manifest");
+    if (!new Set(["100644", "100755", "120000"]).has(match[1]) || match[2] !== "blob" || (strict && !new Set(["100644", "100755"]).has(match[1]))) {
+      if (strict) verification("manifest");
+      continue;
+    }
+    paths.push({ mode: match[1], blob: match[3], path: match[4], tree });
+  }
+  return paths.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+async function treeEntries(executable, repository, revision, run, temporary = repository, pathspecs = [], strict = false) {
+  const tree = (await gitRun({ executable, repository, args: ["rev-parse", `${revision}^{tree}`], run, temporary })).stdout.trim();
+  if (!SHA.test(tree)) verification("manifest");
+  const listed = await gitRun({ executable, repository, args: ["ls-tree", "-r", "-z", tree, ...(pathspecs.length ? ["--", ...pathspecs] : [])], run, temporary, binaryStdout: true });
+  return parseTree(listed.stdout, tree, strict);
+}
+
+async function readControl({ executable, repository, controlSha, requiredPaths, hardening, run = runProcess }) {
+  exactHardening(hardening);
+  const repo = await canonicalExisting(repository, "directory");
+  const tool = await canonicalExisting(executable, "file");
+  if (!SHA.test(controlSha) || !Array.isArray(requiredPaths) || requiredPaths.some(path => !safePath(path))) verification("manifest");
+  const selected = await treeEntries(tool, repo, controlSha, run, repo, ["adw", ...requiredPaths], true);
+  if (!requiredPaths.every(path => selected.some(item => item.path === path)) || !selected.some(item => item.path === "adw/main.mjs")) verification("manifest");
+  const paths = [];
+  for (const item of selected) paths.push({ path: item.path, tree: item.tree, blob: item.blob, bytes: await blobBytes(tool, repo, item.blob, run) });
+  return Object.freeze({ paths });
+}
+
+async function bundleFile(path) {
+  const stat = await lstat(path).catch(() => verification("bundle"));
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1 || stat.size > 1_073_741_824) verification("bundle");
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const current = await handle.stat();
+    if (!current.isFile() || current.dev !== stat.dev || current.ino !== stat.ino || current.size !== stat.size) verification("bundle");
+    const bytes = await handle.readFile();
+    const after = await handle.stat();
+    if (after.size !== current.size || after.dev !== current.dev || after.ino !== current.ino || after.mtimeMs !== current.mtimeMs || after.ctimeMs !== current.ctimeMs) verification("bundle");
+    return bytes;
+  } finally { await handle?.close(); }
+}
+
+async function createBundle({ executable, repository, snapshot, allowedShas, hardening, run = runProcess }) {
+  exactHardening(hardening);
+  const repo = await canonicalExisting(repository, "directory");
+  const tool = await canonicalExisting(executable, "file");
+  if (!snapshot?.repository || !Array.isArray(allowedShas) || allowedShas.length > 1 || allowedShas.some(sha => !SHA.test(sha)) || new Set(allowedShas).size !== allowedShas.length) verification("manifest");
+  const shas = [...allowedShas];
+  if (shas.length === 0) return Object.freeze({ bytes: EMPTY_BUNDLE, repository: snapshot.repository, refs: [], shas: [], paths: [] });
+  const temporaryClaim = await privateTemporary("adw-vcs-bundle-", [repo, tool]);
+  const temporary = temporaryClaim.path;
+  try {
+    const bareClaim = await claimDirectory(join(temporary, "objects.git"));
+    const bare = bareClaim.path;
+    await gitRun({ executable: tool, repository: bare, args: ["init", "--bare", "-q"], run, temporary });
+    await assertClaim(bareClaim);
+    const objectPath = (await gitRun({ executable: tool, repository: repo, args: ["rev-parse", "--git-path", "objects"], run })).stdout.trim();
+    const objectDirectory = await realpath(isAbsolute(objectPath) ? objectPath : join(repo, objectPath)).catch(() => verification("git"));
+    const sourceRefs = (await gitRun({ executable: tool, repository: repo, args: ["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/tags"], run })).stdout.trim().split("\n").filter(Boolean).map(line => {
+      const match = /^(refs\/(?:heads|tags)\/[A-Za-z0-9._/-]+) ([0-9a-f]{40})$/.exec(line);
+      if (!match) verification("manifest");
+      return { name: match[1], sha: match[2] };
+    });
+    const refs = [];
+    for (const [index, sha] of shas.entries()) {
+      await gitRun({ executable: tool, repository: repo, args: ["cat-file", "-e", `${sha}^{commit}`], run });
+      const matching = sourceRefs.filter(ref => ref.sha === sha);
+      if (matching.length === 0) matching.push({ name: `refs/heads/adw-source/${String(index).padStart(3, "0")}`, sha });
+      for (const ref of matching) {
+        await gitRun({ executable: tool, repository: bare, args: ["update-ref", ref.name, ref.sha], run, temporary, extraEnv: { GIT_ALTERNATE_OBJECT_DIRECTORIES: objectDirectory } });
+        refs.push(ref);
+      }
+    }
+    refs.sort((a, b) => a.name.localeCompare(b.name));
+    const path = join(temporary, "target.bundle");
+    await gitRun({ executable: tool, repository: bare, args: ["bundle", "create", path, ...refs.map(item => item.name)], run, temporary, extraEnv: { GIT_ALTERNATE_OBJECT_DIRECTORIES: objectDirectory } });
+    const bytes = await bundleFile(path);
+    const paths = [];
+    const byPath = new Map();
+    for (const sha of shas) {
+      for (const item of await treeEntries(tool, repo, sha, run)) {
+        const bytesForPath = await blobBytes(tool, repo, item.blob, run);
+        const value = { path: item.path, tree: item.tree, blob: item.blob, digest: digestBytes(bytesForPath), size: bytesForPath.length };
+        const prior = byPath.get(item.path);
+        if (prior && !canonicalBytes(prior).equals(canonicalBytes(value))) verification("manifest");
+        if (!prior) { byPath.set(item.path, value); paths.push(value); }
+      }
+    }
+    await assertClaim(bareClaim);
+    await assertClaim(temporaryClaim);
+    return Object.freeze({ bytes, repository: snapshot.repository, refs, shas, paths: paths.sort((a, b) => a.path.localeCompare(b.path)) });
+  } finally {
+    await rm(temporary, { recursive: true, force: true }).catch(() => verification("cleanup"));
+  }
+}
+
+async function materializeBundle({ executable, bundle, directory, manifest, allowedRefs, allowedShas, allowedPaths, hardening, run = runProcess }) {
+  exactHardening(hardening);
+  const tool = await canonicalExisting(executable, "file");
+  if (!Buffer.isBuffer(bundle) || digestBytes(bundle) !== manifest?.target?.bundle?.digest || bundle.length !== manifest?.target?.bundle?.size) verification("bundle");
+  if (![allowedRefs, allowedShas, allowedPaths].every(Array.isArray) || allowedShas.length > 1 || !canonicalBytes(allowedRefs).equals(canonicalBytes(manifest.target.refs)) || !canonicalBytes(allowedShas).equals(canonicalBytes(manifest.target.shas)) || !canonicalBytes(allowedPaths).equals(canonicalBytes(manifest.target.paths))) verification("manifest");
+  const repoClaim = await claimDirectory(directory);
+  const repo = repoClaim.path;
+  const bundlePath = join(repo, ".source.bundle");
+  try {
+    await createPrivateFile(repoClaim, bundlePath, bundle);
+    await gitRun({ executable: tool, repository: repo, args: ["init", "-q"], run, temporary: repo });
+    await assertClaim(repoClaim);
+    await gitRun({ executable: tool, repository: repo, args: ["bundle", "verify", bundlePath], run, temporary: repo });
+    if (allowedShas.length > 0) await gitRun({ executable: tool, repository: repo, args: ["bundle", "unbundle", bundlePath], run, temporary: repo });
+    const listed = allowedShas.length === 0 ? [] : (await gitRun({ executable: tool, repository: repo, args: ["bundle", "list-heads", bundlePath], run, temporary: repo })).stdout.trim().split("\n").filter(Boolean).map(line => {
+      const match = /^([0-9a-f]{40}) (refs\/(?:heads|tags)\/[A-Za-z0-9._/-]+)$/.exec(line);
+      if (!match) verification("manifest");
+      return { name: match[2], sha: match[1] };
+    }).sort((a, b) => a.name.localeCompare(b.name));
+    if (!canonicalBytes(listed).equals(canonicalBytes(allowedRefs))) verification("manifest");
+    for (const ref of allowedRefs) await gitRun({ executable: tool, repository: repo, args: ["update-ref", ref.name, ref.sha], run, temporary: repo });
+    for (const sha of allowedShas) await gitRun({ executable: tool, repository: repo, args: ["cat-file", "-e", `${sha}^{commit}`], run, temporary: repo });
+    if (allowedShas.length > 0) {
+      const expectedObjects = (await gitRun({ executable: tool, repository: repo, args: ["rev-list", "--objects", "--no-object-names", ...allowedRefs.map(ref => ref.name)], run, temporary: repo })).stdout.trim().split("\n").filter(Boolean).sort();
+      const actualObjects = (await gitRun({ executable: tool, repository: repo, args: ["cat-file", "--batch-all-objects", "--batch-check=%(objectname)"], run, temporary: repo })).stdout.trim().split("\n").filter(Boolean).sort();
+      if (!canonicalBytes(actualObjects).equals(canonicalBytes(expectedObjects))) verification("manifest");
+      const liveRefs = (await gitRun({ executable: tool, repository: repo, args: ["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads", "refs/tags"], run, temporary: repo })).stdout.trim().split("\n").filter(Boolean).map(line => {
+        const match = /^(refs\/(?:heads|tags)\/[A-Za-z0-9._/-]+) ([0-9a-f]{40})$/.exec(line);
+        if (!match) verification("manifest");
+        return { name: match[1], sha: match[2] };
+      }).sort((a, b) => a.name.localeCompare(b.name));
+      if (!canonicalBytes(liveRefs).equals(canonicalBytes(allowedRefs))) verification("manifest");
+    }
+    for (const item of allowedPaths) {
+      if (!safePath(item.path)) verification("manifest");
+      const entry = (await gitRun({ executable: tool, repository: repo, args: ["ls-tree", item.tree, "--", item.path], run, temporary: repo })).stdout.trim();
+      const match = /^(100644|100755|120000) blob ([0-9a-f]{40})\t(.+)$/.exec(entry);
+      if (!match || match[2] !== item.blob || match[3] !== item.path) verification("manifest");
+      const bytes = await blobBytes(tool, repo, item.blob, run, repo);
+      if (bytes.length !== item.size || digestBytes(bytes) !== item.digest) verification("manifest");
+      const output = join(repo, item.path);
+      await mkdir(dirname(output), { recursive: true, mode: 0o700 });
+      if (match[1] === "120000") {
+        const target = bytes.toString("utf8");
+        const resolvedTarget = resolve(dirname(output), target);
+        if (!Buffer.from(target).equals(bytes) || !target || isAbsolute(target) || resolvedTarget === join(repo, ".git") || resolvedTarget.startsWith(`${join(repo, ".git")}${sep}`) || (resolvedTarget !== repo && !resolvedTarget.startsWith(`${repo}${sep}`))) verification("manifest");
+        await symlink(target, output);
+      } else {
+        await createPrivateFile(repoClaim, output, bytes, match[1] === "100755" ? 0o700 : 0o600);
+      }
+    }
+    if (allowedShas.length > 0) await gitRun({ executable: tool, repository: repo, args: ["update-ref", "HEAD", allowedShas[0]], run, temporary: repo });
+    await assertClaim(repoClaim);
+    return Object.freeze({ refs: allowedRefs, shas: allowedShas, paths: allowedPaths });
+  } catch (error) {
+    if (error instanceof AdwError) throw error;
+    verification("git");
+  } finally {
+    await rm(bundlePath, { force: true }).catch(() => verification("cleanup"));
+  }
+}
+
+async function walkWorktree(root, prefix = "") {
+  const directory = prefix ? join(root, prefix) : root;
+  const result = [];
+  for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!prefix && entry.name === ".git") continue;
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (!safePath(relative) || (!entry.isDirectory() && !entry.isFile() && !entry.isSymbolicLink())) verification("patch");
+    if (entry.isDirectory()) result.push(...await walkWorktree(root, relative));
+    else result.push({ path: relative, symlink: entry.isSymbolicLink() });
+  }
+  return result;
+}
+
+async function capturePatch({ executable, repository, baseSha, manifest, rolePolicy, hardening, run = runProcess }) {
+  exactHardening(hardening);
+  const repo = await canonicalExisting(repository, "directory");
+  const tool = await canonicalExisting(executable, "file");
+  if (!SHA.test(baseSha) || baseSha !== manifest?.baseSha || (await readHead({ executable: tool, repository: repo, run })) !== baseSha) verification("patch");
+  const temporaryClaim = await privateTemporary("adw-vcs-capture-", [repo, tool]);
+  const temporary = temporaryClaim.path;
+  const index = join(temporary, "index");
+  const env = { GIT_INDEX_FILE: index };
+  try {
+    await gitRun({ executable: tool, repository: repo, args: ["read-tree", baseSha], run, temporary, extraEnv: env });
+    const base = await treeEntries(tool, repo, baseSha, run, temporary);
+    const worktree = await walkWorktree(repo);
+    const present = new Set(worktree.map(item => item.path));
+    for (const item of base) if (!present.has(item.path)) await gitRun({ executable: tool, repository: repo, args: ["update-index", "--force-remove", "--", item.path], run, temporary, extraEnv: env });
+    for (const worktreeItem of worktree) {
+      const path = worktreeItem.path;
+      const full = join(repo, path);
+      if (worktreeItem.symlink) {
+        const baseItem = base.find(item => item.path === path && item.mode === "120000");
+        const target = await readlink(full).catch(() => verification("patch"));
+        const bytes = Buffer.from(target);
+        if (!baseItem || !bytes.equals(await blobBytes(tool, repo, baseItem.blob, run, temporary))) verification("patch");
+        continue;
+      }
+      const stat = await lstat(full);
+      if (!stat.isFile() || stat.size > 1_073_741_824) verification("patch");
+      let handle;
+      let bytes;
+      try {
+        handle = await open(full, constants.O_RDONLY | constants.O_NOFOLLOW);
+        const current = await handle.stat();
+        if (!current.isFile() || current.dev !== stat.dev || current.ino !== stat.ino || current.size !== stat.size) verification("patch");
+        bytes = await handle.readFile();
+        const after = await handle.stat();
+        if (after.size !== current.size || after.dev !== current.dev || after.ino !== current.ino || after.mtimeMs !== current.mtimeMs || after.ctimeMs !== current.ctimeMs) verification("patch");
+      } finally { await handle?.close(); }
+      const blob = (await run({ file: tool, args: [...PREFIX, "-C", repo, "hash-object", "-w", "--stdin"], cwd: repo, env: gitEnvironment(tool, temporary, env), input: bytes, timeoutMs: 120_000, maxOutputBytes: 4096 })).stdout.trim();
+      if (!SHA.test(blob)) verification("git");
+      await gitRun({ executable: tool, repository: repo, args: ["update-index", "--add", "--cacheinfo", `${stat.mode & 0o111 ? "100755" : "100644"},${blob},${path}`], run, temporary, extraEnv: env });
+    }
+    const patchBytes = Buffer.from((await gitRun({ executable: tool, repository: repo, args: ["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", "--full-index", "--no-renames", baseSha], run, temporary, extraEnv: env, binaryStdout: true })).stdout);
+    if (!Buffer.from(patchBytes.toString("utf8")).equals(patchBytes) || patchBytes.includes(0) || patchBytes.includes(Buffer.from("GIT binary patch")) || patchBytes.includes(Buffer.from("Binary files "))) verification("binary");
+    const raw = await gitRun({ executable: tool, repository: repo, args: ["diff", "--cached", "--raw", "-z", "--no-renames", baseSha], run, temporary, extraEnv: env, binaryStdout: true });
+    const rawBytes = Buffer.from(raw.stdout);
+    const rawText = rawBytes.toString("utf8");
+    if (!Buffer.from(rawText).equals(rawBytes)) verification("manifest");
+    const actual = { baseSha, digest: digestBytes(patchBytes), size: patchBytes.length, files: parseRaw(rawText) };
+    try { validatePatchManifest(actual, rolePolicy); } catch { verification("manifest"); }
+    if (!canonicalBytes(actual).equals(canonicalBytes(manifest))) verification("digest");
+    await assertClaim(temporaryClaim);
+    return Object.freeze({ manifest: actual, patchBytes });
+  } catch (error) {
+    if (error instanceof AdwError && error.code === "verification") throw error;
+    verification("git");
+  } finally {
+    await rm(temporary, { recursive: true, force: true }).catch(() => verification("cleanup"));
+  }
+}
+
+export function createDefaultVcs(executable = process.env.ADW_GIT_PATH) {
   if (!executable || !isAbsolute(executable)) verification("git path");
-  return Object.freeze({ head: repository => readHead({ executable, repository }) });
+  return Object.freeze({
+    head: repository => readHead({ executable, repository }),
+    readControl: request => readControl({ executable, ...request }),
+    createBundle: request => createBundle({ executable, ...request }),
+    materializeBundle: request => materializeBundle({ executable, ...request }),
+    capturePatch: request => capturePatch({ executable, ...request }),
+    verifyPatch: request => verifyPatch({ executable, ...request }),
+  });
 }
 
 function parseRaw(text) {
+  if (typeof text !== "string") verification("manifest");
   const fields = text.split("\0");
   if (fields.at(-1) === "") fields.pop();
   if (fields.length % 2 !== 0) verification("manifest");
@@ -53,7 +415,7 @@ function parseRaw(text) {
     const header = fields[i];
     const path = fields[i + 1];
     const match = /^:(\d{6}) (\d{6}) [0-9a-f]+ [0-9a-f]+ ([MAD])$/.exec(header);
-    if (!match) verification("manifest");
+    if (!match || !safePath(path)) verification("manifest");
     files.push({
       path,
       kind: "regular",
@@ -80,18 +442,10 @@ export async function verifyPatch({
 }) {
   if (![executable, repository, temporaryDirectory, controlDirectory].every(value => typeof value === "string" && isAbsolute(value))) verification("path");
   if (!Buffer.isBuffer(patchBytes)) verification("patch");
-  let tool;
-  let repo;
-  let temporary;
-  let control;
-  try {
-    tool = await realpath(executable);
-    repo = await realpath(repository);
-    temporary = await realpath(temporaryDirectory);
-    control = await realpath(controlDirectory);
-  } catch {
-    verification("path");
-  }
+  const tool = await canonicalExisting(executable, "file");
+  const repo = await canonicalExisting(repository, "directory");
+  const temporary = await canonicalExisting(temporaryDirectory, "directory");
+  const control = await canonicalExisting(controlDirectory, "directory");
   if (!outside(repo, temporary) || !outside(control, temporary) || !outside(repo, control) || !outside(repo, tool) || !outside(control, tool)) verification("path");
   if (baseSha !== manifest?.baseSha || patchBytes.length !== manifest?.size || digestBytes(patchBytes) !== manifest?.digest) verification("digest");
   if (patchBytes.includes(0) || patchBytes.includes(Buffer.from("GIT binary patch")) || patchBytes.includes(Buffer.from("Binary files "))) verification("binary");
@@ -102,16 +456,19 @@ export async function verifyPatch({
   }
 
   const id = randomUUID();
-  const indexPath = join(temporary, `index-${id}`);
-  const patchPath = join(temporary, `patch-${id}.diff`);
+  const runClaim = await claimDirectory(join(temporary, `verify-${id}`));
+  const runDirectory = runClaim.path;
+  const indexPath = join(runDirectory, "index");
+  const patchPath = join(runDirectory, "patch.diff");
   const env = {
     PATH: dirname(tool),
-    HOME: temporary,
+    HOME: runDirectory,
     LANG: "C.UTF-8",
-    TMPDIR: temporary,
+    TMPDIR: runDirectory,
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_TERMINAL_PROMPT: "0",
+    GIT_NO_REPLACE_OBJECTS: "1",
     GIT_INDEX_FILE: indexPath,
   };
   const prefix = ["-c", "core.hooksPath=/dev/null", "-c", "credential.helper=", "-c", "protocol.file.allow=never"];
@@ -132,8 +489,9 @@ export async function verifyPatch({
   };
 
   try {
-    await writeFile(patchPath, patchBytes, { mode: 0o600 });
+    await createPrivateFile(runClaim, patchPath, patchBytes);
     await command(["read-tree", baseSha]);
+    await assertClaim(runClaim);
     await command(["apply", "--check", "--cached", patchPath]);
     await command(["apply", "--cached", patchPath]);
     const raw = await command(["diff", "--cached", "--raw", "-z", "--no-renames", baseSha]);
@@ -141,6 +499,7 @@ export async function verifyPatch({
     const expected = [...manifest.files].sort((a, b) => a.path.localeCompare(b.path));
     if (!canonicalBytes(actual).equals(canonicalBytes(expected))) verification("manifest");
     const resultTree = (await command(["write-tree"])).stdout.trim();
+    await assertClaim(runClaim);
     return validateVerification({
       schemaVersion: 1,
       controlSha,
@@ -151,9 +510,7 @@ export async function verifyPatch({
       resultTree,
     });
   } finally {
-    let cleanupFailed = false;
-    try { await rm(patchPath, { force: true }); } catch { cleanupFailed = true; }
-    try { await rm(indexPath, { force: true }); } catch { cleanupFailed = true; }
-    if (cleanupFailed) verification("cleanup");
+    try { await rm(runDirectory, { recursive: true, force: true }); }
+    catch { verification("cleanup"); }
   }
 }

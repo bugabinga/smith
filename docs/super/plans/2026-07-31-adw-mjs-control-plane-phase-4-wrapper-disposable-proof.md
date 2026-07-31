@@ -72,8 +72,8 @@ Before Task 7, the owner must provide a separately scoped disposable GitHub App 
 - Create: `adw/test/transport.test.mjs`
 - Modify: `adw/test/main.test.mjs`
 
-- [ ] Write failing tests for `prepare`, `assess --provider`, `reduce`, and `verify` using injected adapters and external temporary directories.
-- [ ] Require the fixed transport tree:
+- [x] Write failing tests for `prepare`, `assess --provider`, `reduce`, and `verify` using injected adapters and external temporary directories.
+- [x] Require the fixed transport tree:
 
 ```text
 adw-snapshot/{snapshot.json,snapshot.sha256}
@@ -85,15 +85,15 @@ adw-apply-result/{result.json,result.sha256}
 adw-source/{control/**,target.bundle,manifest.json,manifest.sha256}
 ```
 
-- [ ] Reject symlinks, non-regular files, extra files, missing siblings, digest mismatch, documents above 256 KiB, patches above 1 MiB, wrong control SHA, wrong snapshot/decision/precondition digest, and artifact paths overlapping either checkout.
-- [ ] `prepare` creates a trusted `control/` artifact containing only the exact control-SHA `adw/**` plus required charters/schemas, and an immutable hardened target Git bundle plus manifest binding repository IDs, refs, SHAs, path-tree/blob digests, and sizes. Every tokenless downstream job—provider, reduce, and verify—uses `actions/download-artifact` as its credential-free CI transport bootstrap and executes `control/adw/main.mjs` directly; provider/verify materialize `target.bundle` only when required. They perform no forge checkout and receive no forge credential. Bundle materialization disables hooks, filters, fsmonitor, credentials, and file protocol and rejects refs/objects outside the manifest.
-- [ ] `prepare` reads only the trusted event path through `github.mjs`, derives the canonical role policy, and writes one snapshot artifact.
-- [ ] `assess` installs one exact-pinned CLI in `RUNNER_TEMP`, accepts exactly one provider credential, invokes one provider, and writes only that provider's assessment artifact.
-- [ ] `reduce` accepts primary/fallback artifacts according to canonical role policy; missing/malformed primary reaches the one permitted fallback state rather than widening authority.
-- [ ] `verify` emits a state or patch verification using `vcs.mjs`; it has no credential fields or target-execution callback.
-- [ ] Preserve existing stdin fixture commands. New operational commands use fixed `ADW_*` environment names validated as exact absolute paths/IDs; unknown or cross-command variables are ignored because wrappers pass explicit env allowlists.
-- [ ] Run `node --test adw/test/{main,transport,providers,vcs}.test.mjs`; expect PASS.
-- [ ] Commit: `Bind ADW commands to exact transport artifacts`.
+- [x] Reject symlinks, non-regular files, extra files, missing siblings, digest mismatch, documents above 256 KiB, patches above 1 MiB, wrong control SHA, wrong snapshot/decision/precondition digest, and artifact paths overlapping either checkout.
+- [x] `prepare` creates a trusted `control/` artifact containing only the exact control-SHA `adw/**` plus required charters/schemas, and an immutable hardened target Git bundle plus manifest binding repository IDs, refs, SHAs, path-tree/blob digests, and sizes. Every tokenless downstream job—provider, reduce, and verify—uses `actions/download-artifact` as its credential-free CI transport bootstrap and executes `control/adw/main.mjs` directly; provider/verify materialize `target.bundle` only when required. They perform no forge checkout and receive no forge credential. Bundle materialization disables hooks, filters, fsmonitor, credentials, and file protocol and rejects refs/objects outside the manifest.
+- [x] `prepare` reads only the trusted event path through `github.mjs`, derives the canonical role policy, and writes one snapshot artifact.
+- [x] `assess` installs one exact-pinned CLI in `RUNNER_TEMP`, accepts exactly one provider credential, invokes one provider, and writes only that provider's assessment artifact.
+- [x] `reduce` accepts primary/fallback artifacts according to canonical role policy; missing/malformed primary reaches the one permitted fallback state rather than widening authority.
+- [x] `verify` emits a state or patch verification using `vcs.mjs`; it has no credential fields or target-execution callback.
+- [x] Preserve existing stdin fixture commands. New operational commands use fixed `ADW_*` environment names validated as exact absolute paths/IDs; unknown or cross-command variables are ignored because wrappers pass explicit env allowlists.
+- [x] Run `node --test adw/test/{main,transport,providers,vcs}.test.mjs`; expect PASS.
+- [x] Commit: `Bind ADW commands to exact transport artifacts`.
 
 ### Task 3: Closed, preconditioned GitHub writes
 

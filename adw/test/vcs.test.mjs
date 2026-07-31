@@ -8,7 +8,7 @@ import test from "node:test";
 import { digestBytes } from "../core.mjs";
 import { defineRole } from "../roles.mjs";
 import { runProcess } from "../providers.mjs";
-import { verifyPatch } from "../vcs.mjs";
+import { createDefaultVcs, verifyPatch } from "../vcs.mjs";
 
 const exec = promisify(execFile);
 
@@ -131,6 +131,70 @@ test("patch verification rejects NUL-bearing binary input before git", async t =
     error => error?.code === "verification" && error.message === "binary",
   );
   assert.equal(calls, 0);
+});
+
+test("default VCS reads exact control-SHA blobs and round-trips exact bounded bundles", async t => {
+  const value = await fixture(t);
+  await mkdir(join(value.repository, "adw"));
+  await writeFile(join(value.repository, "adw", "main.mjs"), "committed\n");
+  await writeFile(join(value.repository, "charter.md"), "charter\n");
+  await git(value.executable, ["-C", value.repository, "add", "."]);
+  await git(value.executable, ["-C", value.repository, "commit", "-qm", "control"]);
+  const sha = (await git(value.executable, ["-C", value.repository, "rev-parse", "HEAD"])).stdout.trim();
+  await writeFile(join(value.repository, "adw", "main.mjs"), "mutable\n");
+  const vcs = createDefaultVcs(value.executable);
+  const control = await vcs.readControl({ repository: value.repository, controlSha: sha, requiredPaths: ["charter.md"], hardening: { hooks: false, filters: false, fsmonitor: false, credentials: false, fileProtocol: false } });
+  assert.equal(control.paths.find(item => item.path === "adw/main.mjs").bytes.toString(), "committed\n");
+  assert.ok(control.paths.every(item => /^[0-9a-f]{40}$/.test(item.tree) && /^[0-9a-f]{40}$/.test(item.blob)));
+
+  const bundle = await vcs.createBundle({ repository: value.repository, snapshot: { repository: { id: "1", owner: "o", name: "r", defaultBranch: "main" } }, allowedShas: [sha], hardening: { hooks: false, filters: false, fsmonitor: false, credentials: false, fileProtocol: false } });
+  assert.ok(bundle.bytes.subarray(0, 15).toString().includes("git bundle"));
+  assert.deepEqual(bundle.shas, [sha]);
+  const materialized = join(value.temporaryDirectory, "materialized");
+  const result = await vcs.materializeBundle({ bundle: bundle.bytes, directory: materialized, manifest: { target: { bundle: { digest: digestBytes(bundle.bytes), size: bundle.bytes.length }, refs: bundle.refs, shas: bundle.shas, paths: bundle.paths } }, allowedRefs: bundle.refs, allowedShas: bundle.shas, allowedPaths: bundle.paths, hardening: { hooks: false, filters: false, fsmonitor: false, credentials: false, fileProtocol: false } });
+  assert.deepEqual(result, { refs: bundle.refs, shas: bundle.shas, paths: bundle.paths });
+  assert.equal(await readFile(join(materialized, "adw", "main.mjs"), "utf8"), "committed\n");
+});
+
+test("default VCS rejects multi-SHA bundle aggregation before choosing HEAD", async t => {
+  const value = await fixture(t);
+  const vcs = createDefaultVcs(value.executable);
+  await assert.rejects(
+    () => vcs.createBundle({
+      repository: value.repository,
+      snapshot: { repository: { id: "1", owner: "o", name: "r", defaultBranch: "main" } },
+      allowedShas: ["0".repeat(40), "f".repeat(40)],
+      hardening: { hooks: false, filters: false, fsmonitor: false, credentials: false, fileProtocol: false },
+    }),
+    error => error?.code === "verification" && error.message === "manifest",
+  );
+});
+
+test("default VCS creates and materializes the canonical empty bundle", async t => {
+  const value = await fixture(t);
+  const vcs = createDefaultVcs(value.executable);
+  const bundle = await vcs.createBundle({ repository: value.repository, snapshot: { repository: { id: "1", owner: "o", name: "r", defaultBranch: "main" } }, allowedShas: [], hardening: { hooks: false, filters: false, fsmonitor: false, credentials: false, fileProtocol: false } });
+  assert.equal(bundle.bytes.toString(), "# v2 git bundle\n\n");
+  assert.deepEqual(bundle.refs, []);
+  assert.deepEqual(bundle.paths, []);
+  const directory = join(value.temporaryDirectory, "empty");
+  const result = await vcs.materializeBundle({ bundle: bundle.bytes, directory, manifest: { target: { bundle: { digest: digestBytes(bundle.bytes), size: bundle.bytes.length }, refs: [], shas: [], paths: [] } }, allowedRefs: [], allowedShas: [], allowedPaths: [], hardening: { hooks: false, filters: false, fsmonitor: false, credentials: false, fileProtocol: false } });
+  assert.deepEqual(result, { refs: [], shas: [], paths: [] });
+});
+
+test("default VCS captures provider worktree bytes and rejects metadata disagreement", async t => {
+  const value = await fixture(t);
+  await writeFile(join(value.repository, "file.txt"), "provider\n");
+  const patchBytes = Buffer.from((await git(value.executable, ["-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "-C", value.repository, "diff", "--binary", "--no-ext-diff", "--no-textconv", "--full-index", "--no-renames", value.baseSha, "--", "file.txt"])).stdout);
+  const manifest = { baseSha: value.baseSha, digest: digestBytes(patchBytes), size: patchBytes.length, files: [{ path: "file.txt", kind: "regular", oldMode: "100644", newMode: "100644" }] };
+  const vcs = createDefaultVcs(value.executable);
+  const captured = await vcs.capturePatch({ repository: value.repository, baseSha: value.baseSha, manifest, rolePolicy: role(), hardening: { hooks: false, filters: false, fsmonitor: false, credentials: false, fileProtocol: false } });
+  assert.deepEqual(captured.manifest, manifest);
+  assert.deepEqual(captured.patchBytes, patchBytes);
+  await assert.rejects(
+    () => vcs.capturePatch({ repository: value.repository, baseSha: value.baseSha, manifest: { ...manifest, digest: "f".repeat(64) }, rolePolicy: role(), hardening: { hooks: false, filters: false, fsmonitor: false, credentials: false, fileProtocol: false } }),
+    error => error?.code === "verification",
+  );
 });
 
 test("patch verification cleans worktree after malformed diff", async t => {

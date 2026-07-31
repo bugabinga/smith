@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { canonicalBytes, digestJson } from "../core.mjs";
 import { role as productionRole } from "../roles.mjs";
@@ -68,6 +68,33 @@ test("process runner terminates timeout", async () => {
   );
 });
 
+test("provider install follows a validated absolute npm symlink and executes env-node shims", async t => {
+  const root = await mkdtemp(join(tmpdir(), "smith-adw-real-provider-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const tools = join(root, "tools");
+  const links = join(root, "links");
+  const prefix = join(root, "prefix");
+  await mkdir(tools);
+  await mkdir(links);
+  const npmTarget = join(tools, "npm.mjs");
+  await writeFile(npmTarget, `#!/usr/bin/env node
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+const prefix = process.argv[process.argv.indexOf("--prefix") + 1];
+await mkdir(join(prefix, "node_modules", ".bin"), { recursive: true });
+await writeFile(join(prefix, "node_modules", ".bin", "codex"), "#!/usr/bin/env node\\nconsole.log('codex-cli 0.145.0')\\n", { mode: 0o700 });
+`, { mode: 0o700 });
+  await chmod(npmTarget, 0o700);
+  const npmLink = join(links, "npm");
+  await symlink(npmTarget, npmLink);
+  const result = await installProvider({
+    provider: "codex", prefix, npmPath: npmLink, repository: process.cwd(), run: runProcess,
+    baseEnv: { PATH: dirname(process.execPath), HOME: root, LANG: "C.UTF-8", TMPDIR: root },
+  });
+  assert.equal(result.executable, join(prefix, "node_modules", ".bin", "codex"));
+  assert.equal(result.version, "0.145.0");
+});
+
 test("provider pins install into an external temporary prefix", async t => {
   assert.deepEqual(PROVIDER_PINS, {
     claude: { package: "@anthropic-ai/claude-code", version: "2.1.220", executable: "claude" },
@@ -76,10 +103,14 @@ test("provider pins install into an external temporary prefix", async t => {
   const root = await mkdtemp(join(tmpdir(), "smith-adw-provider-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const prefix = join(root, "prefix");
-  await mkdir(prefix);
   const calls = [];
   const fakeRun = async request => {
     calls.push(request);
+    if (request.args[0] === "install") {
+      const executable = join(prefix, "node_modules", ".bin", "codex");
+      await mkdir(join(prefix, "node_modules", ".bin"), { recursive: true });
+      await writeFile(executable, "#!/bin/sh\n", { mode: 0o700 });
+    }
     return { code: 0, signal: null, stdout: request.args.includes("--version") ? "codex-cli 0.145.0\n" : "", stderr: "" };
   };
   const result = await installProvider({ provider: "codex", prefix, npmPath: process.execPath, repository: process.cwd(), run: fakeRun, baseEnv: base.env });
@@ -112,8 +143,9 @@ const snapshot = {
 };
 
 test("Claude invocation receives only Claude credential and stamps envelope", async t => {
-  const home = await mkdtemp(join(tmpdir(), "smith-adw-claude-"));
-  t.after(() => rm(home, { recursive: true, force: true }));
+  const root = await mkdtemp(join(tmpdir(), "smith-adw-claude-"));
+  const home = join(root, "home");
+  t.after(() => rm(root, { recursive: true, force: true }));
   let call;
   const run = async request => {
     call = request;
@@ -131,14 +163,18 @@ test("Claude invocation receives only Claude credential and stamps envelope", as
   assert.equal(Object.hasOwn(call.env, "GH_TOKEN"), false);
   assert.equal(call.args.includes("--bare"), false);
   assert.ok(call.args.includes("--json-schema"));
+  assert.deepEqual(call.args.slice(call.args.indexOf("--effort"), call.args.indexOf("--effort") + 2), ["--effort", "xhigh"]);
+  assert.equal(call.args.includes("--permission-mode"), false);
   const providerPrompt = call.args[call.args.indexOf("-p") + 1];
   assert.match(providerPrompt, /Every other snapshot value/);
   assert.match(providerPrompt, /NORMALIZED SNAPSHOT/);
   assert.match(providerPrompt, /"entityId":"42"/);
 });
 
-test("provider invocation enforces role payload keys", async () => {
-  const home = await mkdtemp(join(tmpdir(), "smith-adw-payload-"));
+test("provider invocation enforces role payload keys", async t => {
+  const root = await mkdtemp(join(tmpdir(), "smith-adw-payload-"));
+  const home = join(root, "home");
+  t.after(() => rm(root, { recursive: true, force: true }));
   await assert.rejects(
     () => invokeProvider({
       provider: "claude", executable: process.execPath, cliVersion: "2.1.220", rolePolicy: productionRole("reviewer"), snapshot,
@@ -152,7 +188,8 @@ test("provider invocation enforces role payload keys", async () => {
 });
 
 test("provider cleanup failure cannot report success", async () => {
-  const home = await mkdtemp(join(tmpdir(), "smith-adw-cleanup-"));
+  const root = await mkdtemp(join(tmpdir(), "smith-adw-cleanup-"));
+  const home = join(root, "home");
   await assert.rejects(
     () => invokeProvider({
       provider: "claude", executable: process.execPath, cliVersion: "2.1.220", rolePolicy: productionRole("reviewer"), snapshot,
@@ -164,13 +201,98 @@ test("provider cleanup failure cannot report success", async () => {
     }),
     error => error?.code === "provider" && error.message === "cleanup",
   );
-  await rm(home, { recursive: true, force: true });
+  await rm(root, { recursive: true, force: true });
+});
+
+test("provider prefix and home claims reject pre-existing or symlink paths", async t => {
+  const root = await mkdtemp(join(tmpdir(), "smith-adw-exclusive-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const prefix = join(root, "prefix");
+  await mkdir(prefix);
+  await assert.rejects(
+    () => installProvider({ provider: "codex", prefix, npmPath: process.execPath, repository: process.cwd(), run: async () => assert.fail("npm must not run"), baseEnv: base.env }),
+    error => error?.code === "provider" && error.message === "path",
+  );
+  const homeTarget = join(root, "target");
+  const home = join(root, "home");
+  await mkdir(homeTarget);
+  await symlink(homeTarget, home);
+  await assert.rejects(
+    () => invokeProvider({
+      provider: "claude", executable: process.execPath, cliVersion: "2.1.220", rolePolicy: productionRole("reviewer"), snapshot,
+      idempotencyKey: "review:42", home, repository: process.cwd(), credential: { CLAUDE_CODE_OAUTH_TOKEN: "secret" },
+      runIdentity: { id: "run", job: "claude", attempt: 1 }, baseEnv: base.env, now: () => "2026-07-28T10:00:00.000Z",
+      run: async () => assert.fail("provider must not run"),
+    }),
+    error => error?.code === "provider" && error.message === "path",
+  );
+});
+
+test("real provider patch flow captures exact repository bytes and checks declared metadata", async t => {
+  const root = await mkdtemp(join(tmpdir(), "smith-adw-provider-patch-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const policy = productionRole("builder");
+  const charter = "trusted builder charter";
+  const schema = await readFile(policy.payloadSchema, "utf8");
+  const baseSha = "b".repeat(40);
+  const patchBytes = Buffer.from("diff --git a/smith/src/lib.rs b/smith/src/lib.rs\n");
+  const manifest = { baseSha, digest: (await import("../core.mjs")).digestBytes(patchBytes), size: patchBytes.length, files: [{ path: "smith/src/lib.rs", kind: "regular", oldMode: "100644", newMode: "100644" }] };
+  const buildSnapshot = {
+    ...snapshot,
+    routing: { role: "builder", mode: "single", primary: "claude" },
+    revisions: [
+      { resource: "base", kind: "git_ref", token: baseSha },
+      { resource: `trusted:${policy.charter}`, kind: "control", token: "c".repeat(40) },
+      { resource: `trusted:${policy.payloadSchema}`, kind: "control", token: "d".repeat(40) },
+    ],
+    state: { resources: { [`trusted:${policy.charter}`]: trusted(policy.charter, charter), [`trusted:${policy.payloadSchema}`]: trusted(policy.payloadSchema, schema) } },
+  };
+  let captured = 0;
+  let call;
+  const result = await invokeProvider({
+    provider: "claude", executable: process.execPath, cliVersion: "2.1.220", rolePolicy: policy, snapshot: buildSnapshot,
+    idempotencyKey: "build:42", home: join(root, "home"), repository: process.cwd(), credential: { CLAUDE_CODE_OAUTH_TOKEN: "secret" },
+    runIdentity: { id: "run", job: "claude", attempt: 1 }, baseEnv: base.env, now: () => "2026-07-28T10:00:00.000Z",
+    run: async request => { call = request; return { code: 0, signal: null, stdout: JSON.stringify({ structured_output: { outcome: "positive", payload: { verdict: "patch", summary: "Build", patch: manifest }, patch: manifest } }), stderr: "" }; },
+    capturePatch: async metadata => { captured++; assert.deepEqual(metadata, manifest); return { manifest, patchBytes }; },
+  });
+  assert.equal(captured, 1);
+  assert.deepEqual(call.args.slice(call.args.indexOf("--permission-mode"), call.args.indexOf("--permission-mode") + 2), ["--permission-mode", "acceptEdits"]);
+  assert.deepEqual(call.args.slice(call.args.indexOf("--effort"), call.args.indexOf("--effort") + 2), ["--effort", "high"]);
+  assert.deepEqual(result.patchBytes, patchBytes);
+  assert.deepEqual(result.assessment.patch, manifest);
+});
+
+test("provider invocation detects a claimed-home directory swap", async t => {
+  const root = await mkdtemp(join(tmpdir(), "smith-adw-home-swap-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  const moved = join(root, "moved-home");
+  const outside = join(root, "outside");
+  await mkdir(outside);
+  await assert.rejects(
+    () => invokeProvider({
+      provider: "claude", executable: process.execPath, cliVersion: "2.1.220", rolePolicy: productionRole("reviewer"), snapshot,
+      idempotencyKey: "review:42", home, repository: process.cwd(), credential: { CLAUDE_CODE_OAUTH_TOKEN: "secret" },
+      runIdentity: { id: "run", job: "claude", attempt: 1 }, baseEnv: base.env, now: () => "2026-07-28T10:00:00.000Z",
+      run: async () => {
+        await rename(home, moved);
+        await symlink(outside, home);
+        return { code: 0, signal: null, stdout: JSON.stringify({ structured_output: { outcome: "positive", payload: { verdict: "approve", risk: "none", findings: [] }, patch: null } }), stderr: "" };
+      },
+    }),
+    error => error?.code === "provider" && error.message === "path",
+  );
+  assert.deepEqual(await (await import("node:fs/promises")).readdir(outside), []);
 });
 
 test("Codex auth file is mode-0600 and removed in finally", async () => {
-  const home = await mkdtemp(join(tmpdir(), "smith-adw-codex-"));
+  const root = await mkdtemp(join(tmpdir(), "smith-adw-codex-"));
+  const home = join(root, "home");
   let authMode;
+  let providerArgs;
   const run = async request => {
+    providerArgs = request.args;
     const auth = join(home, ".codex", "auth.json");
     authMode = (await import("node:fs/promises")).stat(auth).then(value => value.mode & 0o777);
     const output = request.args[request.args.indexOf("--output-last-message") + 1];
@@ -185,5 +307,7 @@ test("Codex auth file is mode-0600 and removed in finally", async () => {
   });
   assert.equal(result.provider, "codex");
   assert.equal(await authMode, 0o600);
+  assert.deepEqual(providerArgs.slice(providerArgs.indexOf("--sandbox"), providerArgs.indexOf("--sandbox") + 2), ["--sandbox", "read-only"]);
   await assert.rejects(() => access(home));
+  await rm(root, { recursive: true, force: true });
 });

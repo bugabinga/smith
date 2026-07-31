@@ -34,11 +34,12 @@ const assessment = {
   completedAt: "2026-07-28T10:00:01.000Z",
 };
 
-async function invoke(argv, input, fixtures = {}) {
+async function invoke(argv, input, fixtures = {}, env = {}) {
   let out = "";
   let err = "";
   const code = await run({
     argv,
+    env,
     stdin: input,
     stdout: { write: value => { out += value; } },
     stderr: { write: value => { err += value; } },
@@ -96,6 +97,19 @@ test("reconcile accepts normalized state", async () => {
     reviews: [], pioneers: [], holds: [],
   }));
   assert.deepEqual(JSON.parse(result.out), []);
+});
+
+test("stdin fixture commands ignore operational and unknown environment", async () => {
+  const result = await invoke(["validate", "snapshot"], JSON.stringify(snapshot), {}, { ADW_CONTROL_SHA: "f".repeat(40), GH_TOKEN: "ignored" });
+  assert.equal(result.code, 0);
+  assert.deepEqual(JSON.parse(result.out), snapshot);
+});
+
+test("partial operational reduce environment never falls through to legacy stdin", async () => {
+  const result = await invoke(["reduce"], JSON.stringify({ snapshot, assessments: [assessment] }), {}, { ADW_CONTROL_SHA: controlSha });
+  assert.equal(result.code, 6);
+  assert.equal(result.out, "");
+  assert.match(JSON.parse(result.err).message, /ADW_SOURCE_ARTIFACT/);
 });
 
 test("fixture reads are basename-only", async () => {
