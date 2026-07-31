@@ -1,0 +1,13 @@
+[package]
+name = "i101-android-luajit-link"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# One claim: the workspace's Android target (`aarch64-linux-android`, SPEC §14)
+# cross-compiles with vendored mlua+LuaJIT and links only because of the
+# `-lclang_rt.builtins-aarch64-android` flag pinned in the repo-root
+# `.cargo/config.toml` ([target.aarch64-linux-android].rustflags, SPEC §3.2).
+# Same pin every other prototype uses, so this proves the shipping dependency.
+[dependencies]
+mlua = { version = "0.10", features = ["luajit", "vendored", "serialize"] }

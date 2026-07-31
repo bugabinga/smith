@@ -2355,3 +2355,86 @@ complete
 - Split standing prototype CI (`prototypes.yml`, evidence bit-rot guard) from
   the p34-specific cross/arch evidence (`ci-prototype.yml`, path-scoped).
   deleted now that its evidence is recorded.
+
+## I101 — `i101-android-luajit-link` (issue #101)
+
+### SPEC claims
+
+- §14: `aarch64-linux-android` is a **required** release target; a terminal-first
+  agent ships on the phone, so its breakage blocks publishing.
+- §14/§3.2: Bionic carries no compiler-rt builtins, so the Android target links
+  the vendored LuaJIT against them explicitly via the
+  `-lclang_rt.builtins-aarch64-android` flag pinned in the repo-root
+  `.cargo/config.toml` — normative, not a local workaround. "A toolchain that
+  cannot supply them cannot produce this artifact."
+
+### Risk
+
+If the vendored `mlua`+LuaJIT tree cannot cross-compile for Bionic, or the
+`__clear_cache` builtin cannot be supplied on this target, the required Android
+artifact does not exist and §14 is wrong to mark it required.
+
+### Minimal artifact
+
+```text
+i101-android-luajit-link/
+  Cargo.toml                     (mlua 0.10 luajit+vendored+serialize — the shared pin)
+  src/main.rs                    (Lua::new + eval, forces LuaJIT into the link)
+  android-linker.sh              (NDK clang + -L to the clang-rt lib dir)
+  android-linker-nobuiltins.sh   (control: strip the flag, withhold builtins)
+  verify.sh                      (positive build + control, PASS lines)
+```
+
+### Verify
+
+```bash
+cd prototypes/i101-android-luajit-link
+./verify.sh   # needs ANDROID_NDK_HOME and rustup target aarch64-linux-android
+```
+
+### Result
+
+Status: complete. **Proved (issue #101):** the vendored `mlua 0.10`
+luajit+vendored tree cross-compiles for `aarch64-linux-android` and links into a
+valid Android artifact — `ELF 64-bit LSB pie executable, ARM aarch64,
+interpreter /system/bin/linker64` — with `luaL_newstate`/`lua_pcall` present and
+LuaJIT's `__clear_cache` resolved. The §3.2 flag is **load-bearing**: a control
+link that strips `-lclang_rt.builtins-aarch64-android` and withholds the builtins
+fails with `ld.lld: error: undefined symbol: __clear_cache`, confirming Bionic
+does not carry it (§14). Supplying toolchain: **NDK 27.3.13750724**, shipping
+`libclang_rt.builtins-aarch64-android.a` (clang-rt 18) under
+`toolchains/llvm/prebuilt/linux-x86_64/lib/clang/18/lib/linux`. Two toolchain
+details the release path must own, neither contradicting the spec: (1)
+`luajit-src` mis-detects the cross archiver — `TARGET_AR="llvm-ar rcus"` is
+required or the LuaJIT `.a` never builds; (2) because Rust links with
+`-nodefaultlibs`, the NDK clang driver does **not** put its clang-rt resource dir
+on the linker search path, so the §3.2 `-l` flag alone resolves to
+`unable to find library` — the release toolchain must add that `-L` (here via a
+linker wrapper). The flag is necessary; the search path is toolchain-supplied,
+which is exactly what §14 defers to the toolchain.
+
+### Spec Issues
+
+- `.cargo/config.toml` / `docs/SPEC.md` §14 (release/xtask guidance)
+  - Issue: the §3.2 flag is necessary but not self-sufficient under Rust's
+    `-nodefaultlibs`; the Android artifact only links when the NDK clang-rt
+    resource dir is also on the linker search path. The release `xtask` (§14
+    "one host builds the matrix") must supply that `-L` from the resolved NDK,
+    and pin `TARGET_AR` for the vendored LuaJIT build.
+  - Evidence: `prototypes/i101-android-luajit-link/verify.sh` (ALL PASS, exit 0);
+    without the `-L`, `ld.lld: error: unable to find library
+    -lclang_rt.builtins-aarch64-android`.
+  - Severity: P2
+
+### Commands
+
+- `rustup target add aarch64-linux-android`
+- `./verify.sh` → 5 PASS lines, `ALL PASS`, exit 0
+
+### Next Steps
+
+- Release `xtask` (§14): resolve the NDK, set the aarch64-linux-android linker
+  to the NDK clang, add `-L <ndk>/…/lib/clang/<v>/lib/linux` to the link, and
+  pin `TARGET_AR="llvm-ar rcus"` for the vendored LuaJIT build. No `docs/SPEC.md`
+  change required — the flag pin stands; this is toolchain wiring §14 already
+  delegates.
