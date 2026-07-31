@@ -1,0 +1,18 @@
+{
+  "name": "reviewer",
+  "charter": ".claude/agents/reviewer.md",
+  "mode": "single",
+  "primary": "claude",
+  "fallback": "codex",
+  "providers": ["claude", "codex"],
+  "providerConfig": {
+    "claude": { "model": "fixture-claude", "effort": "high", "timeoutSeconds": 300 },
+    "codex": { "model": "fixture-codex", "effort": "high", "timeoutSeconds": 300 }
+  },
+  "capabilities": ["pulls:read"],
+  "snapshot": { "fields": ["pull"], "maxBytes": 262144 },
+  "payload": { "outcomes": ["negative", "noop", "positive", "unable"], "requiredKeys": ["verdict"] },
+  "operations": ["publish_check", "terminal"],
+  "fallbackAuthority": { "protected": false, "incomplete": false, "fork": false, "binary": false, "oversized": false },
+  "patch": null
+}

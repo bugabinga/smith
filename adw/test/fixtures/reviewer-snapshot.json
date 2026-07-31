@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "controlSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "event": { "kind": "pull_request", "action": "synchronize", "entityId": "42" },
+  "repository": { "id": "R_1", "owner": "bugabinga", "name": "smith", "defaultBranch": "main" },
+  "revisions": [{ "resource": "pull:42", "kind": "pull", "token": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }],
+  "routing": { "role": "reviewer", "mode": "single", "primary": "claude" },
+  "state": {}
+}

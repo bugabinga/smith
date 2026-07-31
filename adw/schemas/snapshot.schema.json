@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "smith:adw:snapshot:v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "controlSha", "event", "repository", "revisions", "routing", "state"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "controlSha": { "$ref": "#/$defs/sha" },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "action", "entityId"],
+      "properties": {
+        "kind": { "enum": ["issue", "issue_comment", "pull_request", "pull_request_review", "pull_request_review_comment", "check", "workflow", "push", "schedule", "alert", "dispatch"] },
+        "action": { "$ref": "#/$defs/text" },
+        "entityId": { "$ref": "#/$defs/text" }
+      }
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "owner", "name", "defaultBranch"],
+      "properties": {
+        "id": { "$ref": "#/$defs/text" },
+        "owner": { "$ref": "#/$defs/text" },
+        "name": { "$ref": "#/$defs/text" },
+        "defaultBranch": { "$ref": "#/$defs/text" }
+      }
+    },
+    "revisions": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["resource", "kind", "token"],
+        "properties": {
+          "resource": { "$ref": "#/$defs/text" },
+          "kind": { "$ref": "#/$defs/text" },
+          "token": { "$ref": "#/$defs/text" }
+        }
+      }
+    },
+    "routing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "mode", "primary"],
+      "properties": {
+        "role": { "$ref": "#/$defs/text" },
+        "mode": { "enum": ["single", "quorum", "advisory"] },
+        "primary": { "type": ["string", "null"], "enum": ["claude", "codex", null] }
+      }
+    },
+    "state": { "type": "object" }
+  },
+  "$defs": {
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "text": { "type": "string", "minLength": 1, "maxLength": 4096 }
+  }
+}
