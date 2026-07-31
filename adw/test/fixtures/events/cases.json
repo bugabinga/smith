@@ -7,8 +7,8 @@
   { "name": "check_suite", "kind": "check", "entity": "30", "body": { "action": "completed", "check_suite": { "id": 30, "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" } } },
   { "name": "workflow_run", "kind": "workflow", "entity": "40", "body": { "action": "completed", "workflow_run": { "id": 40, "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" } } },
   { "name": "push", "kind": "push", "entity": "refs/heads/main", "body": { "ref": "refs/heads/main", "after": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" } },
-  { "name": "schedule", "kind": "schedule", "entity": "R_1", "body": { "schedule": "0 * * * *" } },
+  { "name": "schedule", "kind": "schedule", "entity": "42", "body": { "schedule": "0 * * * *" } },
   { "name": "dependabot_alert", "kind": "alert", "entity": "50", "body": { "action": "created", "alert": { "number": 50, "updated_at": "2026-07-28T00:00:00Z" } } },
   { "name": "code_scanning_alert", "kind": "alert", "entity": "51", "body": { "action": "created", "alert": { "number": 51, "updated_at": "2026-07-28T00:00:00Z" } } },
-  { "name": "workflow_dispatch", "kind": "dispatch", "entity": "R_1", "body": { "inputs": { "role": "sweeper" } } }
+  { "name": "workflow_dispatch", "kind": "dispatch", "entity": "42", "body": { "inputs": { "role": "sweeper" } } }
 ]

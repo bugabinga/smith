@@ -477,7 +477,7 @@ test("patch manifest enforces role and global boundaries", () => {
     patch: {
       maxBytes: 1024,
       maxFiles: 2,
-      allowedPrefixes: ["docs/", "smith-core/"],
+      allowedPrefixes: [".agents/", ".pi/", "docs/", "smith-core/"],
       deniedPaths: ["adw/**", "docs/SPEC.md"],
     },
   });
@@ -488,7 +488,7 @@ test("patch manifest enforces role and global boundaries", () => {
     files: [{ path: "docs/guide.md", kind: "regular", oldMode: "100644", newMode: "100644" }],
   };
   assert.deepEqual(validatePatchManifest(manifest, patchRole), manifest);
-  for (const path of ["../secret", "/tmp/x", ".git/config", ".gitmodules", "adw/core.mjs", ".claude/agents/builder.md", ".github/workflows/ci.yml", "docs/SPEC.md", "site/index.html", "docs-evil/guide.md"]) {
+  for (const path of ["../secret", "/tmp/x", ".git/config", ".gitmodules", "adw/core.mjs", ".agents/skills/smith/SKILL.md", ".claude/agents/builder.md", ".github/workflows/ci.yml", ".pi/prompts/smith.md", "docs/SPEC.md", "docs/research/AGENTS.md", "docs/research/CLAUDE.md", "site/index.html", "docs-evil/guide.md"]) {
     assert.throws(() => validatePatchManifest({ ...manifest, files: [{ ...manifest.files[0], path }] }, patchRole), error => error?.code === "contract");
   }
   assert.throws(() => validatePatchManifest({ ...manifest, files: [{ ...manifest.files[0], kind: "binary" }] }, patchRole), error => error?.code === "contract");

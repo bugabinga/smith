@@ -46,8 +46,8 @@ function text(value, name) {
   return value;
 }
 
-function id(value, name) {
-  contract((typeof value === "string" && value.length > 0) || Number.isSafeInteger(value), `${name} is required`);
+function restId(value, name) {
+  contract(Number.isSafeInteger(value) && value > 0, `${name} is required`);
   return String(value);
 }
 
@@ -55,7 +55,7 @@ function repositoryOf(payload) {
   const value = payload.repository;
   contract(value && value.owner, "repository is required");
   return Object.freeze({
-    id: id(value.id ?? value.node_id, "repository id"),
+    id: restId(value.id, "repository id"),
     owner: text(value.owner.login, "repository owner"),
     name: text(value.name, "repository name"),
     defaultBranch: text(value.default_branch, "default branch"),
@@ -65,7 +65,7 @@ function repositoryOf(payload) {
 function actorOf(payload) {
   const value = payload.sender;
   contract(value, "sender is required");
-  return Object.freeze({ id: id(value.id ?? value.node_id, "actor id"), login: text(value.login, "actor login"), type: text(value.type, "actor type") });
+  return Object.freeze({ id: restId(value.id, "actor id"), login: text(value.login, "actor login"), type: text(value.type, "actor type") });
 }
 
 export function normalizeEvent(name, payload) {
@@ -78,27 +78,27 @@ export function normalizeEvent(name, payload) {
   let action = payload.action;
   let revisionHints = {};
   if (name === "issues") {
-    kind = "issue"; entityId = id(payload.issue?.number, "issue number"); revisionHints = { updatedAt: payload.issue.updated_at };
+    kind = "issue"; entityId = restId(payload.issue?.number, "issue number"); revisionHints = { updatedAt: payload.issue.updated_at };
   } else if (name === "issue_comment") {
-    kind = "issue_comment"; entityId = id(payload.issue?.number, "issue number"); revisionHints = { commentId: id(payload.comment?.id, "comment id"), updatedAt: payload.comment.updated_at };
+    kind = "issue_comment"; entityId = restId(payload.issue?.number, "issue number"); revisionHints = { commentId: restId(payload.comment?.id, "comment id"), updatedAt: payload.comment.updated_at };
   } else if (name === "pull_request") {
-    kind = "pull_request"; entityId = id(payload.pull_request?.number, "pull number"); revisionHints = { headSha: payload.pull_request.head?.sha, baseRef: payload.pull_request.base?.ref, headRepository: payload.pull_request.head?.repo?.full_name, updatedAt: payload.pull_request.updated_at };
+    kind = "pull_request"; entityId = restId(payload.pull_request?.number, "pull number"); revisionHints = { headSha: payload.pull_request.head?.sha, baseRef: payload.pull_request.base?.ref, headRepository: payload.pull_request.head?.repo?.full_name, updatedAt: payload.pull_request.updated_at };
   } else if (name === "pull_request_review") {
-    kind = "pull_request_review"; entityId = id(payload.pull_request?.number, "pull number"); revisionHints = { reviewId: id(payload.review?.id, "review id"), headSha: payload.review?.commit_id ?? payload.pull_request.head?.sha };
+    kind = "pull_request_review"; entityId = restId(payload.pull_request?.number, "pull number"); revisionHints = { reviewId: restId(payload.review?.id, "review id"), headSha: payload.review?.commit_id ?? payload.pull_request.head?.sha };
   } else if (name === "pull_request_review_comment") {
-    kind = "pull_request_review_comment"; entityId = id(payload.pull_request?.number, "pull number"); revisionHints = { commentId: id(payload.comment?.id, "comment id"), headSha: payload.comment?.commit_id ?? payload.pull_request.head?.sha };
+    kind = "pull_request_review_comment"; entityId = restId(payload.pull_request?.number, "pull number"); revisionHints = { commentId: restId(payload.comment?.id, "comment id"), headSha: payload.comment?.commit_id ?? payload.pull_request.head?.sha };
   } else if (name === "check_suite" || name === "check_run") {
     const check = payload.check_suite ?? payload.check_run;
-    kind = "check"; entityId = id(check?.id, "check id"); revisionHints = { headSha: check?.head_sha, checkKind: name };
+    kind = "check"; entityId = restId(check?.id, "check id"); revisionHints = { headSha: check?.head_sha, checkKind: name };
   } else if (name === "workflow_run") {
-    kind = "workflow"; entityId = id(payload.workflow_run?.id, "workflow run id"); revisionHints = { headSha: payload.workflow_run?.head_sha };
+    kind = "workflow"; entityId = restId(payload.workflow_run?.id, "workflow run id"); revisionHints = { headSha: payload.workflow_run?.head_sha };
   } else if (name === "push") {
     kind = "push"; entityId = text(payload.ref, "push ref"); action = "pushed"; revisionHints = { headSha: payload.after };
   } else if (name === "schedule") {
     kind = "schedule"; entityId = repository.id; action = "scheduled"; revisionHints = { schedule: payload.schedule };
   } else if (name === "dependabot_alert" || name === "code_scanning_alert") {
     const alert = payload.alert ?? payload.dependabot_alert ?? payload.code_scanning_alert;
-    kind = "alert"; entityId = id(alert?.number, "alert number"); revisionHints = { alertKind: name, updatedAt: alert?.updated_at };
+    kind = "alert"; entityId = restId(alert?.number, "alert number"); revisionHints = { alertKind: name, updatedAt: alert?.updated_at };
   } else {
     kind = "dispatch"; entityId = repository.id; action = "requested"; revisionHints = { inputs: payload.inputs ?? {} };
   }
@@ -148,7 +148,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     try { return JSON.parse(result.stdout); } catch { throw new AdwError("forge", "malformed"); }
   }
 
-  const CLOSING_ISSUES_QUERY = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:100){nodes{number repository{id}} pageInfo{hasNextPage}}}}}";
+  const CLOSING_ISSUES_QUERY = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:100){nodes{number repository{databaseId}} pageInfo{hasNextPage}}}}}";
   async function closingIssues(number) {
     let result;
     try {
@@ -157,7 +157,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     let value;
     try { value = JSON.parse(result.stdout)?.data?.repository?.pullRequest?.closingIssuesReferences; } catch { throw new AdwError("forge", "malformed"); }
     if (!value || !Array.isArray(value.nodes) || value.nodes.length > 100 || value.pageInfo?.hasNextPage !== false) throw new AdwError("forge", "overflow");
-    return value.nodes.map(issue => Object.freeze({ repositoryId: id(issue.repository?.id, "closing issue repository"), issueId: id(issue.number, "closing issue number") }));
+    return value.nodes.map(issue => Object.freeze({ repositoryId: restId(issue.repository?.databaseId, "closing issue repository"), issueId: restId(issue.number, "closing issue number") }));
   }
 
   async function optional(endpoint) {
@@ -239,7 +239,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
   };
   const normalizeResource = value => {
     contract(value && typeof value === "object" && !Array.isArray(value), "resource is malformed");
-    const resource = { id: id(value.node_id ?? value.id ?? value.number, "resource id") };
+    const resource = { id: restId(value.id ?? value.number, "resource id") };
     if (value.updated_at) resource.updatedAt = value.updated_at;
     if (value.head_sha ?? value.head?.sha ?? value.commit_id) resource.headSha = value.head_sha ?? value.head?.sha ?? value.commit_id;
     if (value.state) resource.state = value.state;
@@ -251,28 +251,28 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     return value.map(label => text(typeof label === "string" ? label : label?.name, "label")).sort();
   };
   const normalizeIssue = value => {
-    contract(value && Number.isSafeInteger(value.number), "issue is malformed");
+    contract(value && Number.isSafeInteger(value.number) && value.number > 0, "issue is malformed");
     return Object.freeze({
-      id: id(value.node_id ?? value.id, "issue id"), number: String(value.number), state: text(value.state, "issue state"),
-      updatedAt: text(value.updated_at, "issue updatedAt"), actorId: id(value.user?.node_id ?? value.user?.id, "issue actor"),
+      id: restId(value.id, "issue id"), number: String(value.number), state: text(value.state, "issue state"),
+      updatedAt: text(value.updated_at, "issue updatedAt"), actorId: restId(value.user?.id, "issue actor"),
       title: normalizedContent(value.title, `issue:${value.number}:title`), body: normalizedContent(value.body ?? "", `issue:${value.number}:body`),
-      labels: Object.freeze(normalizeLabels(value.labels ?? [])), milestoneId: value.milestone ? id(value.milestone.node_id ?? value.milestone.id ?? value.milestone.number, "milestone id") : null,
+      labels: Object.freeze(normalizeLabels(value.labels ?? [])), milestoneId: value.milestone ? restId(value.milestone.id, "milestone id") : null,
     });
   };
   const normalizeComment = (value, entityId, repositoryId) => Object.freeze({
-    id: id(value.node_id ?? value.id, "comment id"), actorId: id(value.user?.node_id ?? value.user?.id, "comment actor"),
+    id: restId(value.id, "comment id"), actorId: restId(value.user?.id, "comment actor"),
     createdAt: text(value.created_at, "comment createdAt"), updatedAt: text(value.updated_at ?? value.created_at, "comment updatedAt"),
     entityId: String(entityId), repositoryId,
     body: normalizedContent(value.body ?? "", `comment:${value.id}:body`),
   });
   const normalizePull = value => {
-    contract(value && Number.isSafeInteger(value.number), "pull is malformed");
+    contract(value && Number.isSafeInteger(value.number) && value.number > 0, "pull is malformed");
     const headSha = text(value.head?.sha, "pull head SHA");
     contract(/^[0-9a-f]{40}$/.test(headSha), "pull head SHA is malformed");
     const mergeSha = value.merge_commit_sha === null || value.merge_commit_sha === undefined ? null : text(value.merge_commit_sha, "pull merge SHA");
     contract(mergeSha === null || /^[0-9a-f]{40}$/.test(mergeSha), "pull merge SHA is malformed");
     return Object.freeze({
-      id: id(value.node_id ?? value.id, "pull id"), number: String(value.number), state: text(value.state, "pull state"), merged: value.merged === true,
+      id: restId(value.id, "pull id"), number: String(value.number), state: text(value.state, "pull state"), merged: value.merged === true,
       mergeSha,
       updatedAt: text(value.updated_at, "pull updatedAt"), headSha, base: text(value.base?.ref, "pull base"),
       headRepository: text(value.head?.repo?.full_name, "pull head repository"),
@@ -281,15 +281,16 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     });
   };
   const normalizeFile = (value, pull) => Object.freeze({
-    path: text(value.filename, "file path"), status: text(value.status, "file status"), additions: Number(value.additions ?? 0), deletions: Number(value.deletions ?? 0),
+    path: text(value.filename, "file path"), previousPath: value.previous_filename ? text(value.previous_filename, "previous file path") : null,
+    status: text(value.status, "file status"), additions: Number(value.additions ?? 0), deletions: Number(value.deletions ?? 0),
     patch: normalizedContent(value.patch ?? "", `pull:${pull}:file:${value.filename}`),
   });
   const normalizeReview = (value, pull) => Object.freeze({
-    id: id(value.node_id ?? value.id, "review id"), actorId: id(value.user?.node_id ?? value.user?.id, "review actor"), state: text(value.state, "review state"),
+    id: restId(value.id, "review id"), actorId: restId(value.user?.id, "review actor"), state: text(value.state, "review state"),
     headSha: text(value.commit_id, "review head"), submittedAt: text(value.submitted_at, "review submittedAt"), body: normalizedContent(value.body ?? "", `pull:${pull}:review:${value.id}`),
   });
-  const normalizeCheck = value => Object.freeze({ id: id(value.node_id ?? value.id, "check id"), name: text(value.name, "check name"), headSha: text(value.head_sha, "check head"), status: text(value.status, "check status"), conclusion: value.conclusion === null ? null : text(value.conclusion, "check conclusion") });
-  const normalizeRun = value => Object.freeze({ id: id(value.id, "run id"), name: text(value.name, "run name"), event: text(value.event, "run event"), status: text(value.status, "run status"), conclusion: value.conclusion === null ? null : text(value.conclusion, "run conclusion"), headSha: text(value.head_sha, "run head"), attempt: Number(value.run_attempt ?? 1) });
+  const normalizeCheck = value => Object.freeze({ id: restId(value.id, "check id"), name: text(value.name, "check name"), headSha: text(value.head_sha, "check head"), status: text(value.status, "check status"), conclusion: value.conclusion === null ? null : text(value.conclusion, "check conclusion") });
+  const normalizeRun = value => Object.freeze({ id: restId(value.id, "run id"), name: text(value.name, "run name"), event: text(value.event, "run event"), status: text(value.status, "run status"), conclusion: value.conclusion === null ? null : text(value.conclusion, "run conclusion"), headSha: text(value.head_sha, "run head"), attempt: Number(value.run_attempt ?? 1) });
   const enrichPull = async (raw, files = null) => {
     const pull = normalizePull(raw);
     const rawFiles = files ?? await methods.pullFiles(Number(pull.number));
@@ -303,7 +304,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     async readSnapshot(event) {
       const repositoryValue = await methods.repository();
       const normalizedRepository = {
-        id: id(repositoryValue.node_id ?? repositoryValue.id, "repository id"),
+        id: restId(repositoryValue.id, "repository id"),
         owner: text(repositoryValue.owner?.login, "repository owner"),
         name: text(repositoryValue.name, "repository name"),
         defaultBranch: text(repositoryValue.default_branch, "default branch"),
@@ -332,9 +333,9 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       contract(typeof controlSha === "string" && /^[0-9a-f]{40}$/.test(controlSha), "control SHA is invalid");
       contract(appId === appIdentity.id, "snapshot trust is invalid");
       const repositoryValue = await methods.repository();
-      const repositoryOwnerId = id(repositoryValue.owner?.node_id ?? repositoryValue.owner?.id, "repository owner id");
+      const repositoryOwnerId = restId(repositoryValue.owner?.id, "repository owner id");
       const normalizedRepository = {
-        id: id(repositoryValue.node_id ?? repositoryValue.id, "repository id"),
+        id: restId(repositoryValue.id, "repository id"),
         owner: text(repositoryValue.owner?.login, "repository owner"),
         name: text(repositoryValue.name, "repository name"),
         defaultBranch: text(repositoryValue.default_branch, "default branch"),
@@ -379,7 +380,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         put(`issue:${event.entityId}`, "issue", issueValue, issueValue.updatedAt);
         const comments = (await methods.comments("issues", Number(event.entityId))).map(value => normalizeComment(value, event.entityId, normalizedRepository.id));
         put(`issue:${event.entityId}:comments`, "comments", Object.freeze(comments), digestJson(comments));
-        const timeline = (await methods.issueTimeline(Number(event.entityId))).map(value => Object.freeze({ id: id(value.node_id ?? value.id, "timeline id"), event: text(value.event, "timeline event"), actorId: value.actor ? id(value.actor.node_id ?? value.actor.id, "timeline actor") : null, createdAt: text(value.created_at, "timeline createdAt"), label: value.label?.name ?? null, commitSha: value.commit_id ?? null }));
+        const timeline = (await methods.issueTimeline(Number(event.entityId))).map(value => Object.freeze({ id: restId(value.id, "timeline id"), event: text(value.event, "timeline event"), actorId: value.actor ? restId(value.actor.id, "timeline actor") : null, createdAt: text(value.created_at, "timeline createdAt"), label: value.label?.name ?? null, commitSha: value.commit_id ?? null }));
         put(`issue:${event.entityId}:timeline`, "timeline", Object.freeze(timeline), digestJson(timeline));
         const parentValue = await methods.issueParent(Number(event.entityId));
         const parent = parentValue === null ? null : normalizeIssue(parentValue);
@@ -417,12 +418,12 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         satisfied.add("pulls");
       }
       if (deterministic && rolePolicy.name === "label-sync") {
-        const labels = (await methods.labels()).map(value => Object.freeze({ id: id(value.node_id ?? value.id, "label id"), name: normalizedContent(value.name, `label:${value.id}:name`), color: normalizedContent(value.color, `label:${value.id}:color`), description: normalizedContent(value.description ?? "", `label:${value.id}:description`) }));
+        const labels = (await methods.labels()).map(value => Object.freeze({ id: restId(value.id, "label id"), name: normalizedContent(value.name, `label:${value.id}:name`), color: normalizedContent(value.color, `label:${value.id}:color`), description: normalizedContent(value.description ?? "", `label:${value.id}:description`) }));
         put("labels", "labels", Object.freeze(labels), digestJson(labels));
         satisfied.add("labels");
       }
       if (fields.has("milestones")) {
-        const milestones = (await methods.milestones()).map(value => Object.freeze({ id: id(value.node_id ?? value.id ?? value.number, "milestone id"), number: id(value.number, "milestone number"), state: text(value.state, "milestone state"), dueOn: value.due_on ?? null, title: normalizedContent(value.title, `milestone:${value.number}:title`), description: normalizedContent(value.description ?? "", `milestone:${value.number}:description`) }));
+        const milestones = (await methods.milestones()).map(value => Object.freeze({ id: restId(value.id, "milestone id"), number: restId(value.number, "milestone number"), state: text(value.state, "milestone state"), dueOn: value.due_on ?? null, title: normalizedContent(value.title, `milestone:${value.number}:title`), description: normalizedContent(value.description ?? "", `milestone:${value.number}:description`) }));
         put("milestones", "milestones", Object.freeze(milestones), digestJson(milestones));
         satisfied.add("milestones");
       }
@@ -455,13 +456,13 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         const alertValues = event.kind === "alert"
           ? [await methods.alert(event.revisionHints.alertKind, Number(event.entityId))]
           : [...await methods.alerts("dependabot_alert"), ...await methods.alerts("code_scanning_alert")];
-        const alerts = alertValues.map(alert => Object.freeze({ id: id(alert.node_id ?? alert.number, "alert id"), state: text(alert.state, "alert state"), updatedAt: text(alert.updated_at, "alert updatedAt"), details: normalizedContent(alert, `alert:${alert.number}`) }));
+        const alerts = alertValues.map(alert => Object.freeze({ id: restId(alert.number, "alert id"), state: text(alert.state, "alert state"), updatedAt: text(alert.updated_at, "alert updatedAt"), details: normalizedContent(alert, `alert:${alert.number}`) }));
         put("alerts", "alerts", Object.freeze(alerts), digestJson(alerts));
         satisfied.add("alert");
         if (event.kind === "alert" && !alerts.some(alert => alert.updatedAt === event.revisionHints.updatedAt)) throw new AdwError("forge", "stale");
       }
       if (fields.has("settings") || fields.has("config")) {
-        const rulesets = (await methods.rulesets()).map(value => Object.freeze({ id: id(value.id, "ruleset id"), name: text(value.name, "ruleset name"), enforcement: text(value.enforcement, "ruleset enforcement"), target: text(value.target, "ruleset target"), sourceType: text(value.source_type, "ruleset source type") }));
+        const rulesets = (await methods.rulesets()).map(value => Object.freeze({ id: restId(value.id, "ruleset id"), name: text(value.name, "ruleset name"), enforcement: text(value.enforcement, "ruleset enforcement"), target: text(value.target, "ruleset target"), sourceType: text(value.source_type, "ruleset source type") }));
         put("rulesets", "settings", Object.freeze(rulesets), digestJson(rulesets));
         if (fields.has("settings")) satisfied.add("settings");
         if (fields.has("config")) satisfied.add("config");
@@ -482,11 +483,12 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       }
       for (const field of fields) if (!satisfied.has(field)) throw new AdwError("forge", `unsupported role field: ${field}`);
       const labels = issueValue?.labels ?? pullValue?.labels ?? [];
-      const protectedPrefixes = ["adw/", ".claude/", ".github/"];
+      const protectedPrefixes = ["adw/", ".agents/", ".claude/", ".github/", ".pi/"];
       const protectedFiles = ["docs/SPEC.md", "docs/PROJECT-INVARIANTS.md"];
+      const protectedPath = path => protectedPrefixes.some(prefix => path.startsWith(prefix)) || protectedFiles.includes(path) || ["AGENTS.md", "CLAUDE.md"].includes(path.split("/").at(-1));
       const missingPatches = fileValues.filter(file => file.patch.data === "");
       const input = {
-        protected: fileValues.some(file => protectedPrefixes.some(prefix => file.path.startsWith(prefix)) || protectedFiles.includes(file.path)),
+        protected: fileValues.some(file => [file.path, file.previousPath].some(path => path !== null && protectedPath(path))),
         incomplete: missingPatches.length > 0,
         fork: pullValue ? pullValue.headRepository !== `${owner}/${name}` : false,
         binary: missingPatches.length > 0,

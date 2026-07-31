@@ -10,7 +10,7 @@ import { defineRole } from "../roles.mjs";
 
 const controlSha = "a".repeat(40);
 const repository = {
-  id: "R_1", name: "smith", full_name: "bugabinga/smith", default_branch: "main", owner: { login: "bugabinga" },
+  id: 42, name: "smith", full_name: "bugabinga/smith", default_branch: "main", owner: { id: 7, login: "bugabinga" },
 };
 const sender = { id: 7, login: "bugabinga", type: "User" };
 const request = {

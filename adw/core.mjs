@@ -571,7 +571,7 @@ const GLOBAL_DENIED_PATHS = [
   ".claude/settings.json", ".github/workflows/adw-issues.yml",
   ".github/workflows/adw-pulls.yml", ".github/workflows/adw-maintenance.yml",
 ];
-const GLOBAL_DENIED_PREFIXES = ["adw/", ".claude/", ".github/"];
+const GLOBAL_DENIED_PREFIXES = [".agents/", ".claude/", ".github/", ".pi/", "adw/"];
 
 function matchesRule(path, rule) {
   return rule.endsWith("/**") ? path.startsWith(rule.slice(0, -2)) : path === rule;
@@ -590,7 +590,7 @@ export function validatePatchManifest(manifest, rolePolicy) {
   for (const file of manifest.files) {
     if (file.kind !== "regular") fail("patch contains unsupported file kind");
     if (!safePatchPath(file.path) || file.path === ".gitmodules") fail("patch path is unsafe");
-    if (GLOBAL_DENIED_PATHS.includes(file.path) || GLOBAL_DENIED_PREFIXES.some(prefix => file.path.startsWith(prefix))) fail("patch path is globally denied");
+    if (GLOBAL_DENIED_PATHS.includes(file.path) || GLOBAL_DENIED_PREFIXES.some(prefix => file.path.startsWith(prefix)) || ["AGENTS.md", "CLAUDE.md"].includes(file.path.split("/").at(-1))) fail("patch path is globally denied");
     if (rolePolicy.patch.deniedPaths.some(rule => matchesRule(file.path, rule))) fail("patch path is denied by role");
     if (!rolePolicy.patch.allowedPrefixes.some(prefix => prefix.endsWith("/") ? file.path.startsWith(prefix) : file.path === prefix)) fail("patch path is outside role prefixes");
   }
