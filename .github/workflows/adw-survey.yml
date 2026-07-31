@@ -32,6 +32,7 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
       - id: claude
         continue-on-error: true
+        timeout-minutes: 5
         uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b
         with:
           github_token: ${{ steps.token.outputs.token }}
