@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { AdwError } from "../core.mjs";
-import { createGitHub, normalizeEvent, roleSnapshotPlan } from "../github.mjs";
+import { AdwError, digestJson } from "../core.mjs";
+import { createGitHub, deterministicSnapshotPlan, normalizeEvent, roleSnapshotPlan } from "../github.mjs";
 import { role } from "../roles.mjs";
 
 const repository = {
@@ -49,6 +49,8 @@ test("every provider role has a closed event snapshot plan", async () => {
     assert.ok(Object.isFrozen(plan));
   }
   assert.throws(() => roleSnapshotPlan("reviewer", "issue"), error => error?.code === "contract");
+  assert.deepEqual(deterministicSnapshotPlan("settings-auditor", "schedule").fields, ["config", "settings"]);
+  assert.deepEqual(deterministicSnapshotPlan("jam-detector", "schedule").fields, ["pulls", "runs"]);
 });
 
 test("adapter rejects repository traversal segments", () => {
@@ -86,7 +88,7 @@ test("paginated reads stop without gh auto-pagination", async () => {
     if (endpoint === "/repos/bugabinga/smith/issues/1") return reply({ id: 1, number: 1, state: "open", updated_at: "2026-07-28T00:00:00.000Z", user: { id: 7 }, title: "Issue", body: "Body", labels: [] });
     if (endpoint.startsWith("/repos/bugabinga/smith/issues/1/comments?")) {
       commentPage++;
-      return reply(commentPage === 1 ? Array.from({ length: 100 }, (_, id) => ({ id: id + 1, user: { id: 7 }, created_at: "2026-07-28T00:00:00.000Z", body: "c" })) : [{ id: 101, user: { id: 7 }, created_at: "2026-07-28T00:00:00.000Z", body: "c" }]);
+      return reply(commentPage === 1 ? Array.from({ length: 100 }, (_, id) => ({ id: id + 1, user: { id: 7 }, created_at: "2026-07-28T00:00:00.000Z", body: id === 0 ? "@smith please" : "c" })) : [{ id: 101, user: { id: 7 }, created_at: "2026-07-28T00:00:00.000Z", body: "c" }]);
     }
     if (endpoint.startsWith("/repos/bugabinga/smith/issues/1/timeline?")) return reply([]);
     if (endpoint === "/repos/bugabinga/smith/issues/1/parent") { const error = new AdwError("provider", "exit", { httpStatus: 404 }); throw error; }
@@ -96,6 +98,7 @@ test("paginated reads stop without gh auto-pagination", async () => {
   const event = normalizeEvent("issue_comment", { action: "created", repository, sender, issue: { number: 1 }, comment: { id: 1, updated_at: "2026-07-28T00:00:00.000Z" } });
   const snapshot = await github.readRoleSnapshot(event, role("steerer"), { controlSha: "a".repeat(40), appId: "A_1" });
   assert.equal(snapshot.state.resources["issue:1:comments"].length, 101);
+  assert.equal(snapshot.state.ownerAuthenticated, true);
   assert.equal(commentPage, 2);
 });
 
@@ -158,7 +161,7 @@ test("role snapshots bind normalized untrusted content and current revisions", a
   assert.equal(snapshot.state.resources["trusted:.claude/agents/reviewer.md"].trust, "trusted");
   assert.equal(snapshot.state.input.protected, true);
   assert.equal(snapshot.state.headSha, sha);
-  assert.equal(snapshot.state.ownerAuthenticated, true);
+  assert.equal(snapshot.state.ownerAuthenticated, false);
   assert.ok(snapshot.revisions.some(value => value.token === sha));
   assert.ok(calls.some(value => value.endsWith(`/contents/.claude/agents/reviewer.md?ref=${"a".repeat(40)}`)));
   assert.equal(calls.some(value => value.includes("--paginate")), false);
@@ -189,8 +192,27 @@ test("builder snapshot binds patch base and untrusted PR metadata", async () => 
   assert.equal(snapshot.state.baseBranch, "main");
   assert.equal(snapshot.state.headBranch, "claude/issue-1");
   assert.equal(snapshot.state.title.trust, "untrusted");
-  assert.equal(snapshot.state.body.data, "Untrusted body");
+  assert.equal(snapshot.state.body.data, "Untrusted body\n\nCloses #1");
   assert.ok(snapshot.revisions.some(value => value.token === baseSha));
+});
+
+test("deterministic settings snapshot binds expected and live rulesets", async () => {
+  const github = adapter(async request => {
+    const endpoint = request.args.at(-1);
+    const reply = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
+    if (endpoint === "/repos/bugabinga/smith") return reply({ node_id: "R_1", owner: { id: 7, login: "bugabinga" }, name: "smith", default_branch: "main" });
+    if (endpoint.includes("/contents/.github/rulesets/main.json?ref=")) return reply({ encoding: "base64", content: Buffer.from("{\"rules\":[]}").toString("base64"), sha: "c".repeat(40) });
+    if (endpoint.startsWith("/repos/bugabinga/smith/rulesets?")) return reply([{ id: 1, name: "main", enforcement: "active", target: "branch", source_type: "Repository" }]);
+    throw new Error(`unexpected ${endpoint}`);
+  });
+  const event = normalizeEvent("schedule", { schedule: "0 * * * *", repository, sender });
+  const snapshot = await github.readDeterministicSnapshot(event, "settings-auditor", { controlSha: "a".repeat(40), appId: "A_1" });
+  assert.equal(snapshot.routing.role, "settings-auditor");
+  assert.equal(snapshot.state.resources["trusted:.github/rulesets/main.json"].trust, "trusted");
+  assert.equal(snapshot.state.resources.rulesets[0].enforcement, "active");
+  const replay = await github.readDeterministicSnapshot(event, "settings-auditor", { controlSha: "a".repeat(40), appId: "A_1" });
+  assert.deepEqual(replay, snapshot);
+  assert.equal(digestJson(replay), digestJson(snapshot));
 });
 
 test("role snapshot rejects repository drift and untrusted App identity", async () => {

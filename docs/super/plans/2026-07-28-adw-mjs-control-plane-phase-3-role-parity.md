@@ -109,7 +109,7 @@
 - Create: `adw/test/fixtures/legacy/jams.json`
 - Modify: `adw/test/core.test.mjs`
 
-- [x] Write failing tests for strict parsing of `smith:claude-attempt/v1`, `smith:builder-route/v1`, current-head reviewer/security evidence, sticky risk, jam, and merge-finalization markers; malformed/forged/stale markers are data, never authority.
+- [x] Write failing tests for strict parsing of `smith:claude-attempt/v1`, `smith:builder-route/v1`, current-head reviewer/security evidence, sticky risk, jam, and merge-finalized markers; malformed/forged/stale markers are data, never authority.
 - [x] Parse only App-authored markers with exact version/fields and bounded scan order; latest valid marker wins, conflicts fail closed.
 - [x] Expand reconciliation to derive stale routes, missing current-head reviews, dropped label sync, failed/missing post-merge obligations, held work, pioneer verdict state, and equivalent completed artifacts without replacing label sets.
 - [x] Preserve one fallback maximum and deterministic route branches; fork PRs and wrong-repository closing issues never qualify.
@@ -137,9 +137,13 @@
 - Modify: `adw/test/dry-run.test.mjs`
 - Modify: `docs/super/plans/2026-07-28-adw-mjs-control-plane-phase-3-role-parity.md`
 
-- [ ] Add issue→triage→plan→builder→PR→review→security→check→auto-merge-intent scenarios for Claude primary, Codex fallback, current-head update, hold before every write, reviewer disagreement, sticky-risk owner clearance, stale artifacts, both-provider failure, and missed-event reconciliation.
-- [ ] Replace the shell gate contract exactly: require current-head App evidence plus labels `reviewed` and `security-cleared`; block `risk:high`, `blocked`, `changes-requested`, `needs:info`, `needs:spec`, and `needs:prototype`; `stalled` never blocks; require current-head product `check`; publish `merge-gate` then arm squash auto-merge only after all conditions pass. Labels never substitute for evidence.
-- [ ] Add pioneer proved/disproved/inconclusive, dependency safe/risky, alert covered/uncovered, settings drift, doctor issue-only, docs no-op/change, jam, label sync, and post-merge failure/retry scenarios.
-- [ ] Replay captured legacy fixtures and assert either identical semantic intent or an explicit approved deletion (Projects/release/self-modifying doctor).
-- [ ] Run all Node and legacy suites, boundary greps, `git diff --check`, and read-only dry-run fixtures.
-- [ ] Mark plan complete, record exact counts/differences, and commit: `Prove ADW role parity offline`.
+- [x] Add issue→triage→plan→builder→PR→review→security→check→auto-merge-intent scenarios for Claude primary, Codex fallback, current-head update, hold before every write, reviewer disagreement, sticky-risk owner clearance, stale artifacts, both-provider failure, and missed-event reconciliation.
+- [x] Replace the shell gate contract exactly: require current-head App evidence plus labels `reviewed` and `security-cleared`; block `risk:high`, `blocked`, `changes-requested`, `needs:info`, `needs:spec`, and `needs:prototype`; `stalled` never blocks; require current-head product `check`; publish `merge-gate` then arm squash auto-merge only after all conditions pass. Labels never substitute for evidence.
+- [x] Add pioneer proved/disproved/inconclusive, dependency safe/risky, alert covered/uncovered, settings drift, doctor issue-only, docs no-op/change, jam, label sync, and post-merge failure/retry scenarios.
+- [x] Replay captured legacy fixtures and assert either identical semantic intent or an explicit approved deletion (Projects/release/self-modifying doctor).
+- [x] Run all Node and legacy suites, boundary greps, `git diff --check`, and read-only dry-run fixtures.
+- [x] Mark plan complete, record exact counts/differences, and commit: `Prove ADW role parity offline`.
+
+## Result
+
+Implemented in `506aa18..HEAD`. Offline coverage: 108 Node tests pass with zero failures/skips/cancellations/todos; all three legacy ADW suites, credential/process boundary greps, and `git diff --check` pass. Captured routes, current-head reviews, jams, and failed finalization replay to the same fallback/review/obligation intent. Projects v2 and release remain approved deletions; self-modifying doctor behavior becomes issue-only drift reporting. Production writes, wrappers, and disposable-repository testing remain deferred to later roadmap phases.

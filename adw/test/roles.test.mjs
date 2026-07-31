@@ -160,7 +160,7 @@ function roleCase(name, payload, state, patch = null, patchBytes = null) {
     snapshotDigest: digestJson(snapshot), cliVersion: "1.0.0", run: { id: "1", job: name, attempt: 1 },
     outcome: payload.verdict === "noop" ? "noop" : ["blocked", "disproved", "inconclusive", "reject", "risky"].includes(payload.verdict) ? "negative" : "positive",
     payload, payloadDigest: digestJson(payload), patch,
-    startedAt: "2026-07-28T00:00:00Z", completedAt: "2026-07-28T00:00:01Z",
+    startedAt: "2026-07-28T00:00:00.000Z", completedAt: "2026-07-28T00:00:01.000Z",
   };
   const selected = digestJson(assessment);
   return { snapshot, rolePolicy: policy, reduction: { status: "artifact", authoritative: true, selected: [selected], patch }, assessments: patch ? [{ assessment, patchBytes }] : [assessment] };
@@ -174,6 +174,8 @@ test("role artifacts reduce into closed decisions", () => {
   const review = reduceRoleArtifact(roleCase("security-reviewer", { verdict: "reject", risk: "high", findings: [] }, { entityId: "2", headSha: "b".repeat(40), labels: [] }));
   assert.equal(review.operations[0].conclusion, "failure");
   assert.ok(review.operations.some(value => value.label === "risk:high"));
+  assert.ok(review.operations.some(value => value.type === "comment" && value.body.includes("smith:review-evidence/v1")));
+  assert.ok(review.operations.some(value => value.type === "comment" && value.body.includes("smith:risk/v1")));
 
   const issue = { title: "Alert", body: "Fix", labels: ["security"] };
   const alert = reduceRoleArtifact(roleCase("alert-triager", { verdict: "issue", summary: "Uncovered", issue }, { entityId: "3", labels: [] }));
@@ -196,6 +198,11 @@ test("patch role decisions bind assessment metadata", () => {
   assert.deepEqual(decision.patch, patch);
   assert.equal(decision.operations[0].type, "create_pr");
   assert.throws(() => reduceRoleArtifact({ ...input, reduction: { ...input.reduction, patch: null } }), error => error?.code === "contract");
+
+  const reviser = roleCase("reviser", { verdict: "patch", summary: "Revise", patch }, { entityId: "2", labels: [], changedPaths: ["smith/src/lib.rs"] }, patch, patchBytes);
+  assert.equal(reduceRoleArtifact(reviser).operations[0].type, "update_pr");
+  const escaped = roleCase("reviser", { verdict: "patch", summary: "Revise", patch }, { entityId: "2", labels: [], changedPaths: ["docs/guide.md"] }, patch, patchBytes);
+  assert.throws(() => reduceRoleArtifact(escaped), error => error?.code === "contract");
 });
 
 test("holds and unauthenticated steering fail closed", () => {
@@ -221,6 +228,7 @@ test("reduction rejects forged policy and event targets", () => {
 test("pioneer verdicts preserve proof authority", () => {
   const disproved = reduceRoleArtifact(roleCase("pioneer", { verdict: "disproved", summary: "False", claim: "claim", patch: null }, { entityId: "1", labels: [] }));
   assert.equal(disproved.operations[0].label, "needs:spec");
+  assert.match(disproved.operations[1].body, /Falsified claim: claim/);
   const proved = reduceRoleArtifact(roleCase("pioneer", { verdict: "proved", summary: "True", claim: "claim", patch: null }, { entityId: "1", labels: [], closingArtifactQualifies: true }));
   assert.deepEqual(proved.operations, [{ type: "noop", reason: "already_complete" }]);
 });

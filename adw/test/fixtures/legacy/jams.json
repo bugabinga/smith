@@ -11,7 +11,7 @@
     "id": "6",
     "actorId": "A_smith",
     "createdAt": "2026-07-28T10:05:00.000Z",
-    "body": "<!-- smith:merge-finalization/v1 pr=9 merge=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee role=docs-writer status=failed artifact=- -->",
+    "body": "<!-- smith:merge-finalized/v1 pr=9 merge=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee role=docs-writer status=failed artifact=- -->",
     "repositoryId": "R_1",
     "entityId": "repository"
   }

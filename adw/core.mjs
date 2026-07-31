@@ -435,10 +435,13 @@ export function reduceRisk({ marker, timeline, headSha, trust }) {
   return deepFreeze({ status: "cleared", marker: { ...marker, status: "cleared", clearedAt: event.createdAt } });
 }
 
+const REQUIRED_GATE_LABELS = Object.freeze(["reviewed", "security-cleared"]);
+
 export function mergeEligibility(state) {
   exact(state, ["headSha", "labels", "checks", "reviews", "riskMarker", "timeline", "trust", "autoMergeAllowed"], "merge state");
   sha(state.headSha, "merge head");
   const reasons = [...holdReasons(state.labels)];
+  for (const label of REQUIRED_GATE_LABELS) if (!state.labels.includes(label)) reasons.push(`${label}_missing`);
   array(state.checks, "merge checks");
   for (const item of state.checks) {
     exact(item, ["name", "headSha", "conclusion"], "merge check");
@@ -465,6 +468,16 @@ export function mergeEligibility(state) {
   if (!state.autoMergeAllowed) reasons.push("auto_merge_forbidden");
   const unique = [...new Set(reasons)].sort();
   return deepFreeze({ eligible: unique.length === 0, reasons: unique });
+}
+
+export function planMergeGate({ prId, ...state }) {
+  string(prId, "merge gate prId");
+  const eligibility = mergeEligibility(state);
+  const externalId = `merge-gate:${prId}:${state.headSha}:${digestJson(eligibility)}`;
+  const operations = [{ type: "publish_check", headSha: state.headSha, name: "merge-gate", conclusion: eligibility.eligible ? "success" : "failure", summary: eligibility.eligible ? "eligible" : eligibility.reasons.join(","), externalId }];
+  if (eligibility.eligible) operations.push({ type: "arm_auto_merge", prId, headSha: state.headSha, method: "squash" });
+  operations.forEach(validateOperationShape);
+  return deepFreeze({ eligibility, operations });
 }
 
 const OPERATION_FIELDS = Object.freeze({
@@ -609,8 +622,19 @@ export function parseLegacyMarkers({ comments, trust }) {
   array(comments, "marker comments", 1000);
   validateTrust(trust);
   const records = [];
-  for (const comment of comments) {
-    exact(comment, ["id", "actorId", "createdAt", "body", "repositoryId", "entityId"], "marker comment");
+  for (const input of comments) {
+    object(input, "marker comment");
+    const enveloped = Object.hasOwn(input, "updatedAt");
+    exact(input, enveloped ? ["id", "actorId", "createdAt", "updatedAt", "body", "repositoryId", "entityId"] : ["id", "actorId", "createdAt", "body", "repositoryId", "entityId"], "marker comment");
+    let body;
+    if (enveloped) {
+      exact(input.body, ["trust", "source", "bytes", "digest", "data"], "marker comment body");
+      if (input.body.trust !== "untrusted" || typeof input.body.data !== "string" || input.body.bytes !== canonicalBytes(input.body.data).length || input.body.digest !== digestJson(input.body.data)) fail("marker comment body is invalid");
+      body = input.body.data;
+      canonicalInstant(input.updatedAt, "marker comment.updatedAt");
+    } else body = input.body;
+    const comment = { ...input, body };
+    delete comment.updatedAt;
     for (const key of ["id", "actorId", "body", "repositoryId", "entityId"]) string(comment[key], `marker comment.${key}`, key === "body" ? 65_536 : 4096);
     canonicalInstant(comment.createdAt, "marker comment.createdAt");
     if (comment.actorId !== trust.appId) continue;
@@ -631,7 +655,7 @@ export function parseLegacyMarkers({ comments, trust }) {
       records.push(markerRecord(comment, "risk", match[1], { headSha: match[1], findingDigest: match[2], status: match[3], createdAt: match[4], clearedAt: match[5] === "-" ? null : match[5] }));
     } else if ((match = /^<!-- smith:jam\/v1 entity=([^ ]+) head=([0-9a-f]{40}) status=(open|cleared) artifact=([0-9a-f]{64}) -->$/.exec(comment.body))) {
       records.push(markerRecord(comment, "jam", `${match[1]}:${match[2]}`, { entityId: match[1], headSha: match[2], status: match[3], artifactDigest: match[4] }));
-    } else if ((match = /^<!-- smith:merge-finalization\/v1 pr=([1-9][0-9]*) merge=([0-9a-f]{40}) role=([a-z][a-z0-9-]*) status=(complete|failed) artifact=([0-9a-f]{64}|-) -->$/.exec(comment.body))) {
+    } else if ((match = /^<!-- smith:merge-finalized\/v1 pr=([1-9][0-9]*) merge=([0-9a-f]{40}) role=([a-z][a-z0-9-]*) status=(complete|failed) artifact=([0-9a-f]{64}|-) -->$/.exec(comment.body))) {
       if ((match[4] === "complete") !== (match[5] !== "-")) continue;
       records.push(markerRecord(comment, "finalization", `${comment.repositoryId}:${match[1]}:${match[3]}`, { repositoryId: comment.repositoryId, prId: match[1], mergeSha: match[2], role: match[3], status: match[4], artifactDigest: match[5] === "-" ? null : match[5] }));
     }

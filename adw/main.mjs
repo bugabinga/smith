@@ -15,7 +15,7 @@ import {
   validateVerification,
 } from "./core.mjs";
 import { createDefaultGitHub, createDryRunGitHub, normalizeEvent } from "./github.mjs";
-import { defineRole } from "./roles.mjs";
+import { reduceRoleArtifact, role } from "./roles.mjs";
 import { createDefaultVcs } from "./vcs.mjs";
 
 const MAX_INPUT = 262_144;
@@ -113,13 +113,23 @@ export async function run({ argv, stdin, stdout, stderr, readFixture, adapters, 
       artifactInput = true;
       if (!value || Array.isArray(value) || typeof value !== "object") inputError("reduce request must be an object");
       const keys = Object.keys(value).sort();
-      if (keys.length !== 3 || keys.some((key, i) => key !== ["assessments", "rolePolicy", "snapshot"][i])) throw new AdwError("contract", "reduce request has invalid fields");
+      if (keys.length !== 2 || keys.some((key, i) => key !== ["assessments", "snapshot"][i])) throw new AdwError("contract", "reduce request has invalid fields");
       if (!Array.isArray(value.assessments)) throw new AdwError("contract", "reduce assessments must be an array");
-      result = reduceAssessments({
-        snapshot: validateSnapshot(value.snapshot),
-        rolePolicy: defineRole(value.rolePolicy),
-        assessments: value.assessments,
+      const snapshot = validateSnapshot(value.snapshot);
+      const rolePolicy = role(snapshot.routing.role);
+      const assessments = value.assessments.map(entry => {
+        const assessment = entry?.assessment ?? entry;
+        if (assessment?.patch === null) return assessment;
+        if (!entry || entry.assessment !== assessment || typeof entry.patchBase64 !== "string" || Object.keys(entry).sort().join(",") !== "assessment,patchBase64") throw new AdwError("contract", "patched assessment sidecar is missing");
+        if (entry.patchBase64.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(entry.patchBase64)) throw new AdwError("contract", "patch sidecar encoding is invalid");
+        const patchBytes = Buffer.from(entry.patchBase64, "base64");
+        if (patchBytes.toString("base64") !== entry.patchBase64) throw new AdwError("contract", "patch sidecar encoding is invalid");
+        return { assessment, patchBytes };
       });
+      const reduction = reduceAssessments({ snapshot, rolePolicy, assessments });
+      result = reduction.status === "artifact"
+        ? reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessments })
+        : reduction;
     } else if (args[0] === "reconcile" && args.length === 1) {
       result = planReconciliation(value);
     } else if (args[0] === "dry-run") {

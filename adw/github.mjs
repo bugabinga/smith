@@ -1,6 +1,6 @@
 import { isAbsolute } from "node:path";
 import { AdwError, canonicalBytes, digestJson, validateOperation, validateSnapshot } from "./core.mjs";
-import { OPERATIONS, role } from "./roles.mjs";
+import { OPERATIONS, deterministicRole, role } from "./roles.mjs";
 import { runProcess } from "./providers.mjs";
 
 const EVENTS = new Set([
@@ -9,6 +9,12 @@ const EVENTS = new Set([
   "push", "schedule", "dependabot_alert", "code_scanning_alert", "workflow_dispatch",
 ]);
 
+const ADAPTER_READ_CAPABILITIES = Object.freeze(["actions:read", "alerts:read", "checks:read", "issues:read", "pulls:read", "repository:read", "settings:read"]);
+const FIELD_CAPABILITY = Object.freeze({
+  repository: "repository:read", issue: "issues:read", issues: "issues:read", claim: "issues:read", spec: "issues:read", spec_change: "issues:read", labels: "issues:read", milestones: "issues:read", comment: "issues:read", entity: "issues:read", owner: "issues:read", route: "issues:read",
+  pull: "pulls:read", pulls: "pulls:read", diff: "pulls:read", files: "pulls:read", reviews: "pulls:read", security: "pulls:read", changed_paths: "pulls:read", findings: "pulls:read", docs: "pulls:read", dependency: "pulls:read",
+  runs: "actions:read", routes: "actions:read", alert: "alerts:read", settings: "settings:read", config: "settings:read",
+});
 const ROLE_EVENTS = Object.freeze({
   "steerer": ["issue_comment"], "triager": ["issue"], "planner": ["issue", "push", "schedule"],
   "surveyor": ["schedule"], "builder": ["issue"], "codex-builder": ["issue"], "pioneer": ["issue"],
@@ -16,6 +22,14 @@ const ROLE_EVENTS = Object.freeze({
   "sweeper": ["schedule"], "adw-doctor": ["schedule"], "docs-writer": ["pull_request"],
   "dependency-manager": ["pull_request"], "alert-triager": ["alert", "schedule"],
 });
+
+export function deterministicSnapshotPlan(roleName, eventKind) {
+  contract(eventKind === "schedule", "deterministic role event is unsupported");
+  const value = deterministicRole(roleName);
+  const fields = { "jam-detector": ["pulls", "runs"], "label-sync": ["labels"], "settings-auditor": ["config", "settings"] }[roleName];
+  contract(fields !== undefined, "deterministic role is unsupported");
+  return Object.freeze({ role: value.name, eventKind, fields: Object.freeze(fields) });
+}
 
 export function roleSnapshotPlan(roleName, eventKind) {
   const events = ROLE_EVENTS[roleName];
@@ -97,7 +111,7 @@ function contentEnvelope(data, trust, source) {
   contract(trust === "trusted" || trust === "untrusted", "content trust is invalid");
   text(source, "content source");
   const bytes = canonicalBytes(data);
-  contract(bytes.length <= 65_536, "content is oversized");
+  if (bytes.length > 65_536) throw new AdwError("forge", "overflow");
   return Object.freeze({ trust, source, bytes: bytes.length, digest: digestJson(data), data });
 }
 
@@ -203,6 +217,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     issues: () => request(`/repos/${owner}/${name}/issues?state=all`, true),
     pulls: () => request(`/repos/${owner}/${name}/pulls?state=all`, true),
     milestones: () => request(`/repos/${owner}/${name}/milestones?state=all`, true),
+    labels: () => request(`/repos/${owner}/${name}/labels`, true),
     pullFiles: number => request(`/repos/${owner}/${name}/pulls/${positiveInteger(number)}/files`, true),
     pullReviews: number => request(`/repos/${owner}/${name}/pulls/${positiveInteger(number)}/reviews`, true),
     commitChecks: headSha => {
@@ -305,9 +320,15 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       return Object.freeze({ repository: Object.freeze(normalizedRepository), entity: entity === null ? null : normalizeResource(entity) });
     },
     async readRoleSnapshot(event, rolePolicy, { controlSha, appId } = {}) {
-      const canonicalPolicy = role(rolePolicy?.name);
-      roleSnapshotPlan(rolePolicy.name, event.kind);
-      contract(digestJson(rolePolicy) === digestJson(canonicalPolicy), "role policy is not canonical");
+      const deterministic = rolePolicy?.kind === "deterministic";
+      if (deterministic) {
+        const plan = deterministicSnapshotPlan(rolePolicy.name, event.kind);
+        contract(digestJson(rolePolicy) === digestJson({ kind: "deterministic", name: rolePolicy.name, mode: "single", primary: null, patch: null, snapshot: { fields: plan.fields, maxBytes: 262144 } }), "deterministic role policy is not canonical");
+      } else {
+        const canonicalPolicy = role(rolePolicy?.name);
+        roleSnapshotPlan(rolePolicy.name, event.kind);
+        contract(digestJson(rolePolicy) === digestJson(canonicalPolicy), "role policy is not canonical");
+      }
       contract(typeof controlSha === "string" && /^[0-9a-f]{40}$/.test(controlSha), "control SHA is invalid");
       contract(appId === appIdentity.id, "snapshot trust is invalid");
       const repositoryValue = await methods.repository();
@@ -320,6 +341,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       };
       contract(normalizedRepository.id === event.repository.id && normalizedRepository.owner === event.repository.owner && normalizedRepository.name === event.repository.name, "event repository drifted");
       const fields = new Set(rolePolicy.snapshot.fields);
+      for (const field of fields) if (!ADAPTER_READ_CAPABILITIES.includes(FIELD_CAPABILITY[field])) throw new AdwError("forge", `unsupported capability for field: ${field}`);
       const satisfied = new Set(["repository"]);
       const resources = {};
       const revisions = [];
@@ -329,7 +351,9 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         revisions.push({ resource: key, kind, token: String(token ?? digestJson(value)) });
       };
       put("repository", "repository", Object.freeze(normalizedRepository), digestJson(normalizedRepository));
-      const trustedPaths = [rolePolicy.charter, rolePolicy.payloadSchema];
+      const trustedPaths = deterministic
+        ? ({ "settings-auditor": [".github/rulesets/main.json"], "label-sync": [".github/labels.yml"], "jam-detector": [] }[rolePolicy.name])
+        : [rolePolicy.charter, rolePolicy.payloadSchema];
       if (rolePolicy.snapshot.fields.includes("spec") || rolePolicy.snapshot.fields.includes("spec_change")) trustedPaths.push("docs/SPEC.md");
       for (const path of [...new Set(trustedPaths)]) {
         const input = await methods.trustedFile(path, controlSha);
@@ -347,6 +371,8 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       const pullRelated = ["pull_request", "pull_request_review", "pull_request_review_comment"].includes(event.kind);
       let issueValue = null;
       let pullValue = null;
+      let sourceComment = null;
+      let qualifyingPioneerPulls = [];
       let fileValues = [];
       if (issueRelated && ["issue", "issues", "claim", "spec", "labels", "milestones", "comment", "entity", "owner"].some(field => fields.has(field))) {
         issueValue = normalizeIssue(await methods.issue(Number(event.entityId)));
@@ -362,7 +388,20 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         put(`issue:${event.entityId}:children`, "sub_issues", Object.freeze(children), digestJson(children));
         for (const field of ["issue", "claim", "spec", "labels", "comment", "entity", "owner", "route"]) if (fields.has(field)) satisfied.add(field);
         if (event.kind === "issue" && event.revisionHints.updatedAt && issueValue.updatedAt !== event.revisionHints.updatedAt) throw new AdwError("forge", "stale");
-        if (event.revisionHints.commentId && !comments.some(comment => comment.id === event.revisionHints.commentId && comment.updatedAt === event.revisionHints.updatedAt)) throw new AdwError("forge", "stale");
+        if (event.revisionHints.commentId) {
+          sourceComment = comments.find(comment => comment.id === event.revisionHints.commentId && comment.updatedAt === event.revisionHints.updatedAt) ?? null;
+          if (sourceComment === null) throw new AdwError("forge", "stale");
+        }
+      }
+      if (rolePolicy.name === "pioneer" && issueValue !== null) {
+        const rawPulls = await methods.pulls();
+        if (rawPulls.length > 100) throw new AdwError("forge", "overflow");
+        for (const rawPull of rawPulls) {
+          const candidate = normalizePull(rawPull);
+          const closing = await methods.closingIssues(Number(candidate.number));
+          if (candidate.base === normalizedRepository.defaultBranch && candidate.headRepository === `${owner}/${name}` && closing.some(issue => issue.repositoryId === normalizedRepository.id && issue.issueId === event.entityId)) qualifyingPioneerPulls.push(Object.freeze({ prId: candidate.number, headSha: candidate.headSha, merged: candidate.merged, mergeSha: candidate.mergeSha }));
+        }
+        put(`issue:${event.entityId}:qualifying-pulls`, "pulls", Object.freeze(qualifyingPioneerPulls), digestJson(qualifyingPioneerPulls));
       }
       if (fields.has("issues")) {
         const issues = (await methods.issues()).filter(value => !value.pull_request).map(normalizeIssue);
@@ -376,6 +415,11 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         for (const rawPull of rawPulls) pulls.push(await enrichPull(rawPull));
         put("pulls", "pulls", Object.freeze(pulls), digestJson(pulls));
         satisfied.add("pulls");
+      }
+      if (deterministic && rolePolicy.name === "label-sync") {
+        const labels = (await methods.labels()).map(value => Object.freeze({ id: id(value.node_id ?? value.id, "label id"), name: normalizedContent(value.name, `label:${value.id}:name`), color: normalizedContent(value.color, `label:${value.id}:color`), description: normalizedContent(value.description ?? "", `label:${value.id}:description`) }));
+        put("labels", "labels", Object.freeze(labels), digestJson(labels));
+        satisfied.add("labels");
       }
       if (fields.has("milestones")) {
         const milestones = (await methods.milestones()).map(value => Object.freeze({ id: id(value.node_id ?? value.id ?? value.number, "milestone id"), number: id(value.number, "milestone number"), state: text(value.state, "milestone state"), dueOn: value.due_on ?? null, title: normalizedContent(value.title, `milestone:${value.number}:title`), description: normalizedContent(value.description ?? "", `milestone:${value.number}:description`) }));
@@ -451,35 +495,48 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       const state = {
         entityId: event.entityId, labels, input: Object.freeze(input), resources: Object.freeze(resources),
         actionTargets: Object.freeze(resources.runs?.map(run => run.id) ?? []),
-        ownerAuthenticated: event.actor.type === "User" && event.actor.login === normalizedRepository.owner && event.actor.id === repositoryOwnerId,
+        ownerAuthenticated: event.kind === "issue_comment" && sourceComment !== null && /(^|\s)@smith\b/.test(sourceComment.body.data) && event.actor.type === "User" && event.actor.login === normalizedRepository.owner && event.actor.id === repositoryOwnerId,
+        closingArtifactQualifies: qualifyingPioneerPulls.length > 0,
         trust: Object.freeze({ ownerIds: [repositoryOwnerId], appId }),
       };
-      if (pullValue) state.headSha = pullValue.headSha;
+      if (pullValue) { state.headSha = pullValue.headSha; state.changedPaths = pullValue.changedPaths; }
       if (patchBase !== null) {
         const source = issueValue ?? pullValue;
         contract(source !== null, "patch role lacks source entity");
         state.baseBranch = normalizedRepository.defaultBranch;
         state.headBranch = rolePolicy.name === "docs-writer" ? `docs/pr-${event.entityId}` : rolePolicy.name === "pioneer" ? `pioneer/issue-${event.entityId}` : `${rolePolicy.primary}/issue-${event.entityId}`;
         state.title = source.title;
-        state.body = source.body;
+        state.body = issueValue && (rolePolicy.name === "builder" || rolePolicy.name === "codex-builder" || rolePolicy.name === "pioneer")
+          ? normalizedContent(`${source.body.data}\n\nCloses #${event.entityId}`, `issue:${event.entityId}:pr-body`)
+          : source.body;
       }
-      const snapshot = validateSnapshot({
-        schemaVersion: 1, controlSha,
-        event: { kind: event.kind, action: event.action, entityId: event.entityId },
-        repository: normalizedRepository,
-        revisions: revisions.sort((a, b) => a.resource.localeCompare(b.resource)),
-        routing: { role: rolePolicy.name, mode: rolePolicy.mode, primary: rolePolicy.primary },
-        state,
-      });
-      contract(canonicalBytes(snapshot).length <= rolePolicy.snapshot.maxBytes, "role snapshot is oversized");
+      let snapshot;
+      try {
+        snapshot = validateSnapshot({
+          schemaVersion: 1, controlSha,
+          event: { kind: event.kind, action: event.action, entityId: event.entityId },
+          repository: normalizedRepository,
+          revisions: revisions.sort((a, b) => a.resource.localeCompare(b.resource)),
+          routing: { role: rolePolicy.name, mode: rolePolicy.mode, primary: rolePolicy.primary },
+          state,
+        });
+      } catch (error) {
+        if (error?.code === "contract" && error.message === "snapshot is oversized") throw new AdwError("forge", "overflow");
+        throw error;
+      }
+      if (canonicalBytes(snapshot).length > rolePolicy.snapshot.maxBytes) throw new AdwError("forge", "overflow");
       return snapshot;
+    },
+    readDeterministicSnapshot(event, name, options) {
+      const plan = deterministicSnapshotPlan(name, event.kind);
+      return api.readRoleSnapshot(event, Object.freeze({ kind: "deterministic", name, mode: "single", primary: null, patch: null, snapshot: { fields: plan.fields, maxBytes: 262144 } }), options);
     },
     record(operation) {
       const value = validateOperation(operation, policy);
       intentsByDigest.set(digestJson(value), value);
     },
     intents: () => Object.freeze([...intentsByDigest.values()].sort((a, b) => digestJson(a).localeCompare(digestJson(b)))),
-    capabilities: () => Object.freeze(["actions:read", "alerts:read", "checks:read", "issues:read", "pulls:read", "repository:read", "settings:read"]),
+    capabilities: () => ADAPTER_READ_CAPABILITIES,
   };
   return Object.freeze(api);
 }

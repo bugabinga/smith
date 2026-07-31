@@ -146,7 +146,7 @@ const BASE_ROLES = deepFreeze({
   "reviser": config({ name: "reviser", charter: ".claude/agents/builder.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: terra("high"), capabilities: ["contents:write", "pulls:write"], fields: ["changed_paths", "findings", "pull"], operations: changeOperations, patch: patch(broadPrefixes) }),
   "sweeper": config({ name: "sweeper", charter: ".claude/agents/sweeper.md", primary: "codex", fallback: null, codex: luna("low"), capabilities: ["actions:write", "issues:write", "pulls:write"], fields: ["issues", "pulls", "routes", "runs"], operations: stateOperations }),
   "adw-doctor": config({ name: "adw-doctor", charter: ".claude/agents/adw-doctor.md", primary: "codex", fallback: "claude", claude: opus("high"), codex: sol("xhigh"), capabilities: ["actions:read", "issues:write", "settings:read"], fields: ["config", "runs", "settings"], operations: ["create_issue", "noop", "report_drift", "terminal"] }),
-  "docs-writer": config({ name: "docs-writer", charter: ".claude/agents/docs-writer.md", primary: "codex", fallback: "claude", claude: opus("high"), codex: terra("medium"), capabilities: ["contents:write", "pulls:write"], fields: ["diff", "docs", "pull"], operations: changeOperations, patch: patch(["book/", "docs/", "site/", "smith/"]) }),
+  "docs-writer": config({ name: "docs-writer", charter: ".claude/agents/docs-writer.md", primary: "codex", fallback: "claude", claude: opus("high"), codex: terra("medium"), capabilities: ["contents:write", "pulls:write"], fields: ["diff", "docs", "pull"], operations: changeOperations, patch: patch(["book/", "docs/", "site/"]) }),
   "dependency-manager": config({ name: "dependency-manager", charter: ".claude/agents/dependency-manager.md", primary: "codex", fallback: "claude", claude: opus("high"), codex: terra("medium"), capabilities: ["issues:write", "pulls:read"], fields: ["dependency", "diff", "pull"], operations: stateOperations }),
   "alert-triager": config({ name: "alert-triager", charter: ".claude/agents/security-reviewer.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: sol("high"), capabilities: ["alerts:read", "issues:write"], fields: ["alert", "issues", "pulls"], operations: stateOperations }),
 });
@@ -336,6 +336,7 @@ export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessment
   if (digestJson(assessment.patch) !== digestJson(reduction.patch)) payloadFail("reduction patch does not match assessment");
   if (payload.patch !== undefined && digestJson(payload.patch) !== digestJson(assessment.patch)) payloadFail("payload patch does not match assessment");
   const state = reductionState(snapshot);
+  if (rolePolicy.name === "reviser" && assessment.patch && (!Array.isArray(state.changedPaths) || assessment.patch.files.some(file => !state.changedPaths.includes(file.path)))) payloadFail("revision patch escapes current pull paths");
   if (state.entityId !== snapshot.event.entityId) payloadFail("snapshot entity does not match event");
   const marker = operationMarker(reduction.selected[0]);
   if (assessment.patch && !snapshot.revisions.some(revision => revision.token === assessment.patch.baseSha)) payloadFail("patch base is not a snapshot revision");
@@ -377,18 +378,28 @@ export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessment
         operations = [{ type: "create_pr", head: state.headBranch, base: state.baseBranch, title: stateContent(state.title, "snapshot title"), body: stateContent(state.body, "snapshot body"), marker }];
       } else payloadFail("proof lacks a qualifying artifact");
     } else if (payload.verdict === "disproved") {
-      operations = [{ type: "add_label", entityId: state.entityId, label: "needs:spec" }, { type: "comment", entityId: state.entityId, body: payload.summary, marker }];
+      operations = [{ type: "add_label", entityId: state.entityId, label: "needs:spec" }, { type: "comment", entityId: state.entityId, body: `${payload.summary}\n\nFalsified claim: ${payload.claim}`, marker }];
     } else operations = [{ type: "comment", entityId: state.entityId, body: payload.summary, marker }];
   } else if (rolePolicy.payloadFamily === "review") {
     if (!snapshot.revisions.some(revision => revision.token === state.headSha)) payloadFail("review head is not a snapshot revision");
     const security = rolePolicy.name === "security-reviewer";
+    const reviewKind = security ? "security" : "correctness";
     const approval = security ? "security-cleared" : "reviewed";
     const rejected = payload.verdict === "reject" || payload.risk === "high";
     operations = [
       { type: "publish_check", headSha: state.headSha, name: rolePolicy.name, conclusion: rejected ? "failure" : "success", summary: rejected ? "rejected" : "approved", externalId: reduction.selected[0] },
       rejected ? { type: "add_label", entityId: state.entityId, label: "changes-requested" } : { type: "add_label", entityId: state.entityId, label: approval },
     ];
-    if (payload.risk === "high") operations.push({ type: "add_label", entityId: state.entityId, label: "risk:high" });
+    const evidenceMarker = `<!-- smith:review-evidence/v1 kind=${reviewKind} head=${state.headSha} conclusion=${rejected ? "reject" : "approve"} provider=${assessment.provider} authoritative=true artifact=${reduction.selected[0]} -->`;
+    operations.push({ type: "comment", entityId: state.entityId, body: evidenceMarker, marker: evidenceMarker });
+    if (payload.risk === "high") {
+      let createdAt;
+      try { createdAt = new Date(assessment.completedAt).toISOString(); } catch { payloadFail("assessment completion time is invalid"); }
+      if (createdAt !== assessment.completedAt) payloadFail("assessment completion time is not canonical");
+      operations.push({ type: "add_label", entityId: state.entityId, label: "risk:high" });
+      const riskMarker = `<!-- smith:risk/v1 head=${state.headSha} finding=${digestJson(payload.findings)} status=open created=${createdAt} cleared=- -->`;
+      operations.push({ type: "comment", entityId: state.entityId, body: riskMarker, marker: riskMarker });
+    }
     if (rejected) operations.push({ type: "remove_label", entityId: state.entityId, label: approval });
     else operations.push({ type: "remove_label", entityId: state.entityId, label: "changes-requested" });
   } else if (rolePolicy.payloadFamily === "maintenance") {
@@ -416,6 +427,31 @@ export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessment
     operations,
     patch: kind === "patch" ? assessment.patch : null,
   });
+}
+
+export function reduceDeterministicArtifact(name, payload) {
+  const policy = deterministicRole(name);
+  let operations;
+  if (name === "settings-auditor") {
+    payloadObject(payload, ["drifts"]);
+    payloadArray(payload.drifts, "drifts", 50);
+    operations = payload.drifts.map(drift => {
+      payloadObject(drift, ["title", "body"], "drift"); payloadText(drift.title, "drift title"); payloadText(drift.body, "drift body");
+      return { type: "report_drift", title: drift.title, body: drift.body, marker: `smith:settings-drift/v1:${digestJson(drift)}` };
+    });
+  } else if (name === "jam-detector") {
+    payloadObject(payload, ["entityId", "headSha", "stalled", "reason"]);
+    payloadText(payload.entityId, "jam entity"); payloadText(payload.reason, "jam reason");
+    if (!/^[0-9a-f]{40}$/.test(payload.headSha) || typeof payload.stalled !== "boolean") payloadFail("jam input is invalid");
+    const marker = `<!-- smith:jam/v1 entity=${payload.entityId} head=${payload.headSha} status=open artifact=${digestJson(payload)} -->`;
+    operations = payload.stalled ? [{ type: "comment", entityId: payload.entityId, body: payload.reason, marker }] : [];
+  } else if (name === "label-sync") {
+    payloadObject(payload, ["wantedDigest", "liveDigest"]);
+    if (!/^[0-9a-f]{64}$/.test(payload.wantedDigest) || !/^[0-9a-f]{64}$/.test(payload.liveDigest)) payloadFail("label digests are invalid");
+    operations = payload.wantedDigest === payload.liveDigest ? [] : [{ type: "sync_labels", definitionsDigest: payload.wantedDigest }];
+  } else payloadFail("deterministic role is unsupported");
+  if (operations.length === 0) operations = [{ type: "noop", reason: "unchanged" }];
+  return deepFreeze(operations.map(operation => validateOperation(operation, policy)));
 }
 
 export function role(name) {

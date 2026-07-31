@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
 import test from "node:test";
-import { digestJson } from "../core.mjs";
+import { canonicalBytes, digestBytes, digestJson } from "../core.mjs";
 import { execute, readBounded, run } from "../main.mjs";
 
 const controlSha = "a".repeat(40);
@@ -13,33 +13,15 @@ const snapshot = {
   repository: { id: "R_1", owner: "bugabinga", name: "smith", defaultBranch: "main" },
   revisions: [{ resource: "pull:42", kind: "pull", token: headSha }],
   routing: { role: "reviewer", mode: "single", primary: "claude" },
-  state: {},
+  state: { entityId: "42", headSha, labels: [] },
 };
-const rolePolicy = {
-  name: "reviewer",
-  charter: ".claude/agents/reviewer.md",
-  mode: "single",
-  primary: "claude",
-  fallback: "codex",
-  providers: ["claude", "codex"],
-  providerConfig: {
-    claude: { model: "fixture-claude", effort: "high", timeoutSeconds: 300 },
-    codex: { model: "fixture-codex", effort: "high", timeoutSeconds: 300 },
-  },
-  capabilities: ["pulls:read"],
-  snapshot: { fields: ["pull"], maxBytes: 262144 },
-  payload: { outcomes: ["negative", "noop", "positive", "unable"], requiredKeys: ["verdict"] },
-  operations: ["publish_check", "terminal"],
-  fallbackAuthority: { protected: false, incomplete: false, fork: false, binary: false, oversized: false },
-  patch: null,
-};
-const payload = { verdict: "approve" };
+const payload = { verdict: "approve", risk: "none", findings: [] };
 const assessment = {
   schemaVersion: 1,
   controlSha,
   role: "reviewer",
   provider: "claude",
-  model: "fixture-claude",
+  model: "claude-opus-4-8",
   idempotencyKey: "pr:42:head:review",
   snapshotDigest: digestJson(snapshot),
   cliVersion: "1.0.0",
@@ -76,12 +58,27 @@ test("validate emits canonical JSON", async () => {
   assert.ok(result.out.endsWith("\n"));
 });
 
-test("reduce accepts an explicit policy and stamped assessments", async () => {
-  const result = await invoke(["reduce"], JSON.stringify({ snapshot, rolePolicy, assessments: [assessment] }));
+test("reduce derives canonical policy from the stamped role", async () => {
+  const result = await invoke(["reduce"], JSON.stringify({ snapshot, assessments: [assessment] }));
   assert.equal(result.code, 0);
-  assert.equal(JSON.parse(result.out).status, "artifact");
-  const unknown = await invoke(["reduce"], JSON.stringify({ snapshot, rolePolicy, assessments: [assessment], surprise: true }));
+  assert.equal(JSON.parse(result.out).kind, "state");
+  assert.ok(JSON.parse(result.out).operations.some(value => value.type === "publish_check"));
+  const unknown = await invoke(["reduce"], JSON.stringify({ snapshot, assessments: [assessment], surprise: true }));
   assert.equal(unknown.code, 6);
+});
+
+test("reduce binds patch sidecar bytes before emitting patch decision", async () => {
+  const bytes = Buffer.from("x");
+  const patch = { baseSha: headSha, digest: digestBytes(bytes), size: 1, files: [{ path: "smith/src/lib.rs", kind: "regular", oldMode: "100644", newMode: "100644" }] };
+  const envelope = data => ({ trust: "untrusted", source: "fixture", bytes: canonicalBytes(data).length, digest: digestJson(data), data });
+  const buildSnapshot = { ...snapshot, event: { kind: "issue", action: "labeled", entityId: "1" }, revisions: [{ resource: "base", kind: "git_ref", token: headSha }], routing: { role: "builder", mode: "single", primary: "claude" }, state: { entityId: "1", labels: [], input: {}, headBranch: "claude/issue-1", baseBranch: "main", title: envelope("Build"), body: envelope("Closes #1") } };
+  const buildPayload = { verdict: "patch", summary: "Build", patch };
+  const buildAssessment = { ...assessment, role: "builder", model: "claude-opus-4-8", snapshotDigest: digestJson(buildSnapshot), payload: buildPayload, payloadDigest: digestJson(buildPayload), patch };
+  const request = { snapshot: buildSnapshot, assessments: [{ assessment: buildAssessment, patchBase64: bytes.toString("base64") }] };
+  const result = await invoke(["reduce"], JSON.stringify(request));
+  assert.equal(result.code, 0);
+  assert.equal(JSON.parse(result.out).kind, "patch");
+  assert.equal((await invoke(["reduce"], JSON.stringify({ snapshot: buildSnapshot, assessments: [buildAssessment] }))).code, 6);
 });
 
 test("reconcile accepts normalized state", async () => {
@@ -124,7 +121,7 @@ test("errors use stable exit classes and sanitized JSON", async () => {
 
 test("provider failure and pending fallback use provider exit status", async () => {
   const unavailable = { ...assessment, outcome: "unable" };
-  const result = await invoke(["reduce"], JSON.stringify({ snapshot, rolePolicy, assessments: [unavailable] }));
+  const result = await invoke(["reduce"], JSON.stringify({ snapshot, assessments: [unavailable] }));
   assert.equal(result.code, 4);
   assert.equal(JSON.parse(result.out).status, "fallback");
 });

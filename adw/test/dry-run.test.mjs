@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { digestBytes, planReconciliation, validateAssessment, validateSnapshot } from "../core.mjs";
-import { normalizeEvent } from "../github.mjs";
+import { deterministicSnapshotPlan, normalizeEvent, roleSnapshotPlan } from "../github.mjs";
 import { run, writeDryRunArtifact } from "../main.mjs";
 import { defineRole } from "../roles.mjs";
 
@@ -105,4 +105,6 @@ test("checked-in fixtures satisfy their executable contracts", async () => {
   for (const assessment of await load("reviewer-assessments.json")) validateAssessment(assessment);
   planReconciliation(await load("reconcile.json"));
   for (const item of await load("events/cases.json")) normalizeEvent(item.name, { ...item.body, repository, sender });
+  for (const plan of await load("snapshots/plans.json")) assert.deepEqual(roleSnapshotPlan(plan.role, plan.event).fields, plan.fields);
+  assert.deepEqual(deterministicSnapshotPlan("label-sync", "schedule").fields, ["labels"]);
 });

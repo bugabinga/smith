@@ -20,6 +20,7 @@ import {
   reduceRisk,
   idempotencyKey,
   parseLegacyMarkers,
+  planMergeGate,
   planReconciliation,
   validateOperation,
   validatePatchManifest,
@@ -362,6 +363,7 @@ const correctness = {
   artifactDigest: "c".repeat(64),
 };
 const security = { ...correctness, kind: "security", provider: "codex", artifactDigest: "d".repeat(64) };
+const gateLabels = ["reviewed", "security-cleared"];
 
 test("review reduction trusts only current-head App evidence", () => {
   assert.deepEqual(
@@ -403,10 +405,10 @@ test("risk clears only through later same-head owner evidence", () => {
   assert.equal(reduceRisk({ marker, timeline: [event], headSha: "e".repeat(40), trust }).status, "open");
 });
 
-test("merge eligibility requires all current-head evidence", () => {
+test("merge eligibility requires labels, evidence, product check, and squash arm", () => {
   const state = {
     headSha,
-    labels: [],
+    labels: gateLabels,
     checks: [{ name: "check", headSha, conclusion: "success" }],
     reviews: [correctness, security],
     riskMarker: null,
@@ -415,9 +417,13 @@ test("merge eligibility requires all current-head evidence", () => {
     autoMergeAllowed: true,
   };
   assert.deepEqual(mergeEligibility(state), { eligible: true, reasons: [] });
-  assert.deepEqual(mergeEligibility({ ...state, labels: ["hold"] }), { eligible: false, reasons: ["hold"] });
+  assert.deepEqual(mergeEligibility({ ...state, labels: [...gateLabels, "hold"] }), { eligible: false, reasons: ["hold"] });
+  assert.deepEqual(mergeEligibility({ ...state, labels: ["stalled", ...gateLabels] }), { eligible: true, reasons: [] });
+  assert.deepEqual(mergeEligibility({ ...state, labels: [] }).reasons, ["reviewed_missing", "security-cleared_missing"]);
   assert.deepEqual(mergeEligibility({ ...state, checks: [] }).reasons, ["check_missing"]);
   assert.deepEqual(mergeEligibility({ ...state, autoMergeAllowed: false }).reasons, ["auto_merge_forbidden"]);
+  assert.deepEqual(planMergeGate({ prId: "2", ...state }).operations.map(value => value.type), ["publish_check", "arm_auto_merge"]);
+  assert.equal(planMergeGate({ prId: "2", ...state, labels: [...gateLabels, "changes-requested"] }).operations.length, 1);
 });
 
 const operationSamples = [
@@ -491,8 +497,10 @@ test("patch manifest enforces role and global boundaries", () => {
 test("legacy markers import only exact App-authored authority", async () => {
   const comments = [];
   for (const name of ["routes", "reviews", "jams"]) comments.push(...JSON.parse(await readFile(new URL(`fixtures/legacy/${name}.json`, import.meta.url))));
+  const body = comments[0].body;
+  comments[0] = { ...comments[0], updatedAt: comments[0].createdAt, body: { trust: "untrusted", source: "comment:1:body", bytes: canonicalBytes(body).length, digest: digestJson(body), data: body } };
   comments.push({ ...comments[0], id: "forged", actorId: "U_attacker" });
-  comments.push({ ...comments[0], id: "malformed", body: `${comments[0].body} trailing` });
+  comments.push({ id: "malformed", actorId: trust.appId, createdAt: comments[0].createdAt, repositoryId: comments[0].repositoryId, entityId: comments[0].entityId, body: `${body} trailing` });
   const records = parseLegacyMarkers({ comments, trust });
   assert.deepEqual(records.map(value => value.kind), ["attempt", "route", "review", "review", "jam", "finalization"]);
   assert.equal(records.find(value => value.kind === "attempt").value.outcome, "failure");
@@ -530,7 +538,7 @@ test("reconciliation emits only missing normalized obligations", () => {
 });
 
 test("reconciliation derives reviews, holds, pioneer retries, and imported finalization", () => {
-  const finalization = markerComment({ id: "m1", body: `<!-- smith:merge-finalization/v1 pr=2 merge=${"c".repeat(40)} role=docs-writer status=complete artifact=${"d".repeat(64)} -->` });
+  const finalization = markerComment({ id: "m1", body: `<!-- smith:merge-finalized/v1 pr=2 merge=${"c".repeat(40)} role=docs-writer status=complete artifact=${"d".repeat(64)} -->` });
   const request = {
     snapshot: { ...snapshot, state: { currentRevisions: { "issue:1": "r2", "issue:3": "r3" } } },
     routes: [reconcileRoute()],
@@ -612,7 +620,7 @@ test("transition reducers reject malformed normalized evidence", () => {
 test("conflicting current-head product checks fail closed", () => {
   const result = mergeEligibility({
     headSha,
-    labels: [],
+    labels: gateLabels,
     checks: [
       { name: "check", headSha, conclusion: "success" },
       { name: "check", headSha, conclusion: "failure" },
@@ -636,7 +644,7 @@ test("merge eligibility revalidates sticky risk against current-head owner timel
   };
   const result = mergeEligibility({
     headSha,
-    labels: [],
+    labels: gateLabels,
     checks: [{ name: "check", headSha, conclusion: "success" }],
     reviews: [correctness, security],
     riskMarker: marker,
