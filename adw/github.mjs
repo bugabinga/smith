@@ -272,7 +272,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     const mergeSha = value.merge_commit_sha === null || value.merge_commit_sha === undefined ? null : text(value.merge_commit_sha, "pull merge SHA");
     contract(mergeSha === null || /^[0-9a-f]{40}$/.test(mergeSha), "pull merge SHA is malformed");
     return Object.freeze({
-      id: restId(value.id, "pull id"), number: String(value.number), state: text(value.state, "pull state"), merged: value.merged === true,
+      id: restId(value.id, "pull id"), number: String(value.number), state: text(value.state, "pull state"), merged: value.merged === true || typeof value.merged_at === "string",
       mergeSha,
       updatedAt: text(value.updated_at, "pull updatedAt"), headSha, base: text(value.base?.ref, "pull base"),
       headRepository: text(value.head?.repo?.full_name, "pull head repository"),

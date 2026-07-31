@@ -208,6 +208,25 @@ test("builder snapshot binds patch base and untrusted PR metadata", async () => 
   await assert.rejects(() => github.readRoleSnapshot(event, role("builder"), { controlSha: "a".repeat(40), appId: "A_1" }), error => error?.code === "contract" && error.message === "issue is malformed");
 });
 
+test("list-derived merged pulls retain post-merge obligations", async () => {
+  const mergeSha = "c".repeat(40);
+  const headSha = "b".repeat(40);
+  const github = adapter(async request => {
+    const endpoint = request.args.at(-1);
+    const reply = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
+    if (request.args[1] === "graphql") return reply({ data: { repository: { pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false } } } } } });
+    if (endpoint === "/repos/bugabinga/smith") return reply({ id: 42, owner: { id: 7, login: "bugabinga" }, name: "smith", default_branch: "main" });
+    if (endpoint.startsWith("/repos/bugabinga/smith/pulls?")) return reply([{ id: 2, number: 2, state: "closed", merged_at: "2026-07-28T00:00:00Z", merge_commit_sha: mergeSha, updated_at: "2026-07-28T00:00:00Z", head: { sha: headSha, repo: { full_name: "bugabinga/smith" } }, base: { ref: "main" }, title: "Merged", body: "", labels: [] }]);
+    if (endpoint.startsWith("/repos/bugabinga/smith/pulls/2/files?")) return reply([]);
+    if (endpoint.startsWith("/repos/bugabinga/smith/actions/runs?")) return reply({ workflow_runs: [] });
+    throw new Error(`unexpected ${endpoint}`);
+  });
+  const event = normalizeEvent("schedule", { schedule: "0 * * * *", repository, sender });
+  const snapshot = await github.readDeterministicSnapshot(event, "jam-detector", { controlSha: "a".repeat(40), appId: "A_1" });
+  assert.equal(snapshot.state.resources.pulls[0].merged, true);
+  assert.deepEqual(snapshot.state.resources.pulls[0].obligations.map(value => value.role), ["linked-work", "docs-writer"]);
+});
+
 test("deterministic settings snapshot binds expected and live rulesets", async () => {
   const github = adapter(async request => {
     const endpoint = request.args.at(-1);
