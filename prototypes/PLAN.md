@@ -2355,3 +2355,77 @@ complete
 - Split standing prototype CI (`prototypes.yml`, evidence bit-rot guard) from
   the p34-specific cross/arch evidence (`ci-prototype.yml`, path-scoped).
   deleted now that its evidence is recorded.
+
+## i120 — `i120-windows-msvc-xwin` (issue #120)
+
+Named by issue, not `pNN`: issue-driven `/pioneer` runs cannot see each other's
+unmerged branches, so a sequential number is a collision. Run 2026-07-31,
+rustc 1.97.1, host `x86_64-unknown-linux-gnu`, `cargo-xwin` 0.23.0,
+clang/lld/llvm 18.1.3, mlua 0.10.5 / luajit-src 210.5.12+a4f56a4.
+
+### SPEC claims
+
+- §14 / PROJECT-INVARIANTS §4: `cargo-xwin` cross-builds both required Windows
+  MSVC triples (`x86_64-pc-windows-msvc`, `aarch64-pc-windows-msvc`) from one
+  Linux host with LLVM/clang, **including vendored LuaJIT via mlua**. Artifacts
+  must be MSVC-ABI; GNU is never a substitute. §4 already marks this **unproven**
+  and forbids the release matrix relying on `cargo-xwin` until a §18 prototype
+  builds with it.
+
+### Risk
+
+Vendored LuaJIT. mlua's `vendored` feature builds LuaJIT through `luajit-src`,
+whose Windows build system is bespoke and may not accept a clang/LLVM cross
+toolchain.
+
+### Minimal artifact
+
+```text
+i120-windows-msvc-xwin/
+  Cargo.toml          (mlua luajit+vendored — the claim's feature set)
+  src/main.rs         (drives LuaJIT: reads jit.version, runs arithmetic)
+  control/            (Rust + cc-crate C — isolates toolchain capability)
+  verify.sh
+```
+
+### Verify
+
+```bash
+cd prototypes/i120-windows-msvc-xwin
+./verify.sh            # exits 0; PASS lines assert the split verdict
+```
+
+### Pass evidence
+
+- control cross-builds both triples to MSVC-ABI PE (right machine type, imports
+  `VCRUNTIME140.dll` + `api-ms-win-crt-*`, never mingw `msvcrt.dll`),
+- mlua vendored LuaJIT build FAILS for both triples inside `luajit-src`,
+- root cause `msvcbuild.bat` (cl/link/lib) confirmed present.
+
+### i120 result
+
+```json
+{
+  "status": "complete",
+  "proved": [
+    "cargo-xwin 0.23.0 on Linux + LLVM/clang 18 cross-builds MSVC-ABI PE for BOTH x86_64 (IMAGE_FILE_MACHINE_AMD64) and aarch64 (IMAGE_FILE_MACHINE_ARM64) — Rust + cc-crate C; imports VCRUNTIME140.dll + api-ms-win-crt-*, never mingw msvcrt.dll",
+    "cargo-xwin fetches Microsoft CRT + Windows SDK for both arches into ~/.cache/xwin (~1.1GiB); crt/lib/{x86_64,aarch64}/vcruntime.lib present; SDK acquisition is not the blocker"
+  ],
+  "disproved": [
+    "the claim AS WRITTEN — cargo-xwin cross-builds the MSVC triples *including vendored LuaJIT via mlua* — is false: mlua {luajit,vendored} fails to cross-build for BOTH triples. luajit-src routes every *-msvc target to build_msvc(), which runs luajit2/src/msvcbuild.bat (a Windows .bat driving cl/link/lib) and resolves the compiler via cc::windows_registry::find_tool(target,'cl.exe'); on Linux this panics 'failed to find cl'. The clang-cl toolchain cargo-xwin supplies is never consulted for LuaJIT — no LLVM/clang Linux host can satisfy this path"
+  ],
+  "specIssues": [
+    { "file": "docs/PROJECT-INVARIANTS.md §4 (cross-compilation table) / docs/SPEC.md §14", "issue": "the intended Windows-MSVC encoding (`cargo-xwin`) cannot build the project's locked mlua vendored-LuaJIT dependency: luajit-src's build_msvc requires Windows-native cl.exe + msvcbuild.bat. §14's 'one host builds the matrix' + MSVC-ABI guarantee is unmet for the LuaJIT-bearing binary via this tool. Owner must pick: (a) a luajit-src/mlua that builds LuaJIT for MSVC via clang-cl/cc, (b) LuaJIT's GNU cross path retargeted to the MSVC ABI, (c) a native Windows runner for the Windows rows (drops 'one Linux host'), or (d) a different Lua binding. escalated as needs:spec citing #120", "evidence": "prototypes/i120-windows-msvc-xwin: verify.sh PASS; luajit-src 210.5.12 lib.rs:216-234 build_msvc + luajit2/src/msvcbuild.bat", "severity": "P1" }
+  ],
+  "commands": [
+    "rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc",
+    "apt install clang lld llvm; cargo install cargo-xwin",
+    "(control) cargo xwin build --release --target {x86_64,aarch64}-pc-windows-msvc  -> OK, MSVC-ABI PE",
+    "(root)    cargo xwin build --release --target {x86_64,aarch64}-pc-windows-msvc  -> FAIL 'failed to find cl' in luajit-src",
+    "./verify.sh -> exit 0"
+  ],
+  "nextSteps": [
+    "owner decides the Windows-MSVC build path (needs:spec issue links #120); until then §14 must not claim the MSVC rows via cargo-xwin, and PROJECT-INVARIANTS §4 keeps Windows MSVC marked unproven — its 'unproven' marker is now evidence-backed, not merely pending"
+  ]
+}
+```

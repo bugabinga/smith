@@ -1,0 +1,14 @@
+[package]
+name = "i120-windows-msvc-xwin"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# One claim: `cargo-xwin` cross-builds BOTH Windows MSVC triples from one Linux
+# host with LLVM/clang, including vendored LuaJIT via mlua (issue #120, SPEC §18,
+# PROJECT-INVARIANTS §4 cross-compilation table). mlua is pinned to the locked
+# feature set every other prototype uses (§2.3 / p10): luajit + vendored so the C
+# LuaJIT VM is compiled and statically linked as part of the cross-build — the
+# part that actually stresses the clang-cl/lld-link toolchain, not just Rust.
+[dependencies]
+mlua = { version = "0.10", features = ["luajit", "vendored"] }

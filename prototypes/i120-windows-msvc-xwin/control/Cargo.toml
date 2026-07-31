@@ -1,0 +1,14 @@
+[package]
+name = "i120-control"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Control for the disproof: a Rust binary that also compiles and statically links
+# a C translation unit through the `cc` crate — the *conventional* way a Rust
+# crate vends C. If cargo-xwin cross-builds this to both MSVC triples, the LLVM
+# toolchain (clang-cl + lld-link + the xwin-fetched CRT/SDK) is proven capable of
+# MSVC-ABI C cross-compilation. That isolates the main crate's failure to
+# `luajit-src`'s bespoke `msvcbuild.bat` path, not to cargo-xwin.
+[build-dependencies]
+cc = "1"
