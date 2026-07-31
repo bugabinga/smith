@@ -1,0 +1,19 @@
+[
+  {
+    "schemaVersion": 1,
+    "controlSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "role": "reviewer",
+    "provider": "claude",
+    "model": "fixture-claude",
+    "idempotencyKey": "pr:42:head:review",
+    "snapshotDigest": "96fb4b1b401d90410c0a25dd2fe41af9219bca32342a644abcfcb7caaeacb6d5",
+    "cliVersion": "1.0.0",
+    "run": { "id": "run", "job": "claude", "attempt": 1 },
+    "outcome": "positive",
+    "payload": { "verdict": "approve" },
+    "payloadDigest": "c200d7ae8c395f2dc28452f2c4dd28d66be147ff81c9133a504f31d75849a0a5",
+    "patch": null,
+    "startedAt": "2026-07-28T10:00:00.000Z",
+    "completedAt": "2026-07-28T10:00:01.000Z"
+  }
+]

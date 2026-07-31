@@ -1,0 +1,245 @@
+import assert from "node:assert/strict";
+import { access, readFile } from "node:fs/promises";
+import test from "node:test";
+import { canonicalBytes, digestBytes, digestJson } from "../core.mjs";
+import {
+  OPERATIONS, PROVIDERS, defineRole, deterministicRole, listDeterministicRoles,
+  listRoles, reduceRoleArtifact, role, validateRolePayload,
+} from "../roles.mjs";
+
+const policy = {
+  name: "fixture-reviewer",
+  charter: ".claude/agents/reviewer.md",
+  mode: "quorum",
+  primary: null,
+  fallback: null,
+  providers: ["claude", "codex"],
+  providerConfig: {
+    claude: { model: "fixture-claude", effort: "high", timeoutSeconds: 300 },
+    codex: { model: "fixture-codex", effort: "high", timeoutSeconds: 300 },
+  },
+  capabilities: ["checks:write", "pulls:read"],
+  snapshot: { fields: ["diff", "pull", "reviews"], maxBytes: 262144 },
+  payload: { outcomes: ["negative", "noop", "positive", "unable"], requiredKeys: ["verdict"] },
+  operations: ["add_label", "publish_check", "remove_label", "terminal"],
+  fallbackAuthority: { protected: false, incomplete: false, fork: false, binary: false, oversized: false },
+  patch: null,
+};
+
+test("role policy is exact and deeply frozen", () => {
+  const value = defineRole(structuredClone(policy));
+  assert.deepEqual(value, policy);
+  assert.ok(Object.isFrozen(value));
+  assert.ok(Object.isFrozen(value.providerConfig.claude));
+  assert.ok(Object.isFrozen(value.operations));
+  assert.deepEqual(PROVIDERS, ["claude", "codex"]);
+  assert.ok(OPERATIONS.includes("publish_check"));
+});
+
+test("single role requires distinct primary and fallback", () => {
+  const single = {
+    ...policy,
+    mode: "single",
+    primary: "codex",
+    fallback: "claude",
+  };
+  assert.equal(defineRole(single).primary, "codex");
+  assert.throws(() => defineRole({ ...single, fallback: "codex" }), error => error?.code === "role");
+  assert.throws(() => defineRole({ ...single, fallback: null }), error => error?.code === "role");
+});
+
+test("role policy rejects implicit or unsorted authority", () => {
+  assert.throws(() => defineRole({ ...policy, surprise: true }), error => error?.code === "role");
+  assert.throws(() => defineRole({ ...policy, capabilities: ["pulls:read", "checks:write"] }), error => error?.code === "role");
+  assert.throws(() => defineRole({ ...policy, operations: ["publish_everything"] }), error => error?.code === "role");
+  assert.throws(() => defineRole({ ...policy, providerConfig: { ...policy.providerConfig, claude: { ...policy.providerConfig.claude, timeoutSeconds: 301 } } }), error => error?.code === "role");
+});
+
+test("patch policy is bounded and cannot erase global denials", () => {
+  const patch = {
+    maxBytes: 1048576,
+    maxFiles: 100,
+    allowedPrefixes: ["docs/", "smith-core/"],
+    deniedPaths: ["adw/**", "docs/SPEC.md"],
+  };
+  assert.deepEqual(defineRole({ ...policy, patch }).patch, patch);
+  assert.throws(() => defineRole({ ...policy, patch: { ...patch, maxFiles: 101 } }), error => error?.code === "role");
+  assert.throws(() => defineRole({ ...policy, patch: { ...patch, deniedPaths: [] } }), error => error?.code === "role");
+});
+
+const productionRoles = [
+  "adw-doctor", "alert-triager", "builder", "codex-builder", "dependency-manager",
+  "docs-writer", "pioneer", "planner", "reviewer", "reviser", "security-reviewer",
+  "steerer", "surveyor", "sweeper", "triager",
+];
+
+test("production role registry is complete and charter-backed", async () => {
+  assert.deepEqual(listRoles(), productionRoles);
+  for (const name of productionRoles) {
+    const value = role(name);
+    assert.equal(value.name, name);
+    assert.ok(Object.isFrozen(value));
+    await access(value.charter);
+    assert.ok(value.providerConfig[value.primary]);
+  }
+  assert.throws(() => role("release-manager"), error => error?.code === "role");
+});
+
+test("production provider routes preserve current model assignments", () => {
+  assert.deepEqual(role("planner").providerConfig.claude, { model: "claude-fable-5", effort: "xhigh", timeoutSeconds: 300 });
+  assert.deepEqual(role("planner").providerConfig.codex, { model: "gpt-5.6-sol", effort: "xhigh", timeoutSeconds: 300 });
+  assert.equal(role("codex-builder").fallback, null);
+  assert.equal(role("reviewer").fallbackAuthority.protected, false);
+  assert.deepEqual(role("sweeper").providers, ["codex"]);
+  assert.equal(role("adw-doctor").patch, null);
+  assert.deepEqual(role("pioneer").patch.allowedPrefixes, ["prototypes/"]);
+});
+
+test("role payload families accept only exact semantic artifacts", () => {
+  const patch = { baseSha: "a".repeat(40), digest: "b".repeat(64), size: 1, files: [{ path: "smith/src/lib.rs", kind: "regular", oldMode: "100644", newMode: "100644" }] };
+  const samples = {
+    steerer: { verdict: "comment", body: "Use the planner." },
+    triager: { verdict: "accept", body: "Ready", labels: ["ready"] },
+    planner: { verdict: "planned", summary: "Plan", issues: [{ title: "Slice", body: "Body", labels: ["planned"] }] },
+    surveyor: { verdict: "proposal", summary: "Gap", issues: [] },
+    builder: { verdict: "patch", summary: "Change", patch },
+    pioneer: { verdict: "disproved", summary: "False", claim: "claim", patch: null },
+    reviewer: { verdict: "approve", risk: "none", findings: [] },
+    sweeper: { verdict: "action", summary: "Retry", actions: [{ kind: "retry", entityId: "1", reason: "stale" }] },
+    "dependency-manager": { verdict: "safe", summary: "Compatible", reason: "semver" },
+    "alert-triager": { verdict: "covered", summary: "Existing PR", issue: null },
+  };
+  for (const [name, payload] of Object.entries(samples)) assert.deepEqual(validateRolePayload(name, payload), payload);
+  assert.throws(() => validateRolePayload("reviewer", { verdict: "approve", risk: "none", findings: [], command: "merge" }), error => error?.code === "contract");
+  for (const path of ["adw/core.mjs", ".claude/agents/builder.md", ".github/workflows/ci.yml"]) {
+    assert.throws(() => validateRolePayload("builder", { verdict: "patch", summary: "x", patch: { ...patch, files: [{ ...patch.files[0], path }] } }), error => error?.code === "contract");
+  }
+});
+
+test("payload schema files exist for every family", async () => {
+  for (const name of listRoles()) {
+    const schema = JSON.parse(await readFile(role(name).payloadSchema, "utf8"));
+    assert.equal(schema.$schema, "https://json-schema.org/draft/2020-12/schema");
+    assert.ok(schema.oneOf.every(shape => shape.additionalProperties === false));
+  }
+});
+
+test("conditional schemas preserve reducer authority", async () => {
+  const maintenance = JSON.parse(await readFile(role("sweeper").payloadSchema, "utf8"));
+  const action = maintenance.oneOf.find(value => value.properties.actions).properties.actions.items;
+  assert.ok(action.required.includes("kind"));
+  assert.equal(Object.hasOwn(action.properties, "verdict"), false);
+  const pioneer = JSON.parse(await readFile(role("pioneer").payloadSchema, "utf8"));
+  const disproved = pioneer.oneOf.find(value => value.properties?.verdict?.enum?.includes("disproved"));
+  assert.equal(disproved.properties.patch.type, "null");
+  const alert = JSON.parse(await readFile(role("alert-triager").payloadSchema, "utf8"));
+  const covered = alert.oneOf.find(value => value.properties?.verdict?.enum?.includes("covered"));
+  assert.equal(covered.properties.issue.type, "null");
+});
+
+test("explicit no-op is valid for every provider role", () => {
+  for (const name of listRoles()) assert.deepEqual(validateRolePayload(name, { verdict: "noop", reason: "not applicable" }), { verdict: "noop", reason: "not applicable" });
+});
+
+function roleCase(name, payload, state, patch = null, patchBytes = null) {
+  const policy = role(name);
+  state = { ...state };
+  for (const key of ["title", "body"]) if (typeof state[key] === "string") state[key] = { trust: "untrusted", source: `fixture:${key}`, bytes: canonicalBytes(state[key]).length, digest: digestJson(state[key]), data: state[key] };
+  const snapshot = {
+    schemaVersion: 1,
+    controlSha: "a".repeat(40),
+    event: { kind: "issue", action: "opened", entityId: state.entityId },
+    repository: { id: "R", owner: "bugabinga", name: "smith", defaultBranch: "main" },
+    revisions: [{ resource: `issue:${state.entityId}`, kind: "issue", token: patch?.baseSha ?? state.headSha ?? "r1" }],
+    routing: { role: name, mode: policy.mode, primary: policy.primary },
+    state,
+  };
+  const assessment = {
+    schemaVersion: 1, controlSha: snapshot.controlSha, role: name, provider: policy.primary,
+    model: policy.providerConfig[policy.primary].model, idempotencyKey: `${name}:1`,
+    snapshotDigest: digestJson(snapshot), cliVersion: "1.0.0", run: { id: "1", job: name, attempt: 1 },
+    outcome: payload.verdict === "noop" ? "noop" : ["blocked", "disproved", "inconclusive", "reject", "risky"].includes(payload.verdict) ? "negative" : "positive",
+    payload, payloadDigest: digestJson(payload), patch,
+    startedAt: "2026-07-28T00:00:00.000Z", completedAt: "2026-07-28T00:00:01.000Z",
+  };
+  const selected = digestJson(assessment);
+  return { snapshot, rolePolicy: policy, reduction: { status: "artifact", authoritative: true, selected: [selected], patch }, assessments: patch ? [{ assessment, patchBytes }] : [assessment] };
+}
+
+test("role artifacts reduce into closed decisions", () => {
+  const triage = reduceRoleArtifact(roleCase("triager", { verdict: "needs_info", body: "Clarify", labels: [] }, { entityId: "1", labels: [] }));
+  assert.deepEqual(triage.operations.map(value => value.type), ["comment", "add_label"]);
+  assert.equal(triage.operations[1].label, "needs:info");
+
+  const review = reduceRoleArtifact(roleCase("security-reviewer", { verdict: "reject", risk: "high", findings: [] }, { entityId: "2", headSha: "b".repeat(40), labels: [] }));
+  assert.equal(review.operations[0].conclusion, "failure");
+  assert.ok(review.operations.some(value => value.label === "risk:high"));
+  assert.ok(review.operations.some(value => value.type === "comment" && value.body.includes("smith:review-evidence/v1")));
+  assert.ok(review.operations.some(value => value.type === "comment" && value.body.includes("smith:risk/v1")));
+
+  const issue = { title: "Alert", body: "Fix", labels: ["security"] };
+  const alert = reduceRoleArtifact(roleCase("alert-triager", { verdict: "issue", summary: "Uncovered", issue }, { entityId: "3", labels: [] }));
+  assert.equal(alert.operations[0].type, "create_issue");
+
+  const sweep = reduceRoleArtifact(roleCase("sweeper", { verdict: "action", summary: "Retry", actions: [{ kind: "retry", entityId: "run:1", reason: "stale" }] }, { entityId: "4", labels: [], actionTargets: ["run:1"] }));
+  assert.deepEqual(sweep.operations, [{ type: "rerun_check", runId: "run:1" }]);
+  assert.throws(
+    () => reduceRoleArtifact(roleCase("sweeper", { verdict: "action", summary: "Retry", actions: [{ kind: "retry", entityId: "run:2", reason: "stale" }] }, { entityId: "4", labels: [], actionTargets: ["run:1"] })),
+    error => error?.code === "contract",
+  );
+});
+
+test("patch role decisions bind assessment metadata", () => {
+  const patchBytes = Buffer.from("x");
+  const patch = { baseSha: "b".repeat(40), digest: digestBytes(patchBytes), size: 1, files: [{ path: "smith/src/lib.rs", kind: "regular", oldMode: "100644", newMode: "100644" }] };
+  const input = roleCase("builder", { verdict: "patch", summary: "Build", patch }, { entityId: "1", labels: [], headBranch: "adw/1", baseBranch: "main", title: "Build", body: "Body" }, patch, patchBytes);
+  const decision = reduceRoleArtifact(input);
+  assert.equal(decision.kind, "patch");
+  assert.deepEqual(decision.patch, patch);
+  assert.equal(decision.operations[0].type, "create_pr");
+  assert.throws(() => reduceRoleArtifact({ ...input, reduction: { ...input.reduction, patch: null } }), error => error?.code === "contract");
+
+  const reviser = roleCase("reviser", { verdict: "patch", summary: "Revise", patch }, { entityId: "2", labels: [], changedPaths: ["smith/src/lib.rs"] }, patch, patchBytes);
+  assert.equal(reduceRoleArtifact(reviser).operations[0].type, "update_pr");
+  const escaped = roleCase("reviser", { verdict: "patch", summary: "Revise", patch }, { entityId: "2", labels: [], changedPaths: ["docs/guide.md"] }, patch, patchBytes);
+  assert.throws(() => reduceRoleArtifact(escaped), error => error?.code === "contract");
+});
+
+test("holds and unauthenticated steering fail closed", () => {
+  const held = reduceRoleArtifact(roleCase("triager", { verdict: "accept", body: "Ready", labels: [] }, { entityId: "1", labels: ["needs:spec"] }));
+  assert.equal(held.kind, "terminal");
+  assert.deepEqual(held.operations, [{ type: "terminal", reason: "held" }]);
+  assert.throws(
+    () => reduceRoleArtifact(roleCase("steerer", { verdict: "comment", body: "Answer" }, { entityId: "1", labels: [], ownerAuthenticated: false })),
+    error => error?.code === "contract",
+  );
+});
+
+test("reduction rejects forged policy and event targets", () => {
+  const input = roleCase("triager", { verdict: "accept", body: "Ready", labels: [] }, { entityId: "1", labels: [] });
+  const forged = { ...input.rolePolicy, operations: [...input.rolePolicy.operations, "arm_auto_merge"].sort() };
+  assert.throws(() => reduceRoleArtifact({ ...input, rolePolicy: forged }), error => error?.code === "contract");
+  assert.throws(
+    () => reduceRoleArtifact({ ...input, snapshot: { ...input.snapshot, event: { ...input.snapshot.event, entityId: "2" } } }),
+    error => error?.code === "contract",
+  );
+});
+
+test("pioneer verdicts preserve proof authority", () => {
+  const disproved = reduceRoleArtifact(roleCase("pioneer", { verdict: "disproved", summary: "False", claim: "claim", patch: null }, { entityId: "1", labels: [] }));
+  assert.equal(disproved.operations[0].label, "needs:spec");
+  assert.match(disproved.operations[1].body, /Falsified claim: claim/);
+  const proved = reduceRoleArtifact(roleCase("pioneer", { verdict: "proved", summary: "True", claim: "claim", patch: null }, { entityId: "1", labels: [], closingArtifactQualifies: true }));
+  assert.deepEqual(proved.operations, [{ type: "noop", reason: "already_complete" }]);
+});
+
+test("deterministic roles remain provider-free", () => {
+  assert.deepEqual(listDeterministicRoles(), ["jam-detector", "label-sync", "settings-auditor"]);
+  for (const name of listDeterministicRoles()) {
+    const value = deterministicRole(name);
+    assert.equal(value.name, name);
+    assert.ok(Object.isFrozen(value));
+    assert.equal(Object.hasOwn(value, "providers"), false);
+  }
+  assert.throws(() => deterministicRole("release-manager"), error => error?.code === "role");
+});
