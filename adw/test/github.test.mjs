@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { AdwError, digestJson } from "../core.mjs";
-import { createGitHub, deterministicSnapshotPlan, normalizeEvent, roleSnapshotPlan } from "../github.mjs";
+import { createDefaultGitHub, createGitHub, deterministicSnapshotPlan, normalizeEvent, roleSnapshotPlan } from "../github.mjs";
 import { role } from "../roles.mjs";
 
 const repository = {
@@ -13,6 +13,15 @@ const repository = {
   owner: { id: 7, login: "bugabinga" },
 };
 const sender = { id: 7, login: "bugabinga", type: "User" };
+const appIdentity = Object.freeze({ appId: "12345", slug: "smith", botUserId: "67890", login: "smith[bot]" });
+const app = Object.freeze({ id: 12345, slug: "smith" });
+const bot = Object.freeze({ id: 67890, login: "smith[bot]", type: "Bot" });
+
+function reviewMarker(roleName, kind, headSha, artifact) {
+  const semantic = `<!-- smith:review-evidence/v1 kind=${kind} head=${headSha} conclusion=approve provider=claude authoritative=true artifact=${artifact} -->`;
+  const operationDigest = digestJson({ type: "comment", entityId: "2", body: semantic, marker: semantic });
+  return `${semantic}\n<!-- smith:apply/v1 role=${roleName} decision=${"d".repeat(64)} operation=0 digest=${operationDigest} phase=complete -->`;
+}
 
 test("GitHub events normalize into forge-neutral records", async () => {
   const cases = JSON.parse(await readFile(new URL("./fixtures/events/cases.json", import.meta.url)));
@@ -36,7 +45,7 @@ function adapter(run, token = "token") {
   return createGitHub({
     repository: "bugabinga/smith",
     token,
-    appIdentity: { id: "A_1", login: "smith[bot]" },
+    appIdentity,
     ghPath: process.execPath,
     run,
     baseEnv: { PATH: "/trusted/bin", HOME: "/tmp/home", LANG: "C.UTF-8", TMPDIR: "/tmp" },
@@ -61,9 +70,35 @@ test("every provider role has a closed event snapshot plan", async () => {
 
 test("adapter rejects repository traversal segments", () => {
   assert.throws(
-    () => createGitHub({ repository: "../smith", token: null, appIdentity: { id: "A", login: "bot" }, ghPath: process.execPath, run: async () => {}, baseEnv: {} }),
+    () => createGitHub({ repository: "../smith", token: null, appIdentity, ghPath: process.execPath, run: async () => {}, baseEnv: {} }),
     error => error?.code === "contract",
   );
+});
+
+test("default adapter requires split App and bot identity environment", () => {
+  const keys = ["ADW_GH_PATH", "ADW_APP_ID", "ADW_APP_SLUG", "ADW_BOT_USER_ID", "ADW_BOT_LOGIN", "ADW_APP_LOGIN", "ADW_GITHUB_TOKEN", "ADW_GITHUB_TOKEN_REPOSITORY", "ADW_GITHUB_TOKEN_PERMISSIONS"];
+  const previous = new Map(keys.map(key => [key, process.env[key]]));
+  try {
+    for (const key of keys) delete process.env[key];
+    Object.assign(process.env, {
+      ADW_GH_PATH: process.execPath,
+      ADW_APP_ID: appIdentity.appId,
+      ADW_APP_SLUG: appIdentity.slug,
+      ADW_BOT_USER_ID: appIdentity.botUserId,
+      ADW_BOT_LOGIN: appIdentity.login,
+    });
+    const github = createDefaultGitHub("bugabinga/smith");
+    github.record({ type: "noop", reason: "unchanged" });
+    assert.equal(github.intents().length, 1);
+    delete process.env.ADW_BOT_LOGIN;
+    process.env.ADW_APP_LOGIN = appIdentity.login;
+    assert.throws(() => createDefaultGitHub("bugabinga/smith"), error => error?.code === "contract" && error.message === "App identity is unavailable");
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test("closed reads use exact gh argv and environment", async () => {
@@ -79,7 +114,10 @@ test("closed reads use exact gh argv and environment", async () => {
   assert.equal(calls[0].env.GH_HOST, "github.com");
   assert.equal(Object.hasOwn(calls[0].env, "CLAUDE_CODE_OAUTH_TOKEN"), false);
   assert.equal(github.get, undefined);
+  assert.equal(github.request, undefined);
+  assert.equal(github.endpoint, undefined);
   assert.equal(github.repository, undefined);
+  assert.equal(typeof github.applyOperation, "function");
 });
 
 test("paginated reads keep REST IDs stable across webhook and API payloads", async () => {
@@ -104,7 +142,7 @@ test("paginated reads keep REST IDs stable across webhook and API payloads", asy
     throw new Error(`unexpected ${endpoint}`);
   });
   const event = normalizeEvent("issue_comment", { action: "created", repository: dualRepository, sender: dualSender, issue: { number: 1 }, comment: { id: 1, node_id: "IC_1", updated_at: "2026-07-28T00:00:00.000Z" } });
-  const snapshot = await github.readRoleSnapshot(event, role("steerer"), { controlSha: "a".repeat(40), appId: "A_1" });
+  const snapshot = await github.readRoleSnapshot(event, role("steerer"), { controlSha: "a".repeat(40), appId: appIdentity.appId });
   assert.equal(snapshot.state.resources["issue:1:comments"].length, 101);
   assert.equal(snapshot.state.ownerAuthenticated, true);
   assert.equal(commentPage, 2);
@@ -123,7 +161,7 @@ test("workflow run pagination unwraps GitHub collection objects", async () => {
     throw new Error(`unexpected ${endpoint}`);
   });
   const event = normalizeEvent("schedule", { schedule: "0 * * * *", repository, sender });
-  const snapshot = await github.readRoleSnapshot(event, role("adw-doctor"), { controlSha: "a".repeat(40), appId: "A_1" });
+  const snapshot = await github.readRoleSnapshot(event, role("adw-doctor"), { controlSha: "a".repeat(40), appId: appIdentity.appId });
   assert.equal(snapshot.state.resources.runs[0].id, "1");
 });
 
@@ -165,13 +203,13 @@ test("role snapshots protect rename sources and instruction surfaces", async () 
     throw new Error(`unexpected ${endpoint}`);
   });
   const event = normalizeEvent("pull_request", { action: "synchronize", repository, sender, pull_request: { number: 2, head: { sha, repo: { full_name: "bugabinga/smith" } }, base: { ref: "main" }, updated_at: "2026-07-28T00:00:00.000Z" } });
-  const snapshot = await github.readRoleSnapshot(event, role("reviewer"), { controlSha: "a".repeat(40), appId: "A_1" });
+  const snapshot = await github.readRoleSnapshot(event, role("reviewer"), { controlSha: "a".repeat(40), appId: appIdentity.appId });
   assert.equal(snapshot.state.resources["pull:2"].body.trust, "untrusted");
   assert.equal(snapshot.state.resources["trusted:.claude/agents/reviewer.md"].trust, "trusted");
   assert.equal(snapshot.state.input.protected, true);
   for (const path of ["CLAUDE.md", "docs/research/CLAUDE.md", "AGENTS.md", ".agents/skills/smith/SKILL.md", ".pi/prompts/smith.md"]) {
     changedFile = { filename: path, status: "modified", additions: 1, deletions: 1, patch: "@@" };
-    assert.equal((await github.readRoleSnapshot(event, role("reviewer"), { controlSha: "a".repeat(40), appId: "A_1" })).state.input.protected, true, path);
+    assert.equal((await github.readRoleSnapshot(event, role("reviewer"), { controlSha: "a".repeat(40), appId: appIdentity.appId })).state.input.protected, true, path);
   }
   assert.equal(snapshot.state.headSha, sha);
   assert.equal(snapshot.state.ownerAuthenticated, false);
@@ -179,7 +217,7 @@ test("role snapshots protect rename sources and instruction surfaces", async () 
   assert.ok(calls.some(value => value.endsWith(`/contents/.claude/agents/reviewer.md?ref=${"a".repeat(40)}`)));
   assert.equal(calls.some(value => value.includes("--paginate")), false);
   await assert.rejects(
-    () => github.readRoleSnapshot({ ...event, revisionHints: { ...event.revisionHints, headSha: "d".repeat(40) } }, role("reviewer"), { controlSha: "a".repeat(40), appId: "A_1" }),
+    () => github.readRoleSnapshot({ ...event, revisionHints: { ...event.revisionHints, headSha: "d".repeat(40) } }, role("reviewer"), { controlSha: "a".repeat(40), appId: appIdentity.appId }),
     error => error?.code === "forge" && error.message === "stale",
   );
 });
@@ -202,14 +240,14 @@ test("builder snapshot binds patch base and untrusted PR metadata", async () => 
     throw new Error(`unexpected ${endpoint}`);
   });
   const event = normalizeEvent("issues", { action: "labeled", repository, sender, issue: { number: 1, updated_at: "2026-07-28T00:00:00.000Z" } });
-  const snapshot = await github.readRoleSnapshot(event, role("builder"), { controlSha: "a".repeat(40), appId: "A_1" });
+  const snapshot = await github.readRoleSnapshot(event, role("builder"), { controlSha: "a".repeat(40), appId: appIdentity.appId });
   assert.equal(snapshot.state.baseBranch, "main");
   assert.equal(snapshot.state.headBranch, "claude/issue-1");
   assert.equal(snapshot.state.title.trust, "untrusted");
   assert.equal(snapshot.state.body.data, "Untrusted body\n\nCloses #1");
   assert.ok(snapshot.revisions.some(value => value.token === baseSha));
   issueNumber = -1;
-  await assert.rejects(() => github.readRoleSnapshot(event, role("builder"), { controlSha: "a".repeat(40), appId: "A_1" }), error => error?.code === "contract" && error.message === "issue is malformed");
+  await assert.rejects(() => github.readRoleSnapshot(event, role("builder"), { controlSha: "a".repeat(40), appId: appIdentity.appId }), error => error?.code === "contract" && error.message === "issue is malformed");
 });
 
 test("list-derived merged pulls retain post-merge obligations", async () => {
@@ -226,7 +264,7 @@ test("list-derived merged pulls retain post-merge obligations", async () => {
     throw new Error(`unexpected ${endpoint}`);
   });
   const event = normalizeEvent("schedule", { schedule: "0 * * * *", repository, sender });
-  const snapshot = await github.readDeterministicSnapshot(event, "jam-detector", { controlSha: "a".repeat(40), appId: "A_1" });
+  const snapshot = await github.readDeterministicSnapshot(event, "jam-detector", { controlSha: "a".repeat(40), appId: appIdentity.appId });
   assert.equal(snapshot.state.resources.pulls[0].merged, true);
   assert.deepEqual(snapshot.state.resources.pulls[0].obligations.map(value => value.role), ["linked-work", "docs-writer"]);
 });
@@ -243,12 +281,17 @@ test("maintenance snapshots enrich open pulls with merge state and current check
     if (endpoint === "/repos/bugabinga/smith/pulls/2") return reply({ ...pull, mergeable_state: "blocked" });
     if (endpoint.startsWith("/repos/bugabinga/smith/pulls/2/files?")) return reply([]);
     if (endpoint.startsWith(`/repos/bugabinga/smith/commits/${headSha}/check-runs?`)) return reply({ check_runs: [{ id: 1, name: "check", head_sha: headSha, status: "completed", conclusion: "success" }, { id: 2, name: "merge-gate", head_sha: headSha, status: "completed", conclusion: "success" }] });
-    if (endpoint.startsWith("/repos/bugabinga/smith/issues/2/comments?")) return reply([{ id: 10, user: { id: 9, login: "smith[bot]", type: "Bot" }, created_at: "2026-07-28T00:00:00Z", body: `Review: ${headSha}\nVERDICT: reviewed` }, { id: 11, user: { id: 9, login: "smith[bot]", type: "Bot" }, created_at: "2026-07-28T00:00:01Z", body: `Security review: ${headSha}\nVERDICT: security-cleared` }]);
+    if (endpoint.startsWith("/repos/bugabinga/smith/issues/2/comments?")) return reply([
+      { id: 10, user: bot, created_at: "2026-07-28T00:00:00.000Z", body: reviewMarker("reviewer", "correctness", headSha, "1".repeat(64)) },
+      { id: 11, user: bot, created_at: "2026-07-28T00:00:01.000Z", body: reviewMarker("security-reviewer", "security", headSha, "2".repeat(64)) },
+      { id: 12, user: bot, created_at: "2026-07-28T00:00:02.000Z", body: `<!-- smith:review-evidence/v1 kind=security head=${headSha} conclusion=approve provider=claude authoritative=true artifact=${"3".repeat(64)} -->` },
+      { id: 13, user: bot, created_at: "2026-07-28T00:00:03.000Z", body: reviewMarker("reviewer", "security", headSha, "4".repeat(64)) },
+    ]);
     if (endpoint.startsWith("/repos/bugabinga/smith/actions/runs?")) return reply({ workflow_runs: [] });
     throw new Error(`unexpected ${endpoint}`);
   });
   const event = normalizeEvent("schedule", { schedule: "0 * * * *", repository, sender });
-  const snapshot = await github.readDeterministicSnapshot(event, "jam-detector", { controlSha: "a".repeat(40), appId: "A_1" });
+  const snapshot = await github.readDeterministicSnapshot(event, "jam-detector", { controlSha: "a".repeat(40), appId: appIdentity.appId });
   assert.equal(snapshot.state.resources.pulls[0].mergeState, "blocked");
   assert.deepEqual(snapshot.state.resources.pulls[0].checks.map(value => value.name), ["check", "merge-gate"]);
   assert.deepEqual(snapshot.state.resources.pulls[0].evidence.map(value => value.kind), ["correctness", "security"]);
@@ -267,33 +310,33 @@ test("deterministic settings snapshot binds expected and full live rulesets", as
     throw new Error(`unexpected ${endpoint}`);
   });
   const event = normalizeEvent("schedule", { schedule: "0 * * * *", repository, sender });
-  const snapshot = await github.readDeterministicSnapshot(event, "settings-auditor", { controlSha: "a".repeat(40), appId: "A_1" });
+  const snapshot = await github.readDeterministicSnapshot(event, "settings-auditor", { controlSha: "a".repeat(40), appId: appIdentity.appId });
   assert.equal(snapshot.routing.role, "settings-auditor");
   assert.equal(snapshot.state.resources["trusted:.github/rulesets/main.json"].trust, "trusted");
   assert.equal(snapshot.state.resources.rulesets[0].enforcement, "active");
   assert.equal(snapshot.state.resources.rulesets[0].rules[0].parameters.strict_required_status_checks_policy, false);
-  const replay = await github.readDeterministicSnapshot(event, "settings-auditor", { controlSha: "a".repeat(40), appId: "A_1" });
+  const replay = await github.readDeterministicSnapshot(event, "settings-auditor", { controlSha: "a".repeat(40), appId: appIdentity.appId });
   assert.deepEqual(replay, snapshot);
   assert.equal(digestJson(replay), digestJson(snapshot));
   ruleset.id = 2;
-  await assert.rejects(() => github.readDeterministicSnapshot(event, "settings-auditor", { controlSha: "a".repeat(40), appId: "A_1" }), error => error?.code === "contract");
+  await assert.rejects(() => github.readDeterministicSnapshot(event, "settings-auditor", { controlSha: "a".repeat(40), appId: appIdentity.appId }), error => error?.code === "contract");
   ruleset.id = 1;
   ruleset.rules = [{ type: "unknown_owner_policy" }];
-  await assert.rejects(() => github.readDeterministicSnapshot(event, "settings-auditor", { controlSha: "a".repeat(40), appId: "A_1" }), error => error?.code === "contract");
+  await assert.rejects(() => github.readDeterministicSnapshot(event, "settings-auditor", { controlSha: "a".repeat(40), appId: appIdentity.appId }), error => error?.code === "contract");
 });
 
 test("role snapshot rejects repository drift and untrusted App identity", async () => {
   const github = adapter(async () => ({ code: 0, signal: null, stdout: JSON.stringify({ id: 99, node_id: "R_other", owner: { id: 7, login: "bugabinga" }, name: "smith", default_branch: "main" }), stderr: "" }));
   const event = normalizeEvent("schedule", { schedule: "0 * * * *", repository, sender });
-  await assert.rejects(() => github.readRoleSnapshot(event, role("surveyor"), { controlSha: "a".repeat(40), appId: "A_1" }), error => error?.code === "contract");
+  await assert.rejects(() => github.readRoleSnapshot(event, role("surveyor"), { controlSha: "a".repeat(40), appId: appIdentity.appId }), error => error?.code === "contract");
   await assert.rejects(() => github.readRoleSnapshot(event, role("surveyor"), { controlSha: "a".repeat(40), appId: "wrong" }), error => error?.code === "contract");
 });
 
 test("HTTP failures become sanitized forge classes", async () => {
   for (const [status, reason] of [[404, "not_found"], [401, "auth"], [403, "forbidden"], [429, "rate_limit"], [500, "server"]]) {
-    const github = adapter(async () => { throw new AdwError("provider", "exit", { httpStatus: status }); });
+    const github = adapter(async () => { throw new AdwError("provider", `secret-provider-${status}`, { httpStatus: status, token: "leaked-token" }); });
     const event = normalizeEvent("schedule", { schedule: "0 * * * *", repository, sender });
-    await assert.rejects(() => github.readSnapshot(event), error => error?.code === "forge" && error.message === reason);
+    await assert.rejects(() => github.readSnapshot(event), error => error?.code === "forge" && error.message === reason && !JSON.stringify(error).includes("leaked-token") && !JSON.stringify(error).includes("secret-provider"));
   }
 });
 

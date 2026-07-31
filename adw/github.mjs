@@ -1,5 +1,5 @@
 import { isAbsolute } from "node:path";
-import { AdwError, canonicalBytes, digestJson, validateOperation, validateSnapshot } from "./core.mjs";
+import { AdwError, canonicalBytes, digestJson, holdReasons, validateDecision, validateOperation, validateSnapshot, validateVerification } from "./core.mjs";
 import { OPERATIONS, deterministicRole, role } from "./roles.mjs";
 import { runProcess } from "./providers.mjs";
 
@@ -10,6 +10,80 @@ const EVENTS = new Set([
 ]);
 
 const ADAPTER_READ_CAPABILITIES = Object.freeze(["actions:read", "alerts:read", "checks:read", "issues:read", "pulls:read", "repository:read", "settings:read"]);
+const GITHUB_WRITE_OPERATIONS = new Set([
+  "comment", "add_label", "remove_label", "create_issue", "update_issue", "close_issue",
+  "create_milestone", "update_milestone", "close_milestone", "assign_milestone", "link_sub_issue",
+  "create_pr", "update_pr", "publish_check", "rerun_check", "dispatch_workflow", "arm_auto_merge",
+  "sync_labels", "report_drift", "noop", "terminal",
+]);
+const ISSUE_WRITES = new Set([
+  "comment", "add_label", "remove_label", "create_issue", "update_issue", "close_issue",
+  "create_milestone", "update_milestone", "close_milestone", "assign_milestone", "link_sub_issue", "report_drift",
+]);
+export const GITHUB_OPERATION_TRANSITIONS = Object.freeze(Object.fromEntries(
+  [...GITHUB_WRITE_OPERATIONS].sort().map(type => [type, Object.freeze(["original", "prepared", "post"])]),
+));
+
+export function operationCapabilities(operation, snapshot = null) {
+  const type = operation?.type;
+  if (!GITHUB_WRITE_OPERATIONS.has(type)) throw new AdwError("contract", "operation is not GitHub-owned");
+  const capabilities = new Set();
+  if (ISSUE_WRITES.has(type)) capabilities.add("issues:write");
+  else if (type === "create_pr" || type === "update_pr") capabilities.add("pulls:write");
+  else if (type === "publish_check") capabilities.add("checks:write");
+  else if (type === "rerun_check" || type === "dispatch_workflow") { capabilities.add("actions:write"); capabilities.add("checks:write"); }
+  else if (type === "arm_auto_merge") { capabilities.add("checks:read"); capabilities.add("issues:read"); capabilities.add("pulls:write"); }
+  else if (type === "sync_labels") { capabilities.add("contents:read"); capabilities.add("issues:write"); }
+  const readCapability = resource => {
+    if (resource === "repository") return "repository:read";
+    if (resource.startsWith("trusted:") || resource.startsWith("patch-base:") || resource.startsWith("ref:")) return "contents:read";
+    if (resource === "issues" || resource === "labels" || resource === "milestones" || resource.startsWith("issue:")) return "issues:read";
+    if (resource === "pulls" || resource.startsWith("pull:")) return resource.endsWith(":checks") ? ["checks:read", "pulls:read"] : "pulls:read";
+    if (resource === "runs") return "actions:read";
+    if (resource === "alerts") return "alerts:read";
+    if (resource === "rulesets") return "settings:read";
+    return null;
+  };
+  if (snapshot !== null) contract(Array.isArray(snapshot?.revisions), "snapshot revisions are invalid");
+  for (const revision of snapshot?.revisions ?? []) {
+    contract(typeof revision?.resource === "string", "snapshot revision is invalid");
+    const needed = readCapability(revision.resource);
+    for (const capability of Array.isArray(needed) ? needed : [needed]) {
+      if (capability !== null && !capabilities.has(capability.replace(":read", ":write"))) capabilities.add(capability);
+    }
+  }
+  return Object.freeze([...capabilities].sort());
+}
+
+const REVISION_DIGEST = /^[0-9a-f]{64}$/;
+
+function validateOperationReceipt(operation, entry, expectedBefore) {
+  const transition = GITHUB_OPERATION_TRANSITIONS[operation.type];
+  if (transition?.join("→") !== "original→prepared→post") throw new AdwError("contract", "operation transition is unavailable");
+  if (!entry || Array.isArray(entry) || Object.getPrototypeOf(entry) !== Object.prototype || Object.keys(entry).sort().join(",") !== "afterRevision,beforeRevision,operationDigest,preparedRevision,status") throw new AdwError("contract", "apply operation receipt is invalid");
+  const actionTransition = operation.type === "rerun_check" || operation.type === "dispatch_workflow";
+  if (entry.operationDigest !== digestJson(operation) || entry.status !== "complete" || entry.beforeRevision !== expectedBefore || !REVISION_DIGEST.test(entry.preparedRevision) || !REVISION_DIGEST.test(entry.afterRevision) || (!actionTransition && entry.preparedRevision !== entry.afterRevision)) throw new AdwError("contract", "apply operation receipt is invalid");
+  return Object.freeze({ operationDigest: entry.operationDigest, status: "complete", beforeRevision: entry.beforeRevision, preparedRevision: entry.preparedRevision, afterRevision: entry.afterRevision });
+}
+
+function unchangedReceipt(operation, revision) {
+  return Object.freeze({ operationDigest: digestJson(operation), status: "complete", beforeRevision: revision, preparedRevision: revision, afterRevision: revision });
+}
+
+export function createApplyReceipt({ decision, snapshot, verification, operations }) {
+  const trustedSnapshot = validateSnapshot(snapshot);
+  const canonicalDecision = validateDecision(decision);
+  const proof = validateVerification(verification);
+  if (canonicalDecision.controlSha !== trustedSnapshot.controlSha || canonicalDecision.snapshotDigest !== digestJson(trustedSnapshot) || proof.controlSha !== trustedSnapshot.controlSha || proof.decisionDigest !== digestJson(canonicalDecision) || proof.preconditionDigest !== digestJson(trustedSnapshot.revisions)) throw new AdwError("contract", "apply receipt authority does not match");
+  if (!Array.isArray(operations) || operations.length > canonicalDecision.operations.length) throw new AdwError("contract", "apply operations are invalid");
+  let expectedBefore = proof.preconditionDigest;
+  const entries = operations.map((entry, index) => {
+    const canonical = validateOperationReceipt(canonicalDecision.operations[index], entry, expectedBefore);
+    expectedBefore = canonical.afterRevision;
+    return canonical;
+  });
+  return Object.freeze({ decisionDigest: proof.decisionDigest, verificationDigest: digestJson(proof), operations: Object.freeze(entries) });
+}
 const FIELD_CAPABILITY = Object.freeze({
   repository: "repository:read", issue: "issues:read", issues: "issues:read", claim: "issues:read", spec: "issues:read", spec_change: "issues:read", labels: "issues:read", milestones: "issues:read", comment: "issues:read", entity: "issues:read", owner: "issues:read", route: "issues:read",
   pull: "pulls:read", pulls: "pulls:read", diff: "pulls:read", files: "pulls:read", reviews: "pulls:read", security: "pulls:read", changed_paths: "pulls:read", findings: "pulls:read", docs: "pulls:read", dependency: "pulls:read",
@@ -49,6 +123,76 @@ function text(value, name) {
 function restId(value, name) {
   contract(Number.isSafeInteger(value) && value > 0, `${name} is required`);
   return String(value);
+}
+
+function githubIdentity(value) {
+  contract(value && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype && Object.keys(value).sort().join(",") === "appId,botUserId,login,slug", "App identity is invalid");
+  for (const key of ["appId", "botUserId"]) {
+    contract(typeof value[key] === "string" && /^[1-9][0-9]*$/.test(value[key]) && Number.isSafeInteger(Number(value[key])), "App identity is invalid");
+  }
+  contract(typeof value.slug === "string" && /^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/.test(value.slug), "App identity is invalid");
+  contract(typeof value.login === "string" && /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\[bot\]$/.test(value.login), "App identity is invalid");
+  return value;
+}
+
+const APPLY_PAIR = /^<!-- smith:apply\/v1 role=([a-z][a-z0-9-]*) decision=([0-9a-f]{64}) operation=(0|[1-9][0-9]*) digest=([0-9a-f]{64}) phase=complete -->$/;
+const REVIEW_MARKER = /^<!-- smith:review-evidence\/v1 kind=(correctness|security) head=([0-9a-f]{40}) conclusion=(approve|reject) provider=(claude|codex) authoritative=true artifact=([0-9a-f]{64}) -->$/;
+const RISK_MARKER = /^<!-- smith:risk\/v1 head=([0-9a-f]{40}) finding=([0-9a-f]{64}) status=(open|cleared) created=([^ ]+) cleared=([^ ]+) -->$/;
+
+function pairedSemanticMarker(comment, entityId) {
+  if (typeof comment?.body !== "string") return null;
+  const lines = comment.body.split("\n");
+  if (lines.length !== 2) return null;
+  const apply = APPLY_PAIR.exec(lines[1]);
+  if (apply === null) return null;
+  const operationDigest = digestJson({ type: "comment", entityId: String(entityId), body: lines[0], marker: lines[0] });
+  const operationIndex = Number(apply[3]);
+  if (apply[4] !== operationDigest || !Number.isSafeInteger(operationIndex)) return null;
+  return Object.freeze({ semantic: lines[0], role: apply[1], decisionDigest: apply[2], operationIndex, operationDigest });
+}
+
+function parsedReviewMarker(comment, headSha, prId, identity) {
+  const pair = pairedSemanticMarker(comment, prId);
+  if (pair === null) return null;
+  const marker = REVIEW_MARKER.exec(pair.semantic);
+  if (marker === null || marker[2] !== headSha) return null;
+  const expectedRole = marker[1] === "correctness" ? "reviewer" : "security-reviewer";
+  const authored = String(comment.user?.id ?? "") === identity.botUserId && comment.user?.login === identity.login && comment.user?.type === "Bot";
+  if (!authored || pair.role !== expectedRole) return null;
+  return Object.freeze({ kind: marker[1], headSha, conclusion: marker[3], provider: marker[4], artifactDigest: marker[5] });
+}
+
+export function validateAutoMergeMarkers({ comments, headSha, prId, appIdentity, ownerIds, ownerLogin }) {
+  const identity = githubIdentity(appIdentity);
+  contract(Array.isArray(comments) && comments.length < 100, "auto-merge comments are invalid");
+  contract(typeof headSha === "string" && /^[0-9a-f]{40}$/.test(headSha), "auto-merge head is invalid");
+  contract(typeof prId === "string" && /^[1-9][0-9]*$/.test(prId), "auto-merge pull is invalid");
+  contract(Array.isArray(ownerIds) && ownerIds.every(id => typeof id === "string" && /^[1-9][0-9]*$/.test(id)), "auto-merge owners are invalid");
+  text(ownerLogin, "repository owner");
+  const reviews = comments.map(comment => parsedReviewMarker(comment, headSha, prId, identity)).filter(Boolean);
+  for (const kind of ["correctness", "security"]) {
+    const matches = reviews.filter(review => review.kind === kind);
+    if (matches.length !== 1 || matches[0].conclusion !== "approve") throw new AdwError("stale", "auto-merge evidence failed");
+  }
+  const validTime = value => typeof value === "string" && Number.isFinite(Date.parse(value));
+  const ownerSet = new Set(ownerIds);
+  const risks = comments.map(comment => {
+    const pair = pairedSemanticMarker(comment, prId);
+    if (pair === null) return null;
+    const marker = RISK_MARKER.exec(pair.semantic);
+    if (marker === null || marker[1] !== headSha) return null;
+    return { comment, role: pair.role, finding: marker[2], status: marker[3], created: marker[4], cleared: marker[5] };
+  }).filter(Boolean);
+  for (const opened of risks.filter(risk => risk.status === "open")) {
+    const appAuthored = String(opened.comment.user?.id ?? "") === identity.botUserId && opened.comment.user?.login === identity.login && opened.comment.user?.type === "Bot";
+    if (!appAuthored) continue;
+    if (opened.role !== "security-reviewer" || opened.cleared !== "-" || !validTime(opened.created) || !validTime(opened.comment.created_at) || Date.parse(opened.comment.created_at) < Date.parse(opened.created)) throw new AdwError("stale", "auto-merge sticky risk is not owner-cleared");
+    const cleared = risks.some(risk => risk.status === "cleared" && risk.finding === opened.finding && risk.created === opened.created && validTime(risk.cleared) && validTime(risk.comment.created_at)
+      && Date.parse(risk.cleared) >= Date.parse(opened.created) && Date.parse(risk.comment.created_at) >= Date.parse(opened.comment.created_at)
+      && ownerSet.has(String(risk.comment.user?.id ?? "")) && risk.comment.user?.login === ownerLogin && risk.comment.user?.type === "User");
+    if (!cleared) throw new AdwError("stale", "auto-merge sticky risk is not owner-cleared");
+  }
+  return Object.freeze({ correctness: "approve", security: "approve" });
 }
 
 function repositoryOf(payload) {
@@ -127,32 +271,60 @@ function forgeReason(status) {
 export function createGitHub({ repository, token, appIdentity, ghPath, run = runProcess, baseEnv }) {
   contract(typeof repository === "string" && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository), "repository is invalid");
   contract(repository.split("/").every(segment => segment !== "." && segment !== ".."), "repository is invalid");
-  contract(typeof token === "string" || token === null, "token is invalid");
-  contract(appIdentity && typeof appIdentity.id === "string" && typeof appIdentity.login === "string", "App identity is invalid");
+  contract(typeof token === "string" || typeof token === "function" || (token && !Array.isArray(token) && Object.getPrototypeOf(token) === Object.prototype) || token === null, "token is invalid");
+  appIdentity = Object.freeze({ ...githubIdentity(appIdentity) });
   contract(typeof ghPath === "string" && isAbsolute(ghPath), "gh path is invalid");
   const [owner, name] = repository.split("/");
   const intentsByDigest = new Map();
   const env = {};
   for (const key of ["PATH", "HOME", "LANG", "TMPDIR"]) if (typeof baseEnv?.[key] === "string") env[key] = baseEnv[key];
-  if (token !== null) env.GH_TOKEN = token;
+  if (typeof token === "string") env.GH_TOKEN = token;
   env.GH_HOST = "github.com";
   env.NO_COLOR = "1";
+  let activeApplyToken = null;
+  let applyActive = false;
+  const requestEnv = () => activeApplyToken === null ? env : Object.freeze({ ...env, GH_TOKEN: activeApplyToken });
 
   async function page(endpoint) {
     let result;
     try {
-      result = await run({ file: ghPath, args: ["api", "--method", "GET", endpoint], cwd: process.cwd(), env, input: "", timeoutMs: 120_000, maxOutputBytes: 1_048_576, captureHttpStatus: true });
+      result = await run({ file: ghPath, args: ["api", "--method", "GET", endpoint], cwd: process.cwd(), env: requestEnv(), input: "", timeoutMs: 120_000, maxOutputBytes: 1_048_576, captureHttpStatus: true });
     } catch (error) {
       throw new AdwError("forge", forgeReason(error?.details?.httpStatus ?? 0));
     }
     try { return JSON.parse(result.stdout); } catch { throw new AdwError("forge", "malformed"); }
   }
 
+  async function mutate(method, endpoint, body) {
+    let result;
+    try {
+      result = await run({ file: ghPath, args: ["api", "--method", method, endpoint, "--input", "-"], cwd: process.cwd(), env: requestEnv(), input: canonicalBytes(body).toString("utf8"), timeoutMs: 120_000, maxOutputBytes: 1_048_576, captureHttpStatus: true });
+    } catch (error) {
+      throw new AdwError("forge", forgeReason(error?.details?.httpStatus ?? 0));
+    }
+    if (result.stdout === "" || result.stdout === undefined) return null;
+    try { return JSON.parse(result.stdout); } catch { throw new AdwError("forge", "malformed"); }
+  }
+
+  const ENABLE_AUTO_MERGE_MUTATION = "mutation EnablePullRequestAutoMerge($pullRequestId:ID!){enablePullRequestAutoMerge(input:{pullRequestId:$pullRequestId,mergeMethod:SQUASH}){pullRequest{id}}}";
+  async function enablePullRequestAutoMerge(pullRequestId) {
+    contract(typeof pullRequestId === "string" && /^[A-Za-z0-9_=-]+$/.test(pullRequestId), "pull node ID is invalid");
+    let result;
+    try {
+      result = await run({ file: ghPath, args: ["api", "graphql", "--method", "POST", "--input", "-"], cwd: process.cwd(), env: requestEnv(), input: canonicalBytes({ query: ENABLE_AUTO_MERGE_MUTATION, variables: { pullRequestId } }).toString("utf8"), timeoutMs: 120_000, maxOutputBytes: 1_048_576, captureHttpStatus: true });
+    } catch (error) {
+      throw new AdwError("forge", forgeReason(error?.details?.httpStatus ?? 0));
+    }
+    let response;
+    try { response = JSON.parse(result.stdout); } catch { throw new AdwError("forge", "malformed"); }
+    if (!response || !response.data?.enablePullRequestAutoMerge?.pullRequest || (Array.isArray(response.errors) && response.errors.length > 0)) throw new AdwError("forge", "api");
+  }
+
   const CLOSING_ISSUES_QUERY = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){closingIssuesReferences(first:100){nodes{number repository{databaseId}} pageInfo{hasNextPage}}}}}";
   async function closingIssues(number) {
     let result;
     try {
-      result = await run({ file: ghPath, args: ["api", "graphql", "-f", `query=${CLOSING_ISSUES_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${positiveInteger(number)}`], cwd: process.cwd(), env, input: "", timeoutMs: 120_000, maxOutputBytes: 1_048_576, captureHttpStatus: true });
+      result = await run({ file: ghPath, args: ["api", "graphql", "-f", `query=${CLOSING_ISSUES_QUERY}`, "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${positiveInteger(number)}`], cwd: process.cwd(), env: requestEnv(), input: "", timeoutMs: 120_000, maxOutputBytes: 1_048_576, captureHttpStatus: true });
     } catch (error) { throw new AdwError("forge", forgeReason(error?.details?.httpStatus ?? 0)); }
     let value;
     try { value = JSON.parse(result.stdout)?.data?.repository?.pullRequest?.closingIssuesReferences; } catch { throw new AdwError("forge", "malformed"); }
@@ -336,16 +508,63 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     });
   };
   const normalizeRun = value => Object.freeze({ id: restId(value.id, "run id"), name: text(value.name, "run name"), event: text(value.event, "run event"), status: text(value.status, "run status"), conclusion: value.conclusion === null ? null : text(value.conclusion, "run conclusion"), headSha: text(value.head_sha, "run head"), attempt: Number(value.run_attempt ?? 1) });
-  const reviewEvidence = (comments, headSha) => {
-    const evidence = [];
-    for (const comment of comments) {
-      if (comment.user?.login !== appIdentity.login || comment.user?.type !== "Bot" || typeof comment.body !== "string") continue;
-      let match = /^(Review|Security review): ([0-9a-f]{40})\nVERDICT: (reviewed|changes-requested|security-cleared|risk-high)(?:\n|$)/.exec(comment.body);
-      if (match && match[2] === headSha) evidence.push({ kind: match[1] === "Review" ? "correctness" : "security", headSha, conclusion: new Set(["reviewed", "security-cleared"]).has(match[3]) ? "approve" : "reject" });
-      match = /^<!-- smith:review-evidence\/v1 kind=(correctness|security) head=([0-9a-f]{40}) conclusion=(approve|reject) provider=(claude|codex) authoritative=true artifact=([0-9a-f]{64}) -->$/.exec(comment.body);
-      if (match && match[2] === headSha) evidence.push({ kind: match[1], headSha, conclusion: match[3] });
+  const reviewEvidence = (comments, headSha, prId) => comments
+    .map(comment => parsedReviewMarker(comment, headSha, prId, appIdentity))
+    .filter(Boolean)
+    .map(marker => Object.freeze({ kind: marker.kind, headSha: marker.headSha, conclusion: marker.conclusion }));
+  const numericId = (value, name) => {
+    contract(typeof value === "string" && /^[1-9][0-9]*$/.test(value), `${name} is invalid`);
+    const number = Number(value);
+    contract(Number.isSafeInteger(number), `${name} is invalid`);
+    return number;
+  };
+  const safeSegment = (value, name) => {
+    contract(typeof value === "string" && /^[A-Za-z0-9_.-]+$/.test(value), `${name} is invalid`);
+    return value;
+  };
+  const markedBody = (body, marker) => body.includes(marker) ? body : `${body}\n\n${marker}`;
+  const markerMatches = (records, marker, expected, field = "body") => {
+    const matches = records.filter(record => typeof record?.[field] === "string" && record[field].includes(marker));
+    if (matches.length > 1) throw new AdwError("stale", "conflicting forge marker");
+    if (matches.length === 0) return false;
+    if (!expected(matches[0])) throw new AdwError("stale", "conflicting forge marker");
+    return true;
+  };
+  const labelValue = value => typeof value === "string" ? value : value?.name;
+  const exactLiveLabels = value => Array.isArray(value?.labels) ? value.labels.map(labelValue) : [];
+  const parseLabelDefinitions = data => {
+    let definitions;
+    try { definitions = JSON.parse(data); } catch {
+      definitions = [];
+      let current = null;
+      const decode = raw => {
+        const value = raw.trim();
+        if (value.startsWith('"') && value.endsWith('"')) {
+          try { return JSON.parse(value); } catch { throw new AdwError("contract", "trusted label definitions are malformed"); }
+        }
+        return value;
+      };
+      for (const sourceLine of data.split(/\r?\n/)) {
+        const line = sourceLine.trim();
+        if (line === "" || line.startsWith("#")) continue;
+        let match = /^- name:\s*(.+)$/.exec(line);
+        if (match) { current = { name: decode(match[1]) }; definitions.push(current); continue; }
+        match = /^(color|description):\s*(.*)$/.exec(line);
+        if (!match || current === null) throw new AdwError("contract", "trusted label definitions are malformed");
+        current[match[1]] = decode(match[2]);
+      }
     }
-    return evidence;
+    contract(Array.isArray(definitions) && definitions.length <= 100, "trusted label definitions are malformed");
+    const names = new Set();
+    for (const definition of definitions) {
+      exactObject(definition, ["name", "color", "description"], "label definition");
+      contract(typeof definition.name === "string" && definition.name.length > 0 && definition.name.length <= 50, "label definition is malformed");
+      contract(typeof definition.color === "string" && /^[0-9a-fA-F]{6}$/.test(definition.color), "label definition is malformed");
+      contract(typeof definition.description === "string" && definition.description.length <= 4096, "label definition is malformed");
+      contract(!names.has(definition.name), "label definitions contain duplicates");
+      names.add(definition.name);
+    }
+    return definitions.map(value => Object.freeze({ name: value.name, color: value.color.toLowerCase(), description: value.description }));
   };
   const enrichPull = async (raw, files = null, maintenance = false) => {
     const initial = normalizePull(raw);
@@ -357,7 +576,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     const obligations = pull.merged ? ["linked-work", "docs-writer"].map(roleName => Object.freeze({ role: roleName, status: "missing", artifactDigest: null, expectedArtifactDigest: null })) : [];
     const checks = maintenance && !pull.merged ? (await methods.commitChecks(pull.headSha)).map(normalizeCheck) : [];
     const comments = maintenance && !pull.merged ? await methods.comments("issues", Number(pull.number)) : [];
-    const evidence = reviewEvidence(comments, pull.headSha);
+    const evidence = reviewEvidence(comments, pull.headSha, pull.number);
     return Object.freeze({ ...pull, changedPaths: Object.freeze(changedPaths), closingIssues: Object.freeze(closing), obligations: Object.freeze(obligations), checks: Object.freeze(checks), evidence: Object.freeze(evidence) });
   };
   const api = {
@@ -391,7 +610,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         contract(digestJson(rolePolicy) === digestJson(canonicalPolicy), "role policy is not canonical");
       }
       contract(typeof controlSha === "string" && /^[0-9a-f]{40}$/.test(controlSha), "control SHA is invalid");
-      contract(appId === appIdentity.id, "snapshot trust is invalid");
+      contract(appId === appIdentity.appId, "snapshot trust is invalid");
       const repositoryValue = await methods.repository();
       const repositoryOwnerId = restId(repositoryValue.owner?.id, "repository owner id");
       const normalizedRepository = {
@@ -599,6 +818,441 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       const plan = deterministicSnapshotPlan(name, event.kind);
       return api.readRoleSnapshot(event, Object.freeze({ kind: "deterministic", name, mode: "single", primary: null, patch: null, snapshot: { fields: plan.fields, maxBytes: 262144 } }), options);
     },
+    async applyOperation({ operation, snapshot, verification, verifyOnly = false, binding = null }) {
+      const value = validateOperation(operation, policy);
+      operationCapabilities(value);
+      if (value.type === "create_branch") throw new AdwError("contract", "operation is VCS-owned");
+      if (value.type === "update_pr" && value.headSha !== undefined) throw new AdwError("contract", "pull head projection is VCS-owned");
+      const trustedSnapshot = validateSnapshot(snapshot);
+      const proof = validateVerification(verification);
+      contract(proof.controlSha === trustedSnapshot.controlSha, "verification control SHA does not match");
+      contract(proof.preconditionDigest === digestJson(trustedSnapshot.revisions), "verification precondition does not match");
+      if (value.type === "noop") return Object.freeze({ state: "complete", revision: proof.preconditionDigest });
+      if (value.type === "terminal") throw new AdwError("terminal", value.reason);
+      if (token === null) throw new AdwError("forge", "auth");
+
+      const cache = new Map();
+      const get = async endpoint => {
+        if (!cache.has(endpoint)) cache.set(endpoint, page(endpoint));
+        return cache.get(endpoint);
+      };
+      const optionalGet = async endpoint => {
+        try { return await get(endpoint); }
+        catch (error) { if (error?.code === "forge" && error.message === "not_found") return null; throw error; }
+      };
+      const list = async (endpoint, key = null) => {
+        const records = [];
+        for (let number = 1; number <= 10; number++) {
+          const separator = endpoint.includes("?") ? "&" : "?";
+          const response = await get(`${endpoint}${separator}per_page=100&page=${number}`);
+          const values = key === null ? response : response?.[key];
+          if (!Array.isArray(values)) throw new AdwError("forge", "malformed");
+          records.push(...values);
+          if (records.length > 1000) throw new AdwError("forge", "overflow");
+          if (values.length < 100) return records;
+        }
+        throw new AdwError("forge", "overflow");
+      };
+      const issueAt = async id => {
+        const issue = await get(`/repos/${owner}/${name}/issues/${numericId(id, "issue id")}`);
+        if (String(issue?.number ?? "") !== id) throw new AdwError("forge", "malformed");
+        return issue;
+      };
+      const pullAt = async id => {
+        const pull = await get(`/repos/${owner}/${name}/pulls/${numericId(id, "pull id")}`);
+        if (String(pull?.number ?? "") !== id) throw new AdwError("forge", "malformed");
+        return pull;
+      };
+      const commentsAt = id => list(`/repos/${owner}/${name}/issues/${numericId(id, "entity id")}/comments`);
+      const allIssues = () => list(`/repos/${owner}/${name}/issues?state=all`);
+      const allPulls = () => list(`/repos/${owner}/${name}/pulls?state=all`);
+      const allMilestones = () => list(`/repos/${owner}/${name}/milestones?state=all`);
+      const milestoneById = async id => {
+        numericId(id, "milestone id");
+        const matches = (await allMilestones()).filter(milestone => String(milestone?.id ?? "") === id);
+        if (matches.length !== 1 || !Number.isSafeInteger(matches[0].number) || matches[0].number < 1) throw new AdwError("forge", "malformed");
+        return Object.freeze({ value: matches[0], number: matches[0].number });
+      };
+      const allLabels = () => list(`/repos/${owner}/${name}/labels`);
+      const allRuns = () => list(`/repos/${owner}/${name}/actions/runs`, "workflow_runs");
+      const appAuthored = record => String(record?.user?.id ?? "") === appIdentity.botUserId && record?.user?.login === appIdentity.login && record?.user?.type === "Bot";
+      const appCheck = record => String(record?.app?.id ?? "") === appIdentity.appId && record?.app?.slug === appIdentity.slug;
+      const validTime = value => typeof value === "string" && Number.isFinite(Date.parse(value));
+
+      let complete = false;
+      let prepared = null;
+      let preWrite = null;
+      let syncTransition = null;
+      if (value.type === "comment") {
+        const expected = markedBody(value.body, value.marker);
+        complete = markerMatches(await commentsAt(value.entityId), value.marker, record => appAuthored(record) && record.body === expected);
+        prepared = { method: "POST", endpoint: `/repos/${owner}/${name}/issues/${numericId(value.entityId, "entity id")}/comments`, body: { body: expected } };
+      } else if (value.type === "add_label" || value.type === "remove_label") {
+        const issue = await issueAt(value.entityId);
+        const present = exactLiveLabels(issue).includes(value.label);
+        complete = value.type === "add_label" ? present : !present;
+        prepared = value.type === "add_label"
+          ? { method: "POST", endpoint: `/repos/${owner}/${name}/issues/${numericId(value.entityId, "entity id")}/labels`, body: { labels: [value.label] } }
+          : { method: "DELETE", endpoint: `/repos/${owner}/${name}/issues/${numericId(value.entityId, "entity id")}/labels/${encodeURIComponent(value.label)}`, body: {} };
+      } else if (value.type === "create_issue" || value.type === "report_drift") {
+        const labels = value.type === "create_issue" ? value.labels : [];
+        const expected = markedBody(value.body, value.marker);
+        complete = markerMatches((await allIssues()).filter(issue => !issue.pull_request), value.marker, issue => appAuthored(issue) && issue.title === value.title && issue.body === expected && canonicalBytes(exactLiveLabels(issue).sort()).equals(canonicalBytes([...labels].sort())));
+        prepared = { method: "POST", endpoint: `/repos/${owner}/${name}/issues`, body: { title: value.title, body: expected, labels } };
+      } else if (value.type === "update_issue") {
+        contract(value.title !== undefined || value.body !== undefined, "issue update is empty");
+        const issue = await issueAt(value.issueId);
+        const wanted = Object.fromEntries(["title", "body"].filter(key => value[key] !== undefined).map(key => [key, value[key]]));
+        complete = Object.entries(wanted).every(([key, expected]) => issue?.[key] === expected);
+        prepared = { method: "PATCH", endpoint: `/repos/${owner}/${name}/issues/${numericId(value.issueId, "issue id")}`, body: wanted };
+      } else if (value.type === "close_issue") {
+        const issue = await issueAt(value.issueId);
+        complete = issue?.state === "closed" && (issue.state_reason === undefined || issue.state_reason === value.reason);
+        prepared = { method: "PATCH", endpoint: `/repos/${owner}/${name}/issues/${numericId(value.issueId, "issue id")}`, body: { state: "closed", state_reason: value.reason } };
+      } else if (value.type === "create_milestone") {
+        const expected = markedBody(value.description, value.marker);
+        complete = markerMatches(await allMilestones(), value.marker, milestone => String(milestone.creator?.id ?? "") === appIdentity.botUserId && milestone.creator?.login === appIdentity.login && milestone.creator?.type === "Bot" && milestone.title === value.title && milestone.description === expected && (value.dueOn === undefined || milestone.due_on === value.dueOn), "description");
+        const body = { title: value.title, description: expected };
+        if (value.dueOn !== undefined) body.due_on = value.dueOn;
+        prepared = { method: "POST", endpoint: `/repos/${owner}/${name}/milestones`, body };
+      } else if (value.type === "update_milestone") {
+        contract(value.title !== undefined || value.description !== undefined || value.dueOn !== undefined, "milestone update is empty");
+        const milestone = await milestoneById(value.milestoneId);
+        const body = {};
+        if (value.title !== undefined) body.title = value.title;
+        if (value.description !== undefined) body.description = value.description;
+        if (value.dueOn !== undefined) body.due_on = value.dueOn;
+        complete = Object.entries(body).every(([key, expected]) => milestone.value?.[key] === expected);
+        prepared = { method: "PATCH", endpoint: `/repos/${owner}/${name}/milestones/${milestone.number}`, body };
+      } else if (value.type === "close_milestone") {
+        const milestone = await milestoneById(value.milestoneId);
+        complete = milestone.value?.state === "closed";
+        prepared = { method: "PATCH", endpoint: `/repos/${owner}/${name}/milestones/${milestone.number}`, body: { state: "closed" } };
+      } else if (value.type === "assign_milestone") {
+        const milestone = await milestoneById(value.milestoneId);
+        const issue = await issueAt(value.issueId);
+        complete = String(issue?.milestone?.id ?? "") === value.milestoneId && issue?.milestone?.number === milestone.number;
+        prepared = { method: "PATCH", endpoint: `/repos/${owner}/${name}/issues/${numericId(value.issueId, "issue number")}`, body: { milestone: milestone.number } };
+      } else if (value.type === "link_sub_issue") {
+        const child = await issueAt(value.childId);
+        const childDatabaseId = positiveInteger(child.id);
+        const children = await list(`/repos/${owner}/${name}/issues/${numericId(value.parentId, "parent number")}/sub_issues`);
+        complete = children.some(candidate => candidate?.number === numericId(value.childId, "child number"));
+        prepared = { method: "POST", endpoint: `/repos/${owner}/${name}/issues/${numericId(value.parentId, "parent number")}/sub_issues`, body: { sub_issue_id: childDatabaseId } };
+      } else if (value.type === "create_pr") {
+        contract(/^[A-Za-z0-9._/-]+$/.test(value.head) && !value.head.includes("..") && /^[A-Za-z0-9._/-]+$/.test(value.base) && !value.base.includes(".."), "pull ref is invalid");
+        const expected = markedBody(value.body, value.marker);
+        complete = markerMatches(await allPulls(), value.marker, pull => appAuthored(pull) && pull.title === value.title && pull.body === expected && pull.head?.ref === value.head && pull.base?.ref === value.base);
+        prepared = { method: "POST", endpoint: `/repos/${owner}/${name}/pulls`, body: { head: value.head, base: value.base, title: value.title, body: expected } };
+      } else if (value.type === "update_pr") {
+        contract(value.title !== undefined || value.body !== undefined, "pull update is empty");
+        const pull = await pullAt(value.prId);
+        const body = Object.fromEntries(["title", "body"].filter(key => value[key] !== undefined).map(key => [key, value[key]]));
+        complete = Object.entries(body).every(([key, expected]) => pull?.[key] === expected);
+        prepared = { method: "PATCH", endpoint: `/repos/${owner}/${name}/pulls/${numericId(value.prId, "pull id")}`, body };
+      } else if (value.type === "publish_check") {
+        const checks = await list(`/repos/${owner}/${name}/commits/${value.headSha}/check-runs?filter=all`, "check_runs");
+        const matches = checks.filter(check => check.external_id === value.externalId);
+        if (matches.length > 1) throw new AdwError("stale", "conflicting external id");
+        if (matches.length === 1) {
+          const check = matches[0];
+          if (!appCheck(check) || check.name !== value.name || check.head_sha !== value.headSha || check.status !== "completed" || check.conclusion !== value.conclusion || check.output?.title !== value.name || check.output?.summary !== value.summary) throw new AdwError("stale", "conflicting external id");
+          complete = true;
+        }
+        prepared = { method: "POST", endpoint: `/repos/${owner}/${name}/check-runs`, body: { name: value.name, head_sha: value.headSha, status: "completed", conclusion: value.conclusion, output: { title: value.name, summary: value.summary }, external_id: value.externalId } };
+      } else if (value.type === "rerun_check" || value.type === "dispatch_workflow") {
+        contract(binding !== null, "action operation binding is missing");
+        let action;
+        let target;
+        let delivered;
+        let actionReady = true;
+        if (value.type === "rerun_check") {
+          const run = await get(`/repos/${owner}/${name}/actions/runs/${numericId(value.runId, "run number")}`);
+          const original = trustedSnapshot.state.resources?.runs?.find(item => item.id === value.runId);
+          contract(original && Number.isSafeInteger(original.attempt) && original.attempt > 0 && String(run?.id ?? "") === value.runId && original.headSha === run.head_sha && original.name === run.name && original.event === run.event, "rerun source does not match snapshot");
+          actionReady = original.attempt === run.run_attempt;
+          target = Object.freeze({ type: "rerun_check", runId: value.runId, name: original.name, event: original.event, headSha: original.headSha, attempt: original.attempt });
+          action = { method: "POST", endpoint: `/repos/${owner}/${name}/actions/runs/${numericId(value.runId, "run number")}/rerun`, body: {} };
+          delivered = async markerTime => {
+            const fresh = await page(`/repos/${owner}/${name}/actions/runs/${numericId(value.runId, "run number")}`);
+            return String(fresh?.id ?? "") === target.runId && fresh?.name === target.name && fresh?.event === target.event && fresh?.head_sha === target.headSha && fresh?.run_attempt === target.attempt + 1
+              && String(fresh?.triggering_actor?.id ?? "") === appIdentity.botUserId && fresh?.triggering_actor?.login === appIdentity.login && fresh?.triggering_actor?.type === "Bot"
+              && validTime(fresh?.updated_at) && Date.parse(fresh.updated_at) >= Date.parse(markerTime);
+          };
+        } else {
+          const workflow = safeSegment(value.workflow, "workflow");
+          contract(/^[A-Za-z0-9._/-]+$/.test(value.ref) && !value.ref.includes(".."), "workflow ref is invalid");
+          contract(!Object.hasOwn(value.inputs, "smith_operation_digest"), "workflow inputs use reserved operation digest");
+          const ref = await get(`/repos/${owner}/${name}/git/ref/heads/${value.ref.split("/").map(encodeURIComponent).join("/")}`);
+          const headSha = text(ref.object?.sha, "dispatch head");
+          const inputs = Object.freeze({ ...value.inputs, smith_operation_digest: binding.operationDigest });
+          const path = `.github/workflows/${workflow}`;
+          target = Object.freeze({ type: "dispatch_workflow", path, ref: value.ref, headSha, inputs });
+          action = { method: "POST", endpoint: `/repos/${owner}/${name}/actions/workflows/${workflow}/dispatches`, body: { ref: value.ref, inputs } };
+          delivered = async markerTime => {
+            const response = await page(`/repos/${owner}/${name}/actions/workflows/${workflow}/runs?event=workflow_dispatch&per_page=100&page=1`);
+            if (!Array.isArray(response?.workflow_runs) || response.workflow_runs.length >= 100) throw new AdwError("forge", "overflow");
+            const matches = response.workflow_runs.filter(run => run?.path === target.path && run?.head_branch === target.ref && run?.head_sha === target.headSha && run?.event === "workflow_dispatch" && run?.display_title === binding.operationDigest
+              && String(run?.triggering_actor?.id ?? "") === appIdentity.botUserId && run?.triggering_actor?.login === appIdentity.login && run?.triggering_actor?.type === "Bot"
+              && validTime(run?.created_at) && Date.parse(run.created_at) >= Date.parse(markerTime));
+            return matches.length === 1;
+          };
+        }
+        const externalId = `smith-action:${binding.decisionDigest}:${binding.operationIndex}:${binding.operationDigest}`;
+        const summary = canonicalBytes({ role: binding.role, decisionDigest: binding.decisionDigest, operationIndex: binding.operationIndex, operationDigest: binding.operationDigest, target }).toString("utf8");
+        const markers = (await list(`/repos/${owner}/${name}/commits/${trustedSnapshot.controlSha}/check-runs?filter=all`, "check_runs")).filter(check => check.external_id === externalId);
+        if (markers.length > 1) throw new AdwError("stale", "conflicting action markers");
+        const verifyMarker = (marker, status) => appCheck(marker) && marker.name === "smith/apply-action" && marker.external_id === externalId && marker.head_sha === trustedSnapshot.controlSha && marker.status === status
+          && marker.conclusion === (status === "completed" ? "success" : null) && marker.output?.title === "smith/apply-action" && marker.output?.summary === summary && validTime(marker.created_at);
+        const completeMarker = async (markerId, markerTime) => {
+          await mutate("PATCH", `/repos/${owner}/${name}/check-runs/${markerId}`, { status: "completed", conclusion: "success", output: { title: "smith/apply-action", summary } });
+          const completed = await page(`/repos/${owner}/${name}/check-runs/${markerId}`);
+          if (!verifyMarker(completed, "completed") || completed.created_at !== markerTime) throw new AdwError("stale", "completed action marker was not verified");
+        };
+        if (markers.length === 1) {
+          const marker = markers[0];
+          if (verifyMarker(marker, "completed")) complete = true;
+          else if (verifyMarker(marker, "in_progress")) {
+            if (!await delivered(marker.created_at)) throw new AdwError("terminal", "action delivery cannot be proven; refusing retry");
+            const markerId = numericId(String(marker.id ?? ""), "action marker number");
+            prepared = { execute: async observePrepared => { await observePrepared(); await completeMarker(markerId, marker.created_at); } };
+          } else throw new AdwError("stale", "conflicting action marker");
+        } else {
+          contract(actionReady, "rerun source does not match snapshot");
+          prepared = {
+            execute: async observePrepared => {
+              const marker = await mutate("POST", `/repos/${owner}/${name}/check-runs`, { name: "smith/apply-action", head_sha: trustedSnapshot.controlSha, status: "in_progress", output: { title: "smith/apply-action", summary }, external_id: externalId });
+              const markerId = numericId(String(marker?.id ?? ""), "action marker number");
+              const liveMarker = await page(`/repos/${owner}/${name}/check-runs/${markerId}`);
+              if (!verifyMarker(liveMarker, "in_progress")) throw new AdwError("stale", "prepared action marker was not verified");
+              await observePrepared();
+              await mutate(action.method, action.endpoint, action.body);
+              if (!await delivered(liveMarker.created_at)) throw new AdwError("terminal", "action delivery cannot be proven; refusing retry");
+              await completeMarker(markerId, liveMarker.created_at);
+            },
+          };
+        }
+      } else if (value.type === "arm_auto_merge") {
+        const assertMergeAuthority = async fresh => {
+          const pull = fresh ? await page(`/repos/${owner}/${name}/pulls/${numericId(value.prId, "pull id")}`) : await pullAt(value.prId);
+          if (pull?.state !== "open" || pull?.head?.sha !== value.headSha || holdReasons(exactLiveLabels(pull)).length !== 0) throw new AdwError("stale", "auto-merge precondition failed");
+          const checkResponse = await page(`/repos/${owner}/${name}/commits/${value.headSha}/check-runs?filter=latest&per_page=100&page=1`);
+          const checks = checkResponse?.check_runs;
+          if (!Array.isArray(checks) || checks.length >= 100) throw new AdwError("forge", "overflow");
+          const required = checks.filter(check => check.name === "check" && check.head_sha === value.headSha);
+          if (required.length !== 1 || required[0].status !== "completed" || required[0].conclusion !== "success") throw new AdwError("stale", "auto-merge check failed");
+          const commentResponse = await page(`/repos/${owner}/${name}/issues/${numericId(value.prId, "pull number")}/comments?per_page=100&page=1`);
+          if (!Array.isArray(commentResponse) || commentResponse.length >= 100) throw new AdwError("forge", "overflow");
+          validateAutoMergeMarkers({
+            comments: commentResponse,
+            headSha: value.headSha,
+            prId: value.prId,
+            appIdentity,
+            ownerIds: trustedSnapshot.state.trust?.ownerIds ?? [],
+            ownerLogin: trustedSnapshot.repository.owner,
+          });
+          return pull;
+        };
+        const pull = await pullAt(value.prId);
+        if (pull?.auto_merge?.merge_method === "squash") complete = pull.head?.sha === value.headSha;
+        if (!complete) await assertMergeAuthority(false);
+        prepared = {
+          execute: async observePrepared => {
+            const fresh = await assertMergeAuthority(true);
+            const pullNodeId = text(fresh?.node_id, "pull node ID");
+            await observePrepared();
+            await enablePullRequestAutoMerge(pullNodeId);
+            const post = await page(`/repos/${owner}/${name}/pulls/${numericId(value.prId, "pull id")}`);
+            if (post?.state !== "open" || post?.head?.sha !== value.headSha || post?.auto_merge?.merge_method !== "squash") throw new AdwError("stale", "auto-merge postcondition was not reached");
+          },
+        };
+      } else if (value.type === "sync_labels") {
+        const resource = trustedSnapshot.state.resources?.["trusted:.github/labels.yml"];
+        contract(resource?.trust === "trusted" && resource.source === ".github/labels.yml" && typeof resource.data === "string" && resource.bytes === canonicalBytes(resource.data).length && resource.digest === digestJson(resource.data), "trusted label source is invalid");
+        const control = await get(`/repos/${owner}/${name}/contents/.github/labels.yml?ref=${trustedSnapshot.controlSha}`);
+        contract(control?.encoding === "base64" && typeof control.content === "string" && typeof control.sha === "string" && /^[0-9a-f]{40}$/.test(control.sha), "trusted label source is invalid");
+        const encoded = control.content.replace(/\s/g, "");
+        contract(encoded.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(encoded), "trusted label source encoding is invalid");
+        const bytes = Buffer.from(encoded, "base64");
+        contract(bytes.toString("base64") === encoded, "trusted label source encoding is invalid");
+        let controlData;
+        try { controlData = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { throw new AdwError("forge", "trusted content is not UTF-8"); }
+        contract(controlData === resource.data && digestJson(controlData) === resource.digest, "trusted label source changed");
+        const definitions = parseLabelDefinitions(controlData);
+        if (digestJson(definitions) !== value.definitionsDigest) throw new AdwError("stale", "label definition digest changed");
+        const live = await allLabels();
+        syncTransition = Object.freeze({ definitions });
+        const wanted = new Set(definitions.map(definition => definition.name));
+        contract(wanted.size === definitions.length, "trusted label definitions are malformed");
+        prepared = definitions.filter(definition => {
+          const found = live.find(label => label.name === definition.name);
+          return !found || found.color?.toLowerCase() !== definition.color || (found.description ?? "") !== definition.description;
+        }).map(definition => {
+          const exists = live.some(label => label.name === definition.name);
+          return exists
+            ? { method: "PATCH", endpoint: `/repos/${owner}/${name}/labels/${encodeURIComponent(definition.name)}`, body: { new_name: definition.name, color: definition.color, description: definition.description }, label: definition }
+            : { method: "POST", endpoint: `/repos/${owner}/${name}/labels`, body: definition, label: definition };
+        });
+        complete = prepared.length === 0;
+      }
+
+      const revisionToken = async revision => {
+        const resource = revision.resource;
+        let match;
+        if (resource === "repository") {
+          const live = await get(`/repos/${owner}/${name}`);
+          return digestJson({ id: restId(live.id, "repository id"), owner: text(live.owner?.login, "repository owner"), name: text(live.name, "repository name"), defaultBranch: text(live.default_branch, "default branch") });
+        }
+        if ((match = /^trusted:(.+)$/.exec(resource))) {
+          const trusted = await get(`/repos/${owner}/${name}/contents/${match[1].split("/").map(encodeURIComponent).join("/")}?ref=${trustedSnapshot.controlSha}`);
+          return text(trusted.sha, "trusted content SHA");
+        }
+        if ((match = /^issue:([1-9][0-9]*)$/.exec(resource))) return text((await issueAt(match[1])).updated_at, "issue revision");
+        if ((match = /^pull:([1-9][0-9]*)$/.exec(resource))) return text((await pullAt(match[1])).head?.sha, "pull revision");
+        if ((match = /^(?:patch-base:|ref:)(.+)$/.exec(resource))) {
+          const branch = match[1];
+          contract(/^[A-Za-z0-9._/-]+$/.test(branch) && !branch.includes(".."), "branch is invalid");
+          return text((await get(`/repos/${owner}/${name}/git/ref/heads/${branch.split("/").map(encodeURIComponent).join("/")}`)).object?.sha, "ref revision");
+        }
+        if ((match = /^issue:([1-9][0-9]*):comments$/.exec(resource)) || (match = /^pull:([1-9][0-9]*):comments$/.exec(resource))) {
+          const values = (await commentsAt(match[1])).map(item => normalizeComment(item, match[1], trustedSnapshot.repository.id));
+          return digestJson(values);
+        }
+        if ((match = /^issue:([1-9][0-9]*):timeline$/.exec(resource))) {
+          const values = (await list(`/repos/${owner}/${name}/issues/${match[1]}/timeline`)).map(item => Object.freeze({ id: restId(item.id, "timeline id"), event: text(item.event, "timeline event"), actorId: item.actor ? restId(item.actor.id, "timeline actor") : null, createdAt: text(item.created_at, "timeline createdAt"), label: item.label?.name ?? null, commitSha: item.commit_id ?? null }));
+          return digestJson(values);
+        }
+        if ((match = /^issue:([1-9][0-9]*):parent$/.exec(resource))) {
+          const parent = await optionalGet(`/repos/${owner}/${name}/issues/${match[1]}/parent`);
+          return digestJson(parent === null ? null : normalizeIssue(parent));
+        }
+        if ((match = /^issue:([1-9][0-9]*):children$/.exec(resource))) return digestJson((await list(`/repos/${owner}/${name}/issues/${match[1]}/sub_issues`)).map(normalizeIssue));
+        if ((match = /^issue:([1-9][0-9]*):qualifying-pulls$/.exec(resource))) {
+          const values = [];
+          for (const raw of await allPulls()) {
+            const candidate = normalizePull(raw);
+            const closing = await methods.closingIssues(Number(candidate.number));
+            if (candidate.base === trustedSnapshot.repository.defaultBranch && candidate.headRepository === `${owner}/${name}` && closing.some(issue => issue.repositoryId === trustedSnapshot.repository.id && issue.issueId === match[1])) values.push(Object.freeze({ prId: candidate.number, headSha: candidate.headSha, merged: candidate.merged, mergeSha: candidate.mergeSha }));
+          }
+          return digestJson(values);
+        }
+        if (resource === "issues") return digestJson((await allIssues()).filter(item => !item.pull_request).map(normalizeIssue));
+        if (resource === "pulls") {
+          const values = [];
+          for (const raw of await allPulls()) values.push(await enrichPull(raw, null, true));
+          return digestJson(values);
+        }
+        if ((match = /^pull:([1-9][0-9]*):files$/.exec(resource))) return digestJson((await list(`/repos/${owner}/${name}/pulls/${match[1]}/files`)).map(item => normalizeFile(item, match[1])));
+        if ((match = /^pull:([1-9][0-9]*):reviews$/.exec(resource))) return digestJson((await list(`/repos/${owner}/${name}/pulls/${match[1]}/reviews`)).map(item => normalizeReview(item, match[1])));
+        if ((match = /^pull:([1-9][0-9]*):checks$/.exec(resource))) {
+          const pull = await pullAt(match[1]);
+          return digestJson((await list(`/repos/${owner}/${name}/commits/${text(pull.head?.sha, "pull head")}/check-runs?filter=latest`, "check_runs")).map(normalizeCheck));
+        }
+        if (resource === "labels") {
+          const values = (await allLabels()).map(item => Object.freeze({ id: restId(item.id, "label id"), name: normalizedContent(item.name, `label:${item.id}:name`), color: normalizedContent(item.color, `label:${item.id}:color`), description: normalizedContent(item.description ?? "", `label:${item.id}:description`) }));
+          return digestJson(values);
+        }
+        if (resource === "milestones") {
+          const values = (await allMilestones()).map(item => Object.freeze({ id: restId(item.id, "milestone id"), number: restId(item.number, "milestone number"), state: text(item.state, "milestone state"), dueOn: item.due_on ?? null, title: normalizedContent(item.title, `milestone:${item.number}:title`), description: normalizedContent(item.description ?? "", `milestone:${item.number}:description`) }));
+          return digestJson(values);
+        }
+        if (resource === "runs") return digestJson((await allRuns()).map(normalizeRun));
+        if (resource === "alerts") {
+          const expected = trustedSnapshot.state.resources?.alerts;
+          contract(Array.isArray(expected), "alert revision is malformed");
+          const values = [];
+          for (const item of expected) {
+            const rawExpected = item?.details?.data;
+            const kind = rawExpected && (Object.hasOwn(rawExpected, "dependency") || Object.hasOwn(rawExpected, "security_advisory") || Object.hasOwn(rawExpected, "dismissed_reason")) ? "dependabot/alerts" : "code-scanning/alerts";
+            const alert = await get(`/repos/${owner}/${name}/${kind}/${numericId(item.id, "alert id")}`);
+            values.push(Object.freeze({ id: restId(alert.number, "alert id"), state: text(alert.state, "alert state"), updatedAt: text(alert.updated_at, "alert updatedAt"), details: normalizedContent(alert, `alert:${alert.number}`) }));
+          }
+          return digestJson(values);
+        }
+        if (resource === "rulesets") {
+          const summaries = await list(`/repos/${owner}/${name}/rulesets`);
+          if (summaries.length > 100) throw new AdwError("forge", "overflow");
+          const ids = summaries.map(summary => restId(summary.id, "ruleset id"));
+          if (new Set(ids).size !== ids.length) throw new AdwError("forge", "duplicate ruleset id");
+          const values = [];
+          for (const id of ids) values.push(normalizeRuleset(await get(`/repos/${owner}/${name}/rulesets/${numericId(id, "ruleset id")}`), id));
+          values.sort((a, b) => a.name.localeCompare(b.name));
+          return digestJson(values);
+        }
+        throw new AdwError("stale", "named revision is unsupported for apply");
+      };
+      const observeRevisions = async () => {
+        cache.clear();
+        const observed = [];
+        for (const revision of trustedSnapshot.revisions) observed.push({ ...revision, token: await revisionToken(revision) });
+        return Object.freeze({ revisions: Object.freeze(observed), digest: digestJson(observed) });
+      };
+      const syncTransitionAllowed = async observedRevisions => {
+        if (syncTransition === null || binding?.priorOperations?.length !== 0 || !Array.isArray(trustedSnapshot.state.resources?.labels) || !observedRevisions.some(revision => revision.resource === "labels")) return false;
+        for (let index = 0; index < observedRevisions.length; index++) {
+          if (observedRevisions[index].resource !== "labels" && observedRevisions[index].token !== trustedSnapshot.revisions[index].token) return false;
+        }
+        const definitions = new Map(syncTransition.definitions.map(definition => [definition.name, definition]));
+        const originals = new Map();
+        for (const label of trustedSnapshot.state.resources.labels) {
+          const original = { id: String(label?.id ?? ""), name: label?.name?.data, color: label?.color?.data?.toLowerCase(), description: label?.description?.data ?? "" };
+          if (!/^[1-9][0-9]*$/.test(original.id) || typeof original.name !== "string" || typeof original.color !== "string" || originals.has(original.name)) return false;
+          originals.set(original.name, original);
+        }
+        const current = await allLabels();
+        const seen = new Set();
+        for (const label of current) {
+          if (!Number.isSafeInteger(label?.id) || label.id < 1 || typeof label.name !== "string" || typeof label.color !== "string" || seen.has(label.name)) return false;
+          seen.add(label.name);
+          const actual = { id: String(label.id), name: label.name, color: label.color.toLowerCase(), description: label.description ?? "" };
+          const original = originals.get(label.name);
+          const definition = definitions.get(label.name);
+          if (definition === undefined) {
+            if (original === undefined || digestJson(actual) !== digestJson(original)) return false;
+            continue;
+          }
+          const desired = actual.name === definition.name && actual.color === definition.color && actual.description === definition.description && (original === undefined || actual.id === original.id);
+          const unchanged = original !== undefined && digestJson(actual) === digestJson(original);
+          if (!desired && !unchanged) return false;
+        }
+        return [...originals.keys()].every(name => seen.has(name));
+      };
+
+      const observedBefore = await observeRevisions();
+      if (complete && value.type !== "sync_labels") return Object.freeze({ state: "complete", revision: observedBefore.digest });
+      const expectedBefore = binding?.expectedBefore ?? proof.preconditionDigest;
+      const syncAllowed = value.type === "sync_labels" && await syncTransitionAllowed(observedBefore.revisions);
+      if (!binding?.skipRevision && observedBefore.digest !== expectedBefore && !syncAllowed) throw new AdwError("stale", "precondition changed");
+      if (complete) return Object.freeze({ state: "complete", revision: observedBefore.digest });
+      if (verifyOnly) throw new AdwError("stale", "operation postcondition was not reached");
+
+      if (preWrite !== null) await preWrite();
+      const confirmed = await observeRevisions();
+      if (confirmed.digest !== observedBefore.digest) throw new AdwError("stale", "precondition changed");
+      let currentRevision = confirmed.digest;
+      let preparedRevision = null;
+      if (Array.isArray(prepared)) {
+        for (const mutation of prepared) {
+          const latest = await observeRevisions();
+          if (latest.digest !== currentRevision) throw new AdwError("stale", "precondition changed");
+          await mutate(mutation.method, mutation.endpoint, mutation.body);
+          if (mutation.label) {
+            const live = await page(`/repos/${owner}/${name}/labels/${encodeURIComponent(mutation.label.name)}`);
+            if (live?.name !== mutation.label.name || live?.color?.toLowerCase() !== mutation.label.color || (live?.description ?? "") !== mutation.label.description) throw new AdwError("stale", "label postcondition was not reached");
+          }
+          currentRevision = (await observeRevisions()).digest;
+        }
+        preparedRevision = currentRevision;
+      } else {
+        contract(prepared !== null, "operation writer is unavailable");
+        if (typeof prepared.execute === "function") {
+          await prepared.execute(async () => { preparedRevision = (await observeRevisions()).digest; });
+        } else await mutate(prepared.method, prepared.endpoint, prepared.body);
+        currentRevision = (await observeRevisions()).digest;
+        if (preparedRevision === null) preparedRevision = currentRevision;
+      }
+      return Object.freeze({ state: "prepared", beforeRevision: expectedBefore, preparedRevision, currentRevision });
+    },
     record(operation) {
       const value = validateOperation(operation, policy);
       intentsByDigest.set(digestJson(value), value);
@@ -606,14 +1260,149 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     intents: () => Object.freeze([...intentsByDigest.values()].sort((a, b) => digestJson(a).localeCompare(digestJson(b)))),
     capabilities: () => ADAPTER_READ_CAPABILITIES,
   };
-  return Object.freeze(api);
+  const rawApplyOperation = api.applyOperation.bind(api);
+  const canonicalAuthority = trustedSnapshot => {
+    let authority;
+    let deterministic = false;
+    try { authority = role(trustedSnapshot.routing.role); }
+    catch (roleError) {
+      try { authority = deterministicRole(trustedSnapshot.routing.role); deterministic = true; }
+      catch { throw new AdwError("contract", "snapshot role authority is not canonical"); }
+    }
+    const expectedRouting = deterministic
+      ? { role: authority.name, mode: "single", primary: null }
+      : { role: authority.name, mode: authority.mode, primary: authority.primary };
+    contract(digestJson(trustedSnapshot.routing) === digestJson(expectedRouting), "snapshot role authority is not canonical");
+    return authority;
+  };
+  const credentialFor = async ({ permissions, operationDigest }) => {
+    const request = Object.freeze({ repository, permissions, operationDigest });
+    let credential;
+    try { credential = typeof token === "function" ? await token(request) : token; }
+    catch { throw new AdwError("forge", "auth"); }
+    contract(credential && !Array.isArray(credential) && Object.getPrototypeOf(credential) === Object.prototype, "operation-scoped GitHub App token is required");
+    exactObject(credential, ["value", "source", "repository", "permissions", "operationDigest"], "GitHub App token");
+    contract(typeof credential.value === "string" && credential.value.length > 0, "GitHub App token is malformed");
+    contract(credential.source === "github-app" && credential.repository === repository && credential.operationDigest === operationDigest, "GitHub App token authority does not match");
+    contract(Array.isArray(credential.permissions) && digestJson(credential.permissions) === digestJson(permissions), "GitHub App token permissions do not match operation class");
+    return credential;
+  };
+  const applyMarker = binding => `<!-- smith:apply/v1 role=${binding.role} decision=${binding.decisionDigest} operation=${binding.operationIndex} digest=${binding.operationDigest} phase=complete -->`;
+  const effectiveOperation = (operation, binding) => {
+    const marker = applyMarker(binding);
+    if (operation.type === "comment" || operation.type === "create_issue" || operation.type === "create_pr" || operation.type === "report_drift") {
+      const originalBody = markedBody(operation.body, operation.marker);
+      const semantic = operation.type === "comment" && operation.body === operation.marker && (REVIEW_MARKER.test(operation.body) || RISK_MARKER.test(operation.body));
+      return Object.freeze({ ...operation, body: semantic ? `${operation.body}\n${marker}` : markedBody(originalBody, marker), marker });
+    }
+    if (operation.type === "create_milestone") return Object.freeze({ ...operation, description: markedBody(markedBody(operation.description, operation.marker), marker), marker });
+    if (operation.type === "publish_check") return Object.freeze({ ...operation, externalId: `smith:${binding.decisionDigest}:${binding.operationIndex}:${binding.operationDigest}` });
+    return operation;
+  };
+  const operationNumberFields = Object.freeze({
+    comment: ["entityId"], add_label: ["entityId"], remove_label: ["entityId"], update_issue: ["issueId"], close_issue: ["issueId"],
+    update_milestone: ["milestoneId"], close_milestone: ["milestoneId"], assign_milestone: ["issueId", "milestoneId"], link_sub_issue: ["parentId", "childId"],
+    update_pr: ["prId"], rerun_check: ["runId"], arm_auto_merge: ["prId"],
+  });
+  const validateOperationNumbers = operation => {
+    for (const field of operationNumberFields[operation.type] ?? []) numericId(operation[field], `${field} number`);
+  };
+  const hardenedApplyOperation = async (request, internal = null) => {
+    const context = internal && typeof internal === "object" ? internal : Object.freeze({ priorAuthorityVerified: internal === true });
+    exactObject(request, ["operation", "operationIndex", "decision", "snapshot", "verification", "priorOperations"], "apply request");
+    if (request.operation?.type === "create_branch" || (request.operation?.type === "update_pr" && request.operation.headSha !== undefined)) throw new AdwError("contract", "operation is VCS-owned");
+    const trustedSnapshot = validateSnapshot(request.snapshot);
+    contract(trustedSnapshot.repository.owner === owner && trustedSnapshot.repository.name === name, "snapshot repository does not match writer");
+    const resources = trustedSnapshot.revisions.map(revision => revision.resource);
+    contract(new Set(resources).size === resources.length && resources.every((resource, index) => index === 0 || resources[index - 1].localeCompare(resource) < 0), "snapshot revisions are not canonical");
+    const authority = canonicalAuthority(trustedSnapshot);
+    const canonicalDecision = validateDecision(request.decision);
+    const proof = validateVerification(request.verification);
+    contract(canonicalDecision.controlSha === trustedSnapshot.controlSha && canonicalDecision.snapshotDigest === digestJson(trustedSnapshot), "decision does not bind snapshot");
+    contract(proof.controlSha === trustedSnapshot.controlSha && proof.decisionDigest === digestJson(canonicalDecision), "verification does not bind canonical decision");
+    contract(proof.preconditionDigest === digestJson(trustedSnapshot.revisions), "verification precondition does not bind snapshot revisions");
+    contract(Number.isSafeInteger(request.operationIndex) && request.operationIndex >= 0 && request.operationIndex < canonicalDecision.operations.length, "operation order is invalid");
+    const operation = validateOperation(request.operation, authority);
+    contract(digestJson(operation) === digestJson(canonicalDecision.operations[request.operationIndex]), "operation digest or order does not match decision");
+    validateOperationNumbers(operation);
+    contract(Array.isArray(request.priorOperations) && request.priorOperations.length === request.operationIndex, "prior operation order is invalid");
+    let expectedBefore = proof.preconditionDigest;
+    const priorReceipts = request.priorOperations.map((entry, index) => {
+      const canonical = validateOperationReceipt(canonicalDecision.operations[index], entry, expectedBefore);
+      expectedBefore = canonical.afterRevision;
+      return canonical;
+    });
+    contract(request.priorOperations.length === 0 || context.priorAuthorityVerified === true, "prior forge authority must be reconstructed by full apply");
+    const expectedReceipt = context.expectedReceipt === undefined ? null : validateOperationReceipt(operation, context.expectedReceipt, expectedBefore);
+    const operationDigest = digestJson(operation);
+    const binding = Object.freeze({ role: authority.name, decisionDigest: proof.decisionDigest, operationDigest, operationIndex: request.operationIndex, preconditionDigest: proof.preconditionDigest, expectedBefore: expectedReceipt?.afterRevision ?? expectedBefore, skipRevision: context.skipRevision === true, priorOperations: Object.freeze(priorReceipts) });
+    if (operation.type === "noop") return expectedReceipt ?? unchangedReceipt(operation, expectedBefore);
+    if (operation.type === "terminal") throw new AdwError("terminal", operation.reason);
+    const permissions = operationCapabilities(operation, trustedSnapshot);
+    const credential = await credentialFor({ permissions, operationDigest });
+    contract(!applyActive, "concurrent apply is forbidden");
+    applyActive = true;
+    activeApplyToken = credential.value;
+    try {
+      const effective = effectiveOperation(operation, binding);
+      if (expectedReceipt !== null) {
+        const observed = await rawApplyOperation({ operation: effective, snapshot: trustedSnapshot, verification: proof, verifyOnly: true, binding });
+        contract(observed.state === "complete", "resumed operation postcondition changed");
+        return expectedReceipt;
+      }
+      const prepared = await rawApplyOperation({ operation: effective, snapshot: trustedSnapshot, verification: proof, binding });
+      if (prepared.state === "complete") return Object.freeze({ operationDigest, status: "complete", beforeRevision: expectedBefore, preparedRevision: prepared.revision, afterRevision: prepared.revision });
+      contract(prepared.state === "prepared", "operation transition was not prepared");
+      const postBinding = Object.freeze({ ...binding, expectedBefore: prepared.currentRevision, skipRevision: false });
+      const post = await rawApplyOperation({ operation: effective, snapshot: trustedSnapshot, verification: proof, verifyOnly: true, binding: postBinding });
+      contract(post.state === "complete", "operation postcondition was not observed");
+      return Object.freeze({ operationDigest, status: "complete", beforeRevision: prepared.beforeRevision, preparedRevision: prepared.preparedRevision, afterRevision: post.revision });
+    } finally {
+      activeApplyToken = null;
+      applyActive = false;
+    }
+  };
+  const hardenedApply = async request => {
+    exactObject(request, ["decision", "snapshot", "verification", "previousReceipt"], "apply request");
+    const canonicalDecision = validateDecision(request.decision);
+    const completed = [];
+    if (request.previousReceipt !== null) {
+      exactObject(request.previousReceipt, ["decisionDigest", "verificationDigest", "operations"], "previous apply receipt");
+      const previous = createApplyReceipt({ decision: canonicalDecision, snapshot: request.snapshot, verification: request.verification, operations: request.previousReceipt.operations });
+      contract(digestJson(request.previousReceipt) === digestJson(previous), "previous apply receipt authority does not match");
+      completed.push(...previous.operations);
+    }
+    try {
+      let latestRevisionAuthority = -1;
+      for (let index = 0; index < completed.length; index++) if (canonicalDecision.operations[index].type !== "noop") latestRevisionAuthority = index;
+      for (let index = 0; index < completed.length; index++) {
+        const observed = await hardenedApplyOperation(
+          { operation: canonicalDecision.operations[index], operationIndex: index, decision: canonicalDecision, snapshot: request.snapshot, verification: request.verification, priorOperations: completed.slice(0, index) },
+          { priorAuthorityVerified: true, expectedReceipt: completed[index], skipRevision: index !== latestRevisionAuthority },
+        );
+        contract(digestJson(observed) === digestJson(completed[index]), "resumed operation receipt changed");
+      }
+      for (let index = completed.length; index < canonicalDecision.operations.length; index++) {
+        const observed = await hardenedApplyOperation(
+          { operation: canonicalDecision.operations[index], operationIndex: index, decision: canonicalDecision, snapshot: request.snapshot, verification: request.verification, priorOperations: completed.slice(0, index) },
+          { priorAuthorityVerified: true },
+        );
+        completed.push(observed);
+      }
+    } catch (error) {
+      const partialReceipt = createApplyReceipt({ decision: canonicalDecision, snapshot: request.snapshot, verification: request.verification, operations: completed });
+      throw new AdwError(error?.code ?? "forge", error?.message ?? "api", { partialReceipt });
+    }
+    return createApplyReceipt({ decision: canonicalDecision, snapshot: request.snapshot, verification: request.verification, operations: completed });
+  };
+  return Object.freeze({ ...api, applyOperation: hardenedApplyOperation, apply: hardenedApply });
 }
 
 export function createDryRunGitHub(repository) {
   return createGitHub({
     repository,
     token: null,
-    appIdentity: { id: "offline", login: "offline" },
+    appIdentity: { appId: "1", slug: "offline", botUserId: "1", login: "offline[bot]" },
     ghPath: "/nonexistent/gh",
     baseEnv: { PATH: "", HOME: "/tmp", LANG: "C.UTF-8", TMPDIR: "/tmp" },
   });
@@ -623,12 +1412,28 @@ export function createDefaultGitHub(repository) {
   const ghPath = process.env.ADW_GH_PATH;
   contract(typeof ghPath === "string" && isAbsolute(ghPath), "gh path is unavailable");
   const appId = process.env.ADW_APP_ID;
-  const appLogin = process.env.ADW_APP_LOGIN;
-  contract(typeof appId === "string" && typeof appLogin === "string", "App identity is unavailable");
+  const slug = process.env.ADW_APP_SLUG;
+  const botUserId = process.env.ADW_BOT_USER_ID;
+  const login = process.env.ADW_BOT_LOGIN;
+  contract([appId, slug, botUserId, login].every(value => typeof value === "string"), "App identity is unavailable");
+  const scopedToken = process.env.ADW_GITHUB_TOKEN;
+  const scopedRepository = process.env.ADW_GITHUB_TOKEN_REPOSITORY;
+  const scopedPermissions = process.env.ADW_GITHUB_TOKEN_PERMISSIONS;
+  let token = null;
+  if (scopedToken !== undefined || scopedRepository !== undefined || scopedPermissions !== undefined) {
+    contract(typeof scopedToken === "string" && scopedToken.length > 0 && scopedRepository === repository && typeof scopedPermissions === "string", "operation-scoped GitHub App token is unavailable");
+    let permissions;
+    try { permissions = JSON.parse(scopedPermissions); } catch { throw new AdwError("contract", "operation-scoped GitHub App permissions are invalid"); }
+    contract(Array.isArray(permissions) && permissions.every(value => typeof value === "string") && new Set(permissions).size === permissions.length, "operation-scoped GitHub App permissions are invalid");
+    token = async request => {
+      contract(digestJson(request.permissions) === digestJson(permissions), "GitHub App token permissions do not match operation class");
+      return { value: scopedToken, source: "github-app", repository, permissions, operationDigest: request.operationDigest };
+    };
+  }
   return createGitHub({
     repository,
-    token: process.env.GH_TOKEN ?? null,
-    appIdentity: { id: appId, login: appLogin },
+    token,
+    appIdentity: { appId, slug, botUserId, login },
     ghPath,
     baseEnv: {
       PATH: process.env.PATH ?? "",

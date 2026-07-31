@@ -95,6 +95,26 @@ test("production provider routes preserve current model assignments", () => {
   assert.deepEqual(role("pioneer").patch.allowedPrefixes, ["prototypes/"]);
 });
 
+test("provider roles expose only operations their reducers can emit", () => {
+  const terminal = ["noop", "terminal"];
+  const expected = {
+    triager: ["comment", "add_label"],
+    planner: ["create_issue", "add_label", "comment"],
+    surveyor: ["create_issue", "add_label", "comment"],
+    builder: ["create_pr", "comment", "add_label"],
+    "codex-builder": ["create_pr", "comment", "add_label"],
+    "docs-writer": ["create_pr", "comment", "add_label"],
+    reviser: ["update_pr", "comment", "add_label"],
+    pioneer: ["create_pr", "add_label", "comment"],
+    sweeper: ["rerun_check", "add_label", "create_issue"],
+    "dependency-manager": ["comment", "add_label"],
+    "alert-triager": ["create_issue", "comment"],
+  };
+  for (const [name, operations] of Object.entries(expected)) {
+    assert.deepEqual(role(name).operations, [...operations, ...terminal].sort(), name);
+  }
+});
+
 test("role payload families accept only exact semantic artifacts", () => {
   const patch = { baseSha: "a".repeat(40), digest: "b".repeat(64), size: 1, files: [{ path: "smith/src/lib.rs", kind: "regular", oldMode: "100644", newMode: "100644" }] };
   const samples = {

@@ -102,17 +102,19 @@ adw-source/{control/**,target.bundle,manifest.json,manifest.sha256}
 - Modify: `adw/github.mjs`
 - Create: `adw/test/apply.test.mjs`
 - Modify: `adw/test/github.test.mjs`
+- Modify: `adw/roles.mjs`
+- Modify: `adw/test/roles.test.mjs`
 
-- [ ] Write failing argv/stdin tests for every GitHub-owned operation in `OPERATIONS`: comments, targeted labels, issues, milestones, sub-issue links, PR metadata/create, checks, reruns, dispatch, squash auto-merge, label sync, drift reporting, no-op, and terminal failure. Assert `github.mjs` rejects `create_branch` and patch-bearing `update_pr`, which belong exclusively to `vcs.mjs`.
-- [ ] Add `applyOperation({ operation, snapshot, verification })`; it validates a GitHub-owned canonical operation and re-reads only revisions named by the snapshot before mutation. Any changed precondition returns `AdwError("stale", ...)` before the first write.
-- [ ] Use fixed methods and JSON request bodies only. No caller-provided URL, host, HTTP method, GraphQL document, or arbitrary `gh` argument exists.
-- [ ] Search deterministic markers/external IDs before creates. Equivalent comments/issues/milestones/checks/PRs are success; conflicting duplicates fail closed.
-- [ ] Label operations add/remove one named label and never replace full sets. Auto-merge verifies PR ID/head, current `check`, both current-head App evidence markers, no hold/sticky risk, and method `squash` before arming.
-- [ ] `sync_labels` reads the trusted control-SHA definition, validates its digest, and changes only definitions named there. Rulesets/settings remain outside the write capability.
-- [ ] Define an apply receipt as `{ decisionDigest, verificationDigest, operations: [{ operationDigest, status, beforeRevision, preparedRevision, afterRevision }] }`. Each operation has an explicit transition table accepting exactly original → prepared-marker → expected post-state; snapshot revision checks include those own-write states, so a marker/comment digest created by this decision is not mistaken for external drift. Any state outside that table is stale. On retry, reconstruct authority from forge markers/external IDs/natural state—not a local artifact. Prepared rerun/dispatch operations search bounded runs after marker time before retrying. `adw-apply-result` is uploaded with `if:always()` as evidence/cache, but forge state is durable authority across workflow reruns.
-- [ ] Assert all errors are sanitized and no token/provider content appears in argv, stdout, stderr, or exceptions.
-- [ ] Run `node --test adw/test/{github,apply}.test.mjs`; expect PASS.
-- [ ] Commit: `Apply closed forge operations with live preconditions`.
+- [x] Write failing argv/stdin tests for every GitHub-owned operation in `OPERATIONS`: comments, targeted labels, issues, milestones, sub-issue links, PR metadata/create, checks, reruns, dispatch, squash auto-merge, label sync, drift reporting, no-op, and terminal failure. Assert `github.mjs` rejects `create_branch` and patch-bearing `update_pr`, which belong exclusively to `vcs.mjs`.
+- [x] Add `applyOperation({ operation, snapshot, verification })`; it validates a GitHub-owned canonical operation and re-reads only revisions named by the snapshot before mutation. Any changed precondition returns `AdwError("stale", ...)` before the first write.
+- [x] Use fixed methods and JSON request bodies only. No caller-provided URL, host, HTTP method, GraphQL document, or arbitrary `gh` argument exists.
+- [x] Search deterministic markers/external IDs before creates. Equivalent comments/issues/milestones/checks/PRs are success; conflicting duplicates fail closed.
+- [x] Label operations add/remove one named label and never replace full sets. Auto-merge verifies PR ID/head, current `check`, both current-head App evidence markers, no hold/sticky risk, and method `squash` before arming.
+- [x] `sync_labels` reads the trusted control-SHA definition, validates its digest, and changes only definitions named there. Rulesets/settings remain outside the write capability.
+- [x] Define an apply receipt as `{ decisionDigest, verificationDigest, operations: [{ operationDigest, status, beforeRevision, preparedRevision, afterRevision }] }`. Each operation has an explicit transition table accepting exactly original → prepared-marker → expected post-state; snapshot revision checks include those own-write states, so a marker/comment digest created by this decision is not mistaken for external drift. Any state outside that table is stale. On retry, reconstruct authority from forge markers/external IDs/natural state—not a local artifact. Prepared rerun/dispatch operations search bounded runs after marker time before retrying. `adw-apply-result` is uploaded with `if:always()` as evidence/cache, but forge state is durable authority across workflow reruns.
+- [x] Assert all errors are sanitized and no token/provider content appears in argv, stdout, stderr, or exceptions.
+- [x] Run `node --test adw/test/{github,apply}.test.mjs`; expect PASS.
+- [x] Commit: `Apply closed forge operations with live preconditions`.
 
 ### Task 4: Exact verified-patch commit and push
 
