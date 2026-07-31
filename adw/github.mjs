@@ -222,9 +222,10 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     pullReviews: number => request(`/repos/${owner}/${name}/pulls/${positiveInteger(number)}/reviews`, true),
     commitChecks: headSha => {
       contract(typeof headSha === "string" && /^[0-9a-f]{40}$/.test(headSha), "head SHA is invalid");
-      return request(`/repos/${owner}/${name}/commits/${headSha}/check-runs`, "check_runs");
+      return request(`/repos/${owner}/${name}/commits/${headSha}/check-runs?filter=latest`, "check_runs");
     },
     rulesets: () => request(`/repos/${owner}/${name}/rulesets`, true),
+    ruleset: number => request(`/repos/${owner}/${name}/rulesets/${positiveInteger(number)}`),
     trustedFile: (path, ref) => {
       contract(typeof path === "string" && path.split("/").every(part => /^[A-Za-z0-9_.-]+$/.test(part) && part !== "." && part !== ".."), "trusted path is invalid");
       contract(typeof ref === "string" && /^[0-9a-f]{40}$/.test(ref), "trusted ref is invalid");
@@ -273,7 +274,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     contract(mergeSha === null || /^[0-9a-f]{40}$/.test(mergeSha), "pull merge SHA is malformed");
     return Object.freeze({
       id: restId(value.id, "pull id"), number: String(value.number), state: text(value.state, "pull state"), merged: value.merged === true || typeof value.merged_at === "string",
-      mergeSha,
+      mergeSha, mergeState: value.mergeable_state === undefined || value.mergeable_state === null ? null : text(value.mergeable_state, "pull merge state").toLowerCase(),
       updatedAt: text(value.updated_at, "pull updatedAt"), headSha, base: text(value.base?.ref, "pull base"),
       headRepository: text(value.head?.repo?.full_name, "pull head repository"),
       title: normalizedContent(value.title, `pull:${value.number}:title`), body: normalizedContent(value.body ?? "", `pull:${value.number}:body`),
@@ -290,15 +291,74 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     headSha: text(value.commit_id, "review head"), submittedAt: text(value.submitted_at, "review submittedAt"), body: normalizedContent(value.body ?? "", `pull:${pull}:review:${value.id}`),
   });
   const normalizeCheck = value => Object.freeze({ id: restId(value.id, "check id"), name: text(value.name, "check name"), headSha: text(value.head_sha, "check head"), status: text(value.status, "check status"), conclusion: value.conclusion === null ? null : text(value.conclusion, "check conclusion") });
+  const canonicalValue = (value, name) => {
+    try { return JSON.parse(canonicalBytes(value).toString("utf8")); } catch { throw new AdwError("forge", `${name} is malformed`); }
+  };
+  const exactObject = (value, keys, name) => {
+    contract(value && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype, `${name} is malformed`);
+    const actual = Object.keys(value).sort();
+    const expected = [...keys].sort();
+    contract(actual.length === expected.length && actual.every((key, index) => key === expected[index]), `${name} is malformed`);
+  };
+  const normalizeRule = rule => {
+    contract(rule && typeof rule.type === "string", "ruleset rule is malformed");
+    const simple = new Set(["deletion", "non_fast_forward", "required_linear_history", "required_signatures"]);
+    contract(simple.has(rule.type) || new Set(["pull_request", "copilot_code_review", "required_status_checks"]).has(rule.type), "ruleset rule type is unsupported");
+    if (simple.has(rule.type)) exactObject(rule, ["type"], "ruleset rule");
+    else {
+      exactObject(rule, ["type", "parameters"], "ruleset rule");
+      exactObject(rule.parameters, {
+        pull_request: ["required_approving_review_count", "require_code_owner_review", "dismiss_stale_reviews_on_push", "require_last_push_approval", "required_review_thread_resolution", "required_reviewers", "allowed_merge_methods"],
+        copilot_code_review: ["review_on_push", "review_draft_pull_requests"],
+        required_status_checks: ["strict_required_status_checks_policy", "required_status_checks"],
+      }[rule.type] ?? Object.keys(rule.parameters), "ruleset rule parameters");
+      if (rule.type === "pull_request") {
+        contract(Number.isSafeInteger(rule.parameters.required_approving_review_count) && ["require_code_owner_review", "dismiss_stale_reviews_on_push", "require_last_push_approval", "required_review_thread_resolution"].every(key => typeof rule.parameters[key] === "boolean") && Array.isArray(rule.parameters.required_reviewers) && Array.isArray(rule.parameters.allowed_merge_methods), "ruleset pull request parameters are malformed");
+      } else if (rule.type === "copilot_code_review") {
+        contract(typeof rule.parameters.review_on_push === "boolean" && typeof rule.parameters.review_draft_pull_requests === "boolean", "ruleset Copilot parameters are malformed");
+      } else if (rule.type === "required_status_checks") {
+        contract(typeof rule.parameters.strict_required_status_checks_policy === "boolean" && Array.isArray(rule.parameters.required_status_checks), "ruleset check parameters are malformed");
+        for (const check of rule.parameters.required_status_checks) { exactObject(check, ["context"], "ruleset required check"); text(check.context, "ruleset check context"); }
+      }
+    }
+    return canonicalValue(rule, "ruleset rule");
+  };
+  const normalizeRuleset = (value, expectedId) => {
+    contract(value && restId(value.id, "ruleset id") === expectedId, "ruleset is malformed");
+    exactObject(value.conditions, ["ref_name"], "ruleset conditions");
+    exactObject(value.conditions.ref_name, ["include", "exclude"], "ruleset ref conditions");
+    contract(Array.isArray(value.conditions.ref_name.include) && Array.isArray(value.conditions.ref_name.exclude) && Array.isArray(value.rules) && Array.isArray(value.bypass_actors), "ruleset is malformed");
+    const rules = value.rules.map(normalizeRule);
+    const bypass = value.bypass_actors.map(actor => { exactObject(actor, ["actor_id", "actor_type", "bypass_mode"], "ruleset bypass actor"); return canonicalValue(actor, "ruleset bypass actor"); });
+    return Object.freeze({
+      name: text(value.name, "ruleset name"), target: text(value.target, "ruleset target"), enforcement: text(value.enforcement, "ruleset enforcement"),
+      conditions: canonicalValue(value.conditions, "ruleset conditions"), rules, bypass_actors: bypass,
+    });
+  };
   const normalizeRun = value => Object.freeze({ id: restId(value.id, "run id"), name: text(value.name, "run name"), event: text(value.event, "run event"), status: text(value.status, "run status"), conclusion: value.conclusion === null ? null : text(value.conclusion, "run conclusion"), headSha: text(value.head_sha, "run head"), attempt: Number(value.run_attempt ?? 1) });
-  const enrichPull = async (raw, files = null) => {
-    const pull = normalizePull(raw);
+  const reviewEvidence = (comments, headSha) => {
+    const evidence = [];
+    for (const comment of comments) {
+      if (comment.user?.login !== appIdentity.login || comment.user?.type !== "Bot" || typeof comment.body !== "string") continue;
+      let match = /^(Review|Security review): ([0-9a-f]{40})\nVERDICT: (reviewed|changes-requested|security-cleared|risk-high)(?:\n|$)/.exec(comment.body);
+      if (match && match[2] === headSha) evidence.push({ kind: match[1] === "Review" ? "correctness" : "security", headSha, conclusion: new Set(["reviewed", "security-cleared"]).has(match[3]) ? "approve" : "reject" });
+      match = /^<!-- smith:review-evidence\/v1 kind=(correctness|security) head=([0-9a-f]{40}) conclusion=(approve|reject) provider=(claude|codex) authoritative=true artifact=([0-9a-f]{64}) -->$/.exec(comment.body);
+      if (match && match[2] === headSha) evidence.push({ kind: match[1], headSha, conclusion: match[3] });
+    }
+    return evidence;
+  };
+  const enrichPull = async (raw, files = null, maintenance = false) => {
+    const initial = normalizePull(raw);
+    const pull = maintenance && !initial.merged ? normalizePull(await methods.pull(Number(initial.number))) : initial;
     const rawFiles = files ?? await methods.pullFiles(Number(pull.number));
     const changedPaths = rawFiles.map(file => text(file.filename, "changed path")).sort();
     const closing = await methods.closingIssues(Number(pull.number));
     if (pull.merged && !pull.mergeSha) throw new AdwError("forge", "merged pull lacks merge SHA");
     const obligations = pull.merged ? ["linked-work", "docs-writer"].map(roleName => Object.freeze({ role: roleName, status: "missing", artifactDigest: null, expectedArtifactDigest: null })) : [];
-    return Object.freeze({ ...pull, changedPaths: Object.freeze(changedPaths), closingIssues: Object.freeze(closing), obligations: Object.freeze(obligations) });
+    const checks = maintenance && !pull.merged ? (await methods.commitChecks(pull.headSha)).map(normalizeCheck) : [];
+    const comments = maintenance && !pull.merged ? await methods.comments("issues", Number(pull.number)) : [];
+    const evidence = reviewEvidence(comments, pull.headSha);
+    return Object.freeze({ ...pull, changedPaths: Object.freeze(changedPaths), closingIssues: Object.freeze(closing), obligations: Object.freeze(obligations), checks: Object.freeze(checks), evidence: Object.freeze(evidence) });
   };
   const api = {
     async readSnapshot(event) {
@@ -413,7 +473,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         const rawPulls = await methods.pulls();
         if (rawPulls.length > 100) throw new AdwError("forge", "overflow");
         const pulls = [];
-        for (const rawPull of rawPulls) pulls.push(await enrichPull(rawPull));
+        for (const rawPull of rawPulls) pulls.push(await enrichPull(rawPull, null, true));
         put("pulls", "pulls", Object.freeze(pulls), digestJson(pulls));
         satisfied.add("pulls");
       }
@@ -462,7 +522,13 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         if (event.kind === "alert" && !alerts.some(alert => alert.updatedAt === event.revisionHints.updatedAt)) throw new AdwError("forge", "stale");
       }
       if (fields.has("settings") || fields.has("config")) {
-        const rulesets = (await methods.rulesets()).map(value => Object.freeze({ id: restId(value.id, "ruleset id"), name: text(value.name, "ruleset name"), enforcement: text(value.enforcement, "ruleset enforcement"), target: text(value.target, "ruleset target"), sourceType: text(value.source_type, "ruleset source type") }));
+        const summaries = await methods.rulesets();
+        if (summaries.length > 100) throw new AdwError("forge", "overflow");
+        const ids = summaries.map(summary => restId(summary.id, "ruleset id"));
+        if (new Set(ids).size !== ids.length) throw new AdwError("forge", "duplicate ruleset id");
+        const rulesets = [];
+        for (const rulesetId of ids) rulesets.push(normalizeRuleset(await methods.ruleset(Number(rulesetId)), rulesetId));
+        rulesets.sort((a, b) => a.name.localeCompare(b.name));
         put("rulesets", "settings", Object.freeze(rulesets), digestJson(rulesets));
         if (fields.has("settings")) satisfied.add("settings");
         if (fields.has("config")) satisfied.add("config");

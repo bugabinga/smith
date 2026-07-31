@@ -54,15 +54,15 @@ Before Task 7, the owner must provide a separately scoped disposable GitHub App 
 - Modify: `adw/test/core.test.mjs`
 - Modify: `adw/test/roles.test.mjs`
 
-- [ ] Write failing tests proving ruleset snapshots include canonical conditions, every rule parameter, bypass actors, enforcement, and target—not only rule types/list summaries. A live `strict_required_status_checks_policy:true` value against checked-in `false` must produce drift.
-- [ ] Run `node --test --test-name-pattern='ruleset|settings drift' adw/test/{github,roles}.test.mjs`; expect missing detail/drift failures.
-- [ ] Add fixed `ruleset(id)` reads after the bounded list call; normalize exact full rulesets and reject pagination, unknown shapes, duplicate IDs, or omitted required parameters. Do not expose a generic endpoint.
-- [ ] Map deterministic settings comparison to `report_drift` with one deterministic marker; settings remain read-only.
-- [ ] Write failing tests that a current-head PR with successful required checks and verdict evidence but live `BEHIND`/`BLOCKED` merge state becomes a jam finding rather than a no-op.
-- [ ] Add bounded per-open-PR merge-state enrichment and jam reduction. Historical failed checks do not override the latest run of the same check context; latest successful reruns qualify.
-- [ ] Pin review-comment/check dispatch as reconcile-only in table tests; no `ROLE_EVENTS` entry may accept either event.
-- [ ] Run `node --test adw/test/{core,github,roles,scenarios}.test.mjs`; expect PASS.
-- [ ] Commit: `Close live ADW state gaps before write proof`.
+- [x] Write failing tests proving ruleset snapshots include canonical conditions, every rule parameter, bypass actors, enforcement, and target—not only rule types/list summaries. A live `strict_required_status_checks_policy:true` value against checked-in `false` must produce drift.
+- [x] Run `node --test --test-name-pattern='ruleset|settings drift' adw/test/{github,roles}.test.mjs`; expect missing detail/drift failures.
+- [x] Add fixed `ruleset(id)` reads after the bounded list call; normalize exact full rulesets and reject pagination, unknown shapes, duplicate IDs, or omitted required parameters. Do not expose a generic endpoint.
+- [x] Map deterministic settings comparison to `report_drift` with one deterministic marker; settings remain read-only.
+- [x] Write failing tests that a current-head PR with successful required checks and verdict evidence but live `BEHIND`/`BLOCKED` merge state becomes a jam finding rather than a no-op.
+- [x] Add bounded per-open-PR merge-state enrichment and jam reduction. Historical failed checks do not override the latest run of the same check context; latest successful reruns qualify.
+- [x] Pin review-comment/check dispatch as reconcile-only in table tests; no `ROLE_EVENTS` entry may accept either event.
+- [x] Run `node --test adw/test/{core,github,roles,scenarios}.test.mjs`; expect PASS.
+- [x] Commit: `Close live ADW state gaps before write proof`.
 
 ### Task 2: Exact artifact transport and missing CLI commands
 

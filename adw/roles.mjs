@@ -429,6 +429,58 @@ export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessment
   });
 }
 
+function changedPaths(expected, live, path = "$", found = []) {
+  if (found.length >= 20) return found;
+  if (digestJson(expected) === digestJson(live)) return found;
+  if (!expected || !live || typeof expected !== "object" || typeof live !== "object" || Array.isArray(expected) !== Array.isArray(live)) {
+    found.push(path);
+    return found;
+  }
+  if (Array.isArray(expected)) {
+    if (expected.length !== live.length) found.push(`${path}.length`);
+    for (let index = 0; index < Math.min(expected.length, live.length); index++) changedPaths(expected[index], live[index], `${path}[${index}]`, found);
+    return found;
+  }
+  for (const key of [...new Set([...Object.keys(expected), ...Object.keys(live)])].sort()) {
+    if (!Object.hasOwn(expected, key) || !Object.hasOwn(live, key)) found.push(`${path}.${key}`);
+    else changedPaths(expected[key], live[key], `${path}.${key}`, found);
+    if (found.length >= 20) break;
+  }
+  return found;
+}
+
+export function deriveDeterministicArtifacts(name, snapshot) {
+  const resources = snapshot?.state?.resources;
+  if (!resources || Array.isArray(resources) || typeof resources !== "object") payloadFail("deterministic snapshot is invalid");
+  if (name === "settings-auditor") {
+    let expected;
+    try { expected = JSON.parse(resources["trusted:.github/rulesets/main.json"]?.data); } catch { payloadFail("trusted ruleset is invalid"); }
+    const live = resources.rulesets;
+    if (!Array.isArray(live)) payloadFail("live rulesets are invalid");
+    const actual = live.find(value => value?.name === expected?.name) ?? null;
+    const paths = changedPaths(expected, actual);
+    const drifts = paths.length === 0 ? [] : [{ title: `Ruleset drift: ${expected.name}`, body: `Changed fields: ${paths.join(", ")}` }];
+    return deepFreeze([{ drifts }]);
+  }
+  if (name === "jam-detector") {
+    if (!Array.isArray(resources.pulls)) payloadFail("live pulls are invalid");
+    const requiredLabels = ["reviewed", "security-cleared"];
+    const requiredChecks = ["check", "merge-gate"];
+    const artifacts = [];
+    for (const pull of resources.pulls) {
+      if (pull?.state !== "open" || pull.merged !== false || !["behind", "blocked"].includes(pull.mergeState) || !requiredLabels.every(label => pull.labels?.includes(label))) continue;
+      if (!requiredChecks.every(name => {
+        const checks = pull.checks?.filter(check => check.name === name && check.headSha === pull.headSha) ?? [];
+        return checks.length === 1 && checks[0].status === "completed" && checks[0].conclusion === "success";
+      })) continue;
+      if (!["correctness", "security"].every(kind => pull.evidence?.some(item => item.kind === kind && item.headSha === pull.headSha && item.conclusion === "approve"))) continue;
+      artifacts.push({ entityId: String(pull.number), headSha: pull.headSha, stalled: true, reason: `Current-head checks and reviews passed, but merge state is ${pull.mergeState}.` });
+    }
+    return deepFreeze(artifacts);
+  }
+  payloadFail("deterministic role is unsupported");
+}
+
 export function reduceDeterministicArtifact(name, payload) {
   const policy = deterministicRole(name);
   let operations;

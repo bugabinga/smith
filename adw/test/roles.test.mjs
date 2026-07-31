@@ -3,8 +3,8 @@ import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 import { canonicalBytes, digestBytes, digestJson } from "../core.mjs";
 import {
-  OPERATIONS, PROVIDERS, defineRole, deterministicRole, listDeterministicRoles,
-  listRoles, reduceRoleArtifact, role, validateRolePayload,
+  OPERATIONS, PROVIDERS, defineRole, deriveDeterministicArtifacts, deterministicRole,
+  listDeterministicRoles, listRoles, reduceRoleArtifact, role, validateRolePayload,
 } from "../roles.mjs";
 
 const policy = {
@@ -231,6 +231,23 @@ test("pioneer verdicts preserve proof authority", () => {
   assert.match(disproved.operations[1].body, /Falsified claim: claim/);
   const proved = reduceRoleArtifact(roleCase("pioneer", { verdict: "proved", summary: "True", claim: "claim", patch: null }, { entityId: "1", labels: [], closingArtifactQualifies: true }));
   assert.deepEqual(proved.operations, [{ type: "noop", reason: "already_complete" }]);
+});
+
+test("deterministic snapshots expose settings drift and green blocked jams", () => {
+  const expected = { name: "main", target: "branch", enforcement: "active", conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } }, rules: [{ type: "required_status_checks", parameters: { strict_required_status_checks_policy: false, required_status_checks: [{ context: "check" }, { context: "merge-gate" }] } }], bypass_actors: [] };
+  const settings = value => ({ state: { resources: { "trusted:.github/rulesets/main.json": { data: JSON.stringify(expected) }, rulesets: [value] } } });
+  assert.deepEqual(deriveDeterministicArtifacts("settings-auditor", settings(expected)), [{ drifts: [] }]);
+  const live = structuredClone(expected);
+  live.rules[0].parameters.strict_required_status_checks_policy = true;
+  const drift = deriveDeterministicArtifacts("settings-auditor", settings(live));
+  assert.equal(drift.length, 1);
+  assert.equal(drift[0].drifts.length, 1);
+  assert.match(drift[0].drifts[0].body, /strict_required_status_checks_policy/);
+
+  const jamHead = "b".repeat(40);
+  const jams = deriveDeterministicArtifacts("jam-detector", { state: { resources: { pulls: [{ number: "2", state: "open", headSha: jamHead, merged: false, mergeState: "behind", labels: ["reviewed", "security-cleared"], evidence: [{ kind: "correctness", headSha: jamHead, conclusion: "approve" }, { kind: "security", headSha: jamHead, conclusion: "approve" }], checks: [{ name: "check", headSha: jamHead, status: "completed", conclusion: "success" }, { name: "merge-gate", headSha: jamHead, status: "completed", conclusion: "success" }] }] } } });
+  assert.equal(jams.length, 1);
+  assert.deepEqual(jams[0], { entityId: "2", headSha: "b".repeat(40), stalled: true, reason: "Current-head checks and reviews passed, but merge state is behind." });
 });
 
 test("deterministic roles remain provider-free", () => {

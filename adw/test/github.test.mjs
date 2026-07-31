@@ -51,6 +51,10 @@ test("every provider role has a closed event snapshot plan", async () => {
     assert.ok(Object.isFrozen(plan));
   }
   assert.throws(() => roleSnapshotPlan("reviewer", "issue"), error => error?.code === "contract");
+  for (const name of [...new Set(plans.map(value => value.role))]) {
+    assert.throws(() => roleSnapshotPlan(name, "pull_request_review_comment"), error => error?.code === "contract", name);
+    assert.throws(() => roleSnapshotPlan(name, "check"), error => error?.code === "contract", name);
+  }
   assert.deepEqual(deterministicSnapshotPlan("settings-auditor", "schedule").fields, ["config", "settings"]);
   assert.deepEqual(deterministicSnapshotPlan("jam-detector", "schedule").fields, ["pulls", "runs"]);
 });
@@ -227,13 +231,39 @@ test("list-derived merged pulls retain post-merge obligations", async () => {
   assert.deepEqual(snapshot.state.resources.pulls[0].obligations.map(value => value.role), ["linked-work", "docs-writer"]);
 });
 
-test("deterministic settings snapshot binds expected and live rulesets", async () => {
+test("maintenance snapshots enrich open pulls with merge state and current checks", async () => {
+  const headSha = "b".repeat(40);
+  const pull = { id: 2, number: 2, state: "open", merged: false, merge_commit_sha: null, updated_at: "2026-07-28T00:00:00Z", head: { sha: headSha, repo: { full_name: "bugabinga/smith" } }, base: { ref: "main" }, title: "Ready", body: "", labels: [{ name: "reviewed" }, { name: "security-cleared" }] };
+  const github = adapter(async request => {
+    const endpoint = request.args.at(-1);
+    const reply = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
+    if (request.args[1] === "graphql") return reply({ data: { repository: { pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false } } } } } });
+    if (endpoint === "/repos/bugabinga/smith") return reply({ id: 42, owner: { id: 7, login: "bugabinga" }, name: "smith", default_branch: "main" });
+    if (endpoint.startsWith("/repos/bugabinga/smith/pulls?")) return reply([pull]);
+    if (endpoint === "/repos/bugabinga/smith/pulls/2") return reply({ ...pull, mergeable_state: "blocked" });
+    if (endpoint.startsWith("/repos/bugabinga/smith/pulls/2/files?")) return reply([]);
+    if (endpoint.startsWith(`/repos/bugabinga/smith/commits/${headSha}/check-runs?`)) return reply({ check_runs: [{ id: 1, name: "check", head_sha: headSha, status: "completed", conclusion: "success" }, { id: 2, name: "merge-gate", head_sha: headSha, status: "completed", conclusion: "success" }] });
+    if (endpoint.startsWith("/repos/bugabinga/smith/issues/2/comments?")) return reply([{ id: 10, user: { id: 9, login: "smith[bot]", type: "Bot" }, created_at: "2026-07-28T00:00:00Z", body: `Review: ${headSha}\nVERDICT: reviewed` }, { id: 11, user: { id: 9, login: "smith[bot]", type: "Bot" }, created_at: "2026-07-28T00:00:01Z", body: `Security review: ${headSha}\nVERDICT: security-cleared` }]);
+    if (endpoint.startsWith("/repos/bugabinga/smith/actions/runs?")) return reply({ workflow_runs: [] });
+    throw new Error(`unexpected ${endpoint}`);
+  });
+  const event = normalizeEvent("schedule", { schedule: "0 * * * *", repository, sender });
+  const snapshot = await github.readDeterministicSnapshot(event, "jam-detector", { controlSha: "a".repeat(40), appId: "A_1" });
+  assert.equal(snapshot.state.resources.pulls[0].mergeState, "blocked");
+  assert.deepEqual(snapshot.state.resources.pulls[0].checks.map(value => value.name), ["check", "merge-gate"]);
+  assert.deepEqual(snapshot.state.resources.pulls[0].evidence.map(value => value.kind), ["correctness", "security"]);
+});
+
+test("deterministic settings snapshot binds expected and full live rulesets", async () => {
+  const ruleset = { id: 1, name: "main", enforcement: "active", target: "branch", source_type: "Repository", conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } }, rules: [{ type: "required_status_checks", parameters: { strict_required_status_checks_policy: false, required_status_checks: [{ context: "check" }, { context: "merge-gate" }] } }], bypass_actors: [] };
+  const expected = Object.fromEntries(Object.entries(ruleset).filter(([key]) => !["id", "source_type"].includes(key)));
   const github = adapter(async request => {
     const endpoint = request.args.at(-1);
     const reply = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
     if (endpoint === "/repos/bugabinga/smith") return reply({ id: 42, node_id: "R_1", owner: { id: 7, login: "bugabinga" }, name: "smith", default_branch: "main" });
-    if (endpoint.includes("/contents/.github/rulesets/main.json?ref=")) return reply({ encoding: "base64", content: Buffer.from("{\"rules\":[]}").toString("base64"), sha: "c".repeat(40) });
+    if (endpoint.includes("/contents/.github/rulesets/main.json?ref=")) return reply({ encoding: "base64", content: Buffer.from(JSON.stringify(expected)).toString("base64"), sha: "c".repeat(40) });
     if (endpoint.startsWith("/repos/bugabinga/smith/rulesets?")) return reply([{ id: 1, name: "main", enforcement: "active", target: "branch", source_type: "Repository" }]);
+    if (endpoint === "/repos/bugabinga/smith/rulesets/1") return reply(ruleset);
     throw new Error(`unexpected ${endpoint}`);
   });
   const event = normalizeEvent("schedule", { schedule: "0 * * * *", repository, sender });
@@ -241,9 +271,15 @@ test("deterministic settings snapshot binds expected and live rulesets", async (
   assert.equal(snapshot.routing.role, "settings-auditor");
   assert.equal(snapshot.state.resources["trusted:.github/rulesets/main.json"].trust, "trusted");
   assert.equal(snapshot.state.resources.rulesets[0].enforcement, "active");
+  assert.equal(snapshot.state.resources.rulesets[0].rules[0].parameters.strict_required_status_checks_policy, false);
   const replay = await github.readDeterministicSnapshot(event, "settings-auditor", { controlSha: "a".repeat(40), appId: "A_1" });
   assert.deepEqual(replay, snapshot);
   assert.equal(digestJson(replay), digestJson(snapshot));
+  ruleset.id = 2;
+  await assert.rejects(() => github.readDeterministicSnapshot(event, "settings-auditor", { controlSha: "a".repeat(40), appId: "A_1" }), error => error?.code === "contract");
+  ruleset.id = 1;
+  ruleset.rules = [{ type: "unknown_owner_policy" }];
+  await assert.rejects(() => github.readDeterministicSnapshot(event, "settings-auditor", { controlSha: "a".repeat(40), appId: "A_1" }), error => error?.code === "contract");
 });
 
 test("role snapshot rejects repository drift and untrusted App identity", async () => {
