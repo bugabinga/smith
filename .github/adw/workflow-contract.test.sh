@@ -15,6 +15,24 @@ require() {
   fi
 }
 
+require_claude_timeouts() {
+  local file=$1
+  local expected=$2
+  local message=$3
+  if awk -v expected="$expected" '
+    function finish() { if (claude) { count++; if (!timeout) bad=1 } }
+    /^      - / { finish(); claude=($0 ~ /- id: claude$/); timeout=0; next }
+    /^[[:space:]]+id: claude$/ { claude=1 }
+    /^[[:space:]]+timeout-minutes: 5$/ { timeout=1 }
+    END { finish(); exit !(count == expected && !bad) }
+  ' "$file"; then
+    echo "PASS $message"
+  else
+    echo "FAIL $message"
+    fail=1
+  fi
+}
+
 require .github/workflows/adw-review.yml 'Assert a verdict was cast' \
   'review workflows assert verdict labels instead of trusting action exit status'
 require .github/workflows/adw-review.yml 'attempt 1 ended without a verdict' \
@@ -105,12 +123,8 @@ require .github/workflows/adw-review.yml 'needs: \[reviewer, security-reviewer, 
   'Codex reducer receives the failed-provider state in a clean downstream job'
 require .github/workflows/adw-codex-review.yml 'advisory' \
   'ordinary Codex review remains advisory'
-if [ "$(grep -c 'timeout-minutes: 5' .github/workflows/adw-plan.yml)" -lt 3 ]; then
-  echo "FAIL every planner primary is time-bounded"
-  fail=1
-else
-  echo "PASS every planner primary is time-bounded"
-fi
+require_claude_timeouts .github/workflows/adw-plan.yml 3 \
+  'every planner primary is time-bounded'
 if [ "$(grep -c 'continue-on-error: true' .github/workflows/adw-plan.yml)" -lt 3 ]; then
   echo "FAIL every planner mode permits provider fallback"
   fail=1
@@ -127,7 +141,7 @@ require .github/workflows/adw-plan.yml 'gpt-5.6-sol' \
   'planner fallback uses the assigned Codex model'
 require .github/workflows/adw-plan.yml '.claude/agents/planner.md' \
   'planner fallback keeps the canonical charter'
-require .github/workflows/adw-survey.yml 'timeout-minutes: 5' \
+require_claude_timeouts .github/workflows/adw-survey.yml 1 \
   'surveyor primary is time-bounded'
 require .github/workflows/adw-survey.yml 'continue-on-error: true' \
   'surveyor permits provider fallback'
