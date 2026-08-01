@@ -92,8 +92,9 @@ function routedSnapshot(operation, value = snapshot()) {
     : operation.type === "update_pr" ? "reviser"
       : operation.type === "create_issue" ? "planner"
         : operation.type === "publish_check" ? "reviewer"
-          : operation.type === "rerun_check" || operation.type === "dispatch_workflow" || operation.type === "arm_auto_merge" ? "sweeper"
-            : operation.type === "sync_labels" ? "label-sync"
+          : operation.type === "dispatch_repository" ? "reconciler"
+            : operation.type === "rerun_check" || operation.type === "arm_auto_merge" ? "sweeper"
+              : operation.type === "sync_labels" ? "label-sync"
               : operation.type === "report_drift" ? "settings-auditor" : "triager";
   const routings = {
     builder: { role: "builder", mode: "single", primary: "claude" },
@@ -101,6 +102,7 @@ function routedSnapshot(operation, value = snapshot()) {
     planner: { role: "planner", mode: "single", primary: "claude" },
     reviewer: { role: "reviewer", mode: "single", primary: "claude" },
     sweeper: { role: "sweeper", mode: "single", primary: "codex" },
+    reconciler: { role: "reconciler", mode: "single", primary: null },
     "label-sync": { role: "label-sync", mode: "single", primary: null },
     "settings-auditor": { role: "settings-auditor", mode: "single", primary: null },
     triager: { role: "triager", mode: "single", primary: "codex" },
@@ -286,7 +288,7 @@ test("canonical role operations are never widened by the writer", async () => {
   ];
   for (const operation of operations) {
     const { github, calls, mints } = harness(() => assert.fail("unauthorized operation must not invoke gh"));
-    await assert.rejects(() => apply(github, operation), error => error?.code === "contract" && error.message === "operation type is not allowed by role");
+    await assert.rejects(() => apply(github, operation), error => error?.code === "contract" && error.message.startsWith("operation type is not allowed"));
     assert.equal(calls.length, 0, operation.type);
     assert.equal(mints.length, 0, operation.type);
   }
@@ -480,6 +482,39 @@ test("in-progress rerun recovery fails terminal on non-exact delivery evidence",
   assert.equal(calls.some(call => call.args[2] !== "GET"), false);
 });
 
+test("repository dispatch writer uses one fixed endpoint and proves exact App delivery", async () => {
+  const issue = { id: 1, number: 1, state: "open", title: "Route", body: "", labels: [], milestone: null, updated_at: "2026-01-01T00:00:00.000Z" };
+  const sourceRevision = issueSourceRevision(issue);
+  const operation = {
+    type: "dispatch_repository",
+    eventType: "retry_route",
+    clientPayload: { repositoryId: "42", issueId: "1", sourceRevision, role: "builder", provider: "claude" },
+  };
+  const routing = { role: "reconciler", mode: "single", primary: null };
+  const value = { ...snapshot(), routing, state: { currentRevisions: { "issue:1": sourceRevision }, reconciliation: { pulls: [] } } };
+  let markerBody = null;
+  let markerStatus = null;
+  let delivered = false;
+  const { github, calls } = harness(request => {
+    const path = endpoint(request);
+    const liveMarker = () => ({ id: 10, ...markerBody, external_id: markerBody.external_id, head_sha: markerBody.head_sha, status: markerStatus, conclusion: markerStatus === "completed" ? "success" : null, output: markerBody.output, app, created_at: "2026-01-01T00:00:00.000Z" });
+    if (request.args[2] === "GET" && path === "/repos/bugabinga/smith/issues/1") return reply(issue);
+    if (request.args[2] === "GET" && path === "/repos/bugabinga/smith/git/ref/heads/main") return reply({ object: { sha: controlSha } });
+    if (request.args[2] === "GET" && path.startsWith(`/repos/bugabinga/smith/commits/${controlSha}/check-runs?`)) return reply({ check_runs: markerBody === null ? [] : [liveMarker()] });
+    if (request.args[2] === "GET" && path.endsWith("/check-runs/10")) return reply(liveMarker());
+    if (request.args[2] === "POST" && path.endsWith("/check-runs")) { markerBody = body(request); markerStatus = "in_progress"; return reply({ id: 10 }); }
+    if (request.args[2] === "POST" && path === "/repos/bugabinga/smith/dispatches") { delivered = true; return reply(null); }
+    if (request.args[2] === "GET" && path.startsWith("/repos/bugabinga/smith/actions/workflows/adw-issues.yml/runs?")) return reply({ workflow_runs: delivered ? [{ id: 20, path: ".github/workflows/adw-issues.yml", head_branch: "main", head_sha: controlSha, event: "repository_dispatch", display_title: digestJson(operation), triggering_actor: bot, created_at: "2026-01-01T00:00:01.000Z" }] : [] });
+    if (request.args[2] === "PATCH" && path.endsWith("/check-runs/10")) { markerStatus = "completed"; return reply(liveMarker()); }
+    throw new Error(`unexpected ${request.args[2]} ${path}`);
+  });
+  assert.equal((await apply(github, operation, value, { routing })).status, "complete");
+  const delivery = calls.find(call => endpoint(call) === "/repos/bugabinga/smith/dispatches");
+  assert.deepEqual(body(delivery), { event_type: "retry_route", client_payload: { ...operation.clientPayload, smith_operation_digest: digestJson(operation) } });
+  assert.equal(calls.some(call => endpoint(call).includes("/actions/workflows/adw-issues.yml/dispatches")), false);
+  assert.equal(calls.filter(call => endpoint(call) === "/repos/bugabinga/smith/dispatches").length, 1);
+});
+
 test("auto-merge freshly enforces non-draft clean current-head authority immediately before GraphQL", async () => {
   const operation = { type: "arm_auto_merge", prId: "3", headSha, method: "squash" };
   const routing = { role: "auditor", mode: "single", primary: null };
@@ -522,7 +557,7 @@ test("operation capabilities are exact, operation-scoped, and exclude settings w
   assert.deepEqual(operationCapabilities({ type: "comment" }), ["issues:write"]);
   assert.deepEqual(operationCapabilities({ type: "publish_check" }), ["checks:write"]);
   assert.deepEqual(operationCapabilities({ type: "rerun_check" }), ["actions:write", "checks:write"]);
-  assert.deepEqual(operationCapabilities({ type: "dispatch_workflow" }), ["actions:write", "checks:write"]);
+  assert.deepEqual(operationCapabilities({ type: "dispatch_repository" }), ["actions:write", "checks:write"]);
   assert.deepEqual(operationCapabilities({ type: "create_pr" }), ["pulls:write"]);
   assert.deepEqual(operationCapabilities({ type: "arm_auto_merge" }), ["checks:read", "issues:read", "pulls:write"]);
   assert.deepEqual(operationCapabilities({ type: "sync_labels" }), ["contents:read", "issues:write"]);

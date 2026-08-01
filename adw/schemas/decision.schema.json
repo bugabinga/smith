@@ -553,22 +553,61 @@
           "additionalProperties": false,
           "required": [
             "type",
-            "workflow",
-            "ref",
-            "inputs"
+            "eventType",
+            "clientPayload"
           ],
           "properties": {
             "type": {
-              "const": "dispatch_workflow"
+              "const": "dispatch_repository"
             },
-            "workflow": {
-              "$ref": "#/$defs/text"
+            "eventType": {
+              "enum": [
+                "retry_route",
+                "fallback_route",
+                "retry_pioneer",
+                "run_review",
+                "run_obligation"
+              ]
             },
-            "ref": {
-              "$ref": "#/$defs/text"
-            },
-            "inputs": {
-              "type": "object"
+            "clientPayload": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["repositoryId", "issueId", "sourceRevision", "role", "provider"],
+                  "properties": {
+                    "repositoryId": {"$ref": "#/$defs/text"},
+                    "issueId": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+                    "sourceRevision": {"$ref": "#/$defs/digest"},
+                    "role": {"enum": ["builder", "codex-builder", "pioneer"]},
+                    "provider": {"enum": ["claude", "codex"]}
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["repositoryId", "prId", "headSha", "role", "provider"],
+                  "properties": {
+                    "repositoryId": {"$ref": "#/$defs/text"},
+                    "prId": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+                    "headSha": {"$ref": "#/$defs/sha"},
+                    "role": {"enum": ["reviewer", "security-reviewer"]},
+                    "provider": {"const": "claude"}
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["repositoryId", "prId", "mergeSha", "role", "provider"],
+                  "properties": {
+                    "repositoryId": {"$ref": "#/$defs/text"},
+                    "prId": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+                    "mergeSha": {"$ref": "#/$defs/sha"},
+                    "role": {"const": "docs-writer"},
+                    "provider": {"const": "codex"}
+                  }
+                }
+              ]
             }
           }
         },

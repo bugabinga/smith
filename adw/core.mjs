@@ -36,6 +36,17 @@ const EVENT_KINDS = new Set([
   "alert", "dispatch",
 ]);
 const PROVIDERS = new Set(["claude", "codex"]);
+const REST_ID = /^[1-9][0-9]*$/;
+
+export const REPOSITORY_DISPATCH_WORKFLOWS = Object.freeze({
+  retry_route: "adw-issues.yml",
+  fallback_route: "adw-issues.yml",
+  retry_pioneer: "adw-issues.yml",
+  run_review: "adw-pulls.yml",
+  run_obligation: "adw-maintenance.yml",
+});
+const REPOSITORY_DISPATCH_TYPES = new Set(Object.keys(REPOSITORY_DISPATCH_WORKFLOWS));
+const ROUTE_PROVIDER_ROLES = Object.freeze({ claude: "builder", codex: "codex-builder" });
 
 function fail(message) {
   throw new AdwError("contract", message);
@@ -77,6 +88,11 @@ function digest(value, name) {
   return value;
 }
 
+function restId(value, name) {
+  if (typeof value !== "string" || !REST_ID.test(value) || !Number.isSafeInteger(Number(value))) fail(`${name} must be a REST ID`);
+  return value;
+}
+
 function array(value, name, max = 100) {
   if (!Array.isArray(value) || value.length > max) fail(`${name} must be an array`);
   return value;
@@ -98,6 +114,39 @@ function deepFreeze(value) {
 function copy(value) {
   canonicalBytes(value);
   return deepFreeze(structuredClone(value));
+}
+
+export function validateRepositoryDispatchPayload(eventType, value, includeOperationDigest = false) {
+  oneOf(eventType, REPOSITORY_DISPATCH_TYPES, "repository dispatch event type");
+  if (typeof includeOperationDigest !== "boolean") fail("repository dispatch digest mode is invalid");
+  const digestField = includeOperationDigest ? ["smith_operation_digest"] : [];
+  if (eventType === "retry_route" || eventType === "fallback_route" || eventType === "retry_pioneer") {
+    exact(value, ["repositoryId", "issueId", "sourceRevision", "role", "provider", ...digestField], "repository dispatch payload");
+    string(value.repositoryId, "repository dispatch repository");
+    restId(value.issueId, "repository dispatch issue");
+    digest(value.sourceRevision, "repository dispatch source revision");
+    oneOf(value.provider, PROVIDERS, "repository dispatch provider");
+    if (eventType === "retry_pioneer") {
+      if (value.role !== "pioneer" || value.provider !== "claude") fail("repository dispatch role/provider authority is invalid");
+    } else if (ROUTE_PROVIDER_ROLES[value.provider] !== value.role) {
+      fail("repository dispatch role/provider authority is invalid");
+    }
+  } else if (eventType === "run_review") {
+    exact(value, ["repositoryId", "prId", "headSha", "role", "provider", ...digestField], "repository dispatch payload");
+    string(value.repositoryId, "repository dispatch repository");
+    restId(value.prId, "repository dispatch pull");
+    sha(value.headSha, "repository dispatch head");
+    oneOf(value.role, new Set(["reviewer", "security-reviewer"]), "repository dispatch review role");
+    if (value.provider !== "claude") fail("repository dispatch role/provider authority is invalid");
+  } else {
+    exact(value, ["repositoryId", "prId", "mergeSha", "role", "provider", ...digestField], "repository dispatch payload");
+    string(value.repositoryId, "repository dispatch repository");
+    restId(value.prId, "repository dispatch pull");
+    sha(value.mergeSha, "repository dispatch merge SHA");
+    if (value.role !== "docs-writer" || value.provider !== "codex") fail("repository dispatch role/provider authority is invalid");
+  }
+  if (includeOperationDigest) digest(value.smith_operation_digest, "repository dispatch operation digest");
+  return copy(value);
 }
 
 function patchMetadata(value, name) {
@@ -497,7 +546,7 @@ const OPERATION_FIELDS = Object.freeze({
   update_pr: { required: ["type", "prId"], optional: ["title", "body", "headSha"] },
   publish_check: { required: ["type", "headSha", "name", "conclusion", "summary", "externalId"] },
   rerun_check: { required: ["type", "runId"] },
-  dispatch_workflow: { required: ["type", "workflow", "ref", "inputs"] },
+  dispatch_repository: { required: ["type", "eventType", "clientPayload"] },
   arm_auto_merge: { required: ["type", "prId", "headSha", "method"] },
   sync_labels: { required: ["type", "definitionsDigest"] },
   report_drift: { required: ["type", "title", "body", "marker"] },
@@ -529,12 +578,13 @@ function validateOperationShape(operation) {
     if (["labels"].includes(key)) {
       array(value, `operation.${key}`);
       value.forEach(item => string(item, `operation.${key}[]`));
-    } else if (key === "inputs") {
-      canonicalObject(value, "operation.inputs");
+    } else if (key === "clientPayload") {
+      validateRepositoryDispatchPayload(operation.eventType, value);
     } else {
       string(value, `operation.${key}`);
     }
   }
+  if (operation.type === "dispatch_repository") validateRepositoryDispatchPayload(operation.eventType, operation.clientPayload);
   for (const key of ["headSha", "baseSha", "treeSha"]) if (operation[key]) sha(operation[key], `operation.${key}`);
   if (operation.definitionsDigest) digest(operation.definitionsDigest, "operation.definitionsDigest");
   if (operation.method && operation.method !== "squash") fail("auto-merge method must be squash");
@@ -723,9 +773,9 @@ export function planReconciliation(request) {
     const current = currentRevisions[`issue:${route.issueId}`];
     string(current, "current revision");
     if (current !== route.sourceRevision && !held.has(`issue:${route.issueId}`) && !held.has("repository")) {
-      intents.push({ kind: "retry_route", issueId: route.issueId, sourceRevision: current });
+      intents.push({ kind: "retry_route", repositoryId: snapshot.repository.id, issueId: route.issueId, sourceRevision: current, role: ROUTE_PROVIDER_ROLES[route.primary], provider: route.primary });
     } else if (route.status === "primary" && route.primaryOutcome === "provider_failure" && !held.has(`issue:${route.issueId}`) && !held.has("repository")) {
-      intents.push({ kind: "fallback_route", issueId: route.issueId, sourceRevision: current, provider: route.fallback });
+      intents.push({ kind: "fallback_route", repositoryId: snapshot.repository.id, issueId: route.issueId, sourceRevision: current, role: ROUTE_PROVIDER_ROLES[route.fallback], provider: route.fallback });
     }
   }
   const pullIds = new Set();
@@ -748,6 +798,7 @@ export function planReconciliation(request) {
     for (const obligation of pull.obligations) {
       exact(obligation, ["role", "status", "artifactDigest", "expectedArtifactDigest"], "obligation");
       string(obligation.role, "obligation.role");
+      if (obligation.role !== "docs-writer") fail("pull obligation role is unsupported");
       if (obligationRoles.has(obligation.role)) fail("duplicate pull obligation");
       obligationRoles.add(obligation.role);
       oneOf(obligation.status, new Set(["missing", "complete", "failed"]), "obligation.status");
@@ -756,7 +807,7 @@ export function planReconciliation(request) {
       if (obligation.status === "complete" && (obligation.artifactDigest === null || (obligation.expectedArtifactDigest !== null && obligation.artifactDigest !== obligation.expectedArtifactDigest))) fail("completed obligation lacks expected artifact");
       if (obligation.status !== "complete" && obligation.artifactDigest !== null) fail("incomplete obligation has artifact");
       const imported = markers.some(marker => marker.kind === "finalization" && marker.value.repositoryId === snapshot.repository.id && marker.value.prId === pull.prId && marker.value.mergeSha === pull.mergeSha && marker.value.role === obligation.role && marker.value.status === "complete" && marker.value.artifactDigest !== null && (obligation.expectedArtifactDigest === null || marker.value.artifactDigest === obligation.expectedArtifactDigest));
-      if ((obligation.status === "missing" || obligation.status === "failed") && !imported && !held.has(`pr:${pull.prId}`) && !held.has("repository")) intents.push({ kind: "run_obligation", prId: pull.prId, mergeSha: pull.mergeSha, role: obligation.role });
+      if ((obligation.status === "missing" || obligation.status === "failed") && !imported && !held.has(`pr:${pull.prId}`) && !held.has("repository")) intents.push({ kind: "run_obligation", repositoryId: snapshot.repository.id, prId: pull.prId, mergeSha: pull.mergeSha, role: obligation.role, provider: "codex" });
     }
   }
   for (const review of reviews) {
@@ -766,7 +817,7 @@ export function planReconciliation(request) {
     if (typeof review.protectedInput !== "boolean") fail("review.protectedInput must be boolean");
     const evidence = [...review.evidence, ...markers.filter(marker => marker.kind === "review" && marker.value.repositoryId === snapshot.repository.id && marker.value.prId === review.prId && marker.value.headSha === review.headSha).map(marker => ({ kind: marker.value.kind, headSha: marker.value.headSha, conclusion: marker.value.conclusion, actorId: marker.value.actorId, provider: marker.value.provider, authoritative: marker.value.authoritative, artifactDigest: marker.value.artifactDigest }))];
     const result = reduceReviews({ evidence, headSha: review.headSha, trust, protectedInput: review.protectedInput });
-    if (!held.has(`pr:${review.prId}`) && !held.has("repository")) for (const reason of result.reasons.filter(reason => reason.endsWith("_missing"))) intents.push({ kind: "run_review", prId: review.prId, headSha: review.headSha, reviewKind: reason.slice(0, -8) });
+    if (!held.has(`pr:${review.prId}`) && !held.has("repository")) for (const reason of result.reasons.filter(reason => reason.endsWith("_missing"))) intents.push({ kind: "run_review", repositoryId: snapshot.repository.id, prId: review.prId, headSha: review.headSha, role: reason === "correctness_missing" ? "reviewer" : "security-reviewer", provider: "claude" });
   }
   const pioneerIds = new Set();
   for (const pioneer of pioneers) {
@@ -783,9 +834,9 @@ export function planReconciliation(request) {
       if (!qualifying || !qualifying.closingIssues.some(issue => issue.repositoryId === snapshot.repository.id && issue.issueId === pioneer.issueId)) fail("pioneer proof lacks qualifying closing pull request");
     } else if (pioneer.closingPrId !== null) fail("non-proof pioneer has closing pull request");
     const current = currentRevisions[`issue:${pioneer.issueId}`]; string(current, "pioneer current revision");
-    if (current !== pioneer.sourceRevision && !held.has(`issue:${pioneer.issueId}`) && !held.has("repository")) intents.push({ kind: "retry_pioneer", issueId: pioneer.issueId, sourceRevision: current });
+    if (current !== pioneer.sourceRevision && !held.has(`issue:${pioneer.issueId}`) && !held.has("repository")) intents.push({ kind: "retry_pioneer", repositoryId: snapshot.repository.id, issueId: pioneer.issueId, sourceRevision: current, role: "pioneer", provider: "claude" });
     else if (pioneer.verdict === "disproved" && !held.has(`issue:${pioneer.issueId}`) && !held.has("repository")) intents.push({ kind: "hold_spec", issueId: pioneer.issueId, artifactDigest: pioneer.artifactDigest });
-    else if ((pioneer.verdict === "missing" || pioneer.verdict === "inconclusive") && !held.has(`issue:${pioneer.issueId}`) && !held.has("repository")) intents.push({ kind: "retry_pioneer", issueId: pioneer.issueId, sourceRevision: current });
+    else if ((pioneer.verdict === "missing" || pioneer.verdict === "inconclusive") && !held.has(`issue:${pioneer.issueId}`) && !held.has("repository")) intents.push({ kind: "retry_pioneer", repositoryId: snapshot.repository.id, issueId: pioneer.issueId, sourceRevision: current, role: "pioneer", provider: "claude" });
   }
   exact(labelSync, ["wantedDigest", "liveDigest"], "labelSync");
   digest(labelSync.wantedDigest, "labelSync.wantedDigest");
@@ -795,14 +846,6 @@ export function planReconciliation(request) {
   return deepFreeze([...unique.values()].sort((a, b) => canonicalBytes(a).compare(canonicalBytes(b))));
 }
 
-const RECONCILIATION_WORKFLOWS = Object.freeze({
-  retry_route: "adw-issues.yml",
-  fallback_route: "adw-issues.yml",
-  run_obligation: "adw-maintenance.yml",
-  run_review: "adw-pulls.yml",
-  retry_pioneer: "adw-issues.yml",
-});
-
 function validateReconciliationIntent(intent) {
   object(intent, "reconciliation intent");
   if (intent.kind === "held") {
@@ -810,29 +853,36 @@ function validateReconciliationIntent(intent) {
     string(intent.entityId, "reconciliation intent entity");
     const reasons = holdReasons(intent.reasons);
     if (reasons.length === 0 || digestJson(reasons) !== digestJson(intent.reasons)) fail("reconciliation hold reasons are not canonical");
-  } else if (intent.kind === "retry_route") {
-    exact(intent, ["kind", "issueId", "sourceRevision"], "reconciliation intent");
-    string(intent.issueId, "reconciliation issue"); string(intent.sourceRevision, "reconciliation source revision");
-  } else if (intent.kind === "fallback_route") {
-    exact(intent, ["kind", "issueId", "sourceRevision", "provider"], "reconciliation intent");
-    string(intent.issueId, "reconciliation issue"); string(intent.sourceRevision, "reconciliation source revision"); oneOf(intent.provider, PROVIDERS, "reconciliation provider");
-  } else if (intent.kind === "run_obligation") {
-    exact(intent, ["kind", "prId", "mergeSha", "role"], "reconciliation intent");
-    string(intent.prId, "reconciliation pull"); sha(intent.mergeSha, "reconciliation merge SHA"); string(intent.role, "reconciliation role");
-  } else if (intent.kind === "run_review") {
-    exact(intent, ["kind", "prId", "headSha", "reviewKind"], "reconciliation intent");
-    string(intent.prId, "reconciliation pull"); sha(intent.headSha, "reconciliation head SHA"); oneOf(intent.reviewKind, new Set(["correctness", "security"]), "reconciliation review kind");
-  } else if (intent.kind === "retry_pioneer") {
-    exact(intent, ["kind", "issueId", "sourceRevision"], "reconciliation intent");
-    string(intent.issueId, "reconciliation issue"); string(intent.sourceRevision, "reconciliation source revision");
+  } else if (REPOSITORY_DISPATCH_TYPES.has(intent.kind)) {
+    const { kind, ...clientPayload } = intent;
+    validateRepositoryDispatchPayload(kind, clientPayload);
   } else if (intent.kind === "hold_spec") {
     exact(intent, ["kind", "issueId", "artifactDigest"], "reconciliation intent");
-    string(intent.issueId, "reconciliation issue"); digest(intent.artifactDigest, "reconciliation artifact");
+    restId(intent.issueId, "reconciliation issue"); digest(intent.artifactDigest, "reconciliation artifact");
   } else if (intent.kind === "sync_labels") {
     exact(intent, ["kind", "definitionsDigest"], "reconciliation intent");
     digest(intent.definitionsDigest, "reconciliation label digest");
   } else fail("reconciliation intent kind is invalid");
   return copy(intent);
+}
+
+function validateDispatchRevision(snapshot, intent) {
+  if (intent.repositoryId !== snapshot.repository.id) fail("reconciliation dispatch repository does not match");
+  if (["retry_route", "fallback_route", "retry_pioneer"].includes(intent.kind)) {
+    const current = snapshot.state?.currentRevisions?.[`issue:${intent.issueId}`];
+    if (typeof current !== "string" || current !== intent.sourceRevision) fail("reconciliation dispatch source revision is not current");
+    return;
+  }
+  const pulls = snapshot.state?.reconciliation?.pulls;
+  if (!Array.isArray(pulls)) fail("reconciliation dispatch pulls are unavailable");
+  const matches = pulls.filter(pull => pull?.prId === intent.prId && pull.repositoryId === snapshot.repository.id && pull.headRepositoryId === snapshot.repository.id && pull.base === snapshot.repository.defaultBranch);
+  if (matches.length !== 1) fail("reconciliation dispatch pull is not current");
+  const pull = matches[0];
+  if (intent.kind === "run_review") {
+    if (pull.merged !== false || pull.headSha !== intent.headSha) fail("reconciliation dispatch head is not current");
+  } else if (pull.merged !== true || pull.mergeSha !== intent.mergeSha) {
+    fail("reconciliation dispatch merge is not current");
+  }
 }
 
 export function mapReconciliationIntents({ snapshot, intents }) {
@@ -850,13 +900,9 @@ export function mapReconciliationIntents({ snapshot, intents }) {
     } else if (intent.kind === "sync_labels") {
       operations.push({ type: "sync_labels", definitionsDigest: intent.definitionsDigest });
     } else {
-      const { kind, ...fields } = intent;
-      operations.push({
-        type: "dispatch_workflow",
-        workflow: RECONCILIATION_WORKFLOWS[kind],
-        ref: trustedSnapshot.repository.defaultBranch,
-        inputs: { kind, ...fields },
-      });
+      validateDispatchRevision(trustedSnapshot, intent);
+      const { kind, ...clientPayload } = intent;
+      operations.push({ type: "dispatch_repository", eventType: kind, clientPayload });
     }
   }
   if (operations.length === 0) operations.push({ type: "noop", reason: "unchanged" });

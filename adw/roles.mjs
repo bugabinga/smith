@@ -8,7 +8,7 @@ export const OPERATIONS = Object.freeze([
   "comment", "add_label", "remove_label", "create_issue", "update_issue",
   "close_issue", "create_milestone", "update_milestone", "close_milestone",
   "assign_milestone", "link_sub_issue", "create_branch", "create_pr",
-  "update_pr", "publish_check", "rerun_check", "dispatch_workflow",
+  "update_pr", "publish_check", "rerun_check", "dispatch_repository",
   "arm_auto_merge", "sync_labels", "report_drift", "noop", "terminal",
 ]);
 
@@ -172,10 +172,10 @@ const DETERMINISTIC_ROLES = deepFreeze({
 const CONTROL_AUTHORITIES = deepFreeze({
   reconciler: {
     name: "reconciler", kind: "control", mode: "single", primary: null, patch: null, capabilities: ["actions:write", "checks:write", "contents:read", "issues:write", "pulls:read", "repository:read"],
-    operations: ["add_label", "dispatch_workflow", "noop", "sync_labels"],
+    operations: ["add_label", "dispatch_repository", "noop", "sync_labels"],
     snapshot: { fields: ["issues", "labels", "pulls", "routes", "runs"], maxBytes: 262144 },
     trustedPaths: [".github/labels.yml"],
-    eventKinds: ["check", "pull_request_review_comment", "push", "schedule", "workflow"],
+    eventKinds: ["check", "dispatch", "pull_request", "pull_request_review_comment", "push", "schedule", "workflow"],
   },
   auditor: {
     name: "auditor", kind: "control", mode: "single", primary: null, patch: null, capabilities: ["checks:read", "checks:write", "contents:read", "issues:read", "issues:write", "pulls:read", "pulls:write", "repository:read", "settings:read"],

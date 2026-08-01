@@ -1,5 +1,5 @@
 import { isAbsolute } from "node:path";
-import { AdwError, canonicalBytes, digestJson, holdReasons, validateDecision, validateOperation, validateSnapshot, validateVerification } from "./core.mjs";
+import { AdwError, REPOSITORY_DISPATCH_WORKFLOWS, canonicalBytes, digestJson, holdReasons, validateDecision, validateOperation, validateRepositoryDispatchPayload, validateSnapshot, validateVerification } from "./core.mjs";
 import { OPERATIONS, controlAuthority, deterministicRole, role } from "./roles.mjs";
 import { runProcess } from "./providers.mjs";
 
@@ -7,13 +7,14 @@ const EVENTS = new Set([
   "issues", "issue_comment", "pull_request", "pull_request_review",
   "pull_request_review_comment", "check_suite", "check_run", "workflow_run",
   "push", "schedule", "dependabot_alert", "code_scanning_alert", "workflow_dispatch",
+  "repository_dispatch",
 ]);
 
 const ADAPTER_READ_CAPABILITIES = Object.freeze(["actions:read", "alerts:read", "checks:read", "issues:read", "pulls:read", "repository:read", "settings:read"]);
 const GITHUB_WRITE_OPERATIONS = new Set([
   "comment", "add_label", "remove_label", "create_issue", "update_issue", "close_issue",
   "create_milestone", "update_milestone", "close_milestone", "assign_milestone", "link_sub_issue",
-  "create_pr", "update_pr", "publish_check", "rerun_check", "dispatch_workflow", "arm_auto_merge",
+  "create_pr", "update_pr", "publish_check", "rerun_check", "dispatch_repository", "arm_auto_merge",
   "sync_labels", "report_drift", "noop", "terminal",
 ]);
 const ISSUE_WRITES = new Set([
@@ -31,7 +32,7 @@ export function operationCapabilities(operation, snapshot = null) {
   if (ISSUE_WRITES.has(type)) capabilities.add("issues:write");
   else if (type === "create_pr" || type === "update_pr") capabilities.add("pulls:write");
   else if (type === "publish_check") capabilities.add("checks:write");
-  else if (type === "rerun_check" || type === "dispatch_workflow") { capabilities.add("actions:write"); capabilities.add("checks:write"); }
+  else if (type === "rerun_check" || type === "dispatch_repository") { capabilities.add("actions:write"); capabilities.add("checks:write"); }
   else if (type === "arm_auto_merge") { capabilities.add("checks:read"); capabilities.add("issues:read"); capabilities.add("pulls:write"); }
   else if (type === "sync_labels") { capabilities.add("contents:read"); capabilities.add("issues:write"); }
   const readCapability = resource => {
@@ -61,7 +62,7 @@ function validateOperationReceipt(operation, entry, expectedBefore) {
   const transition = GITHUB_OPERATION_TRANSITIONS[operation.type];
   if (transition?.join("→") !== "original→prepared→post") throw new AdwError("contract", "operation transition is unavailable");
   if (!entry || Array.isArray(entry) || Object.getPrototypeOf(entry) !== Object.prototype || Object.keys(entry).sort().join(",") !== "afterRevision,beforeRevision,operationDigest,preparedRevision,status") throw new AdwError("contract", "apply operation receipt is invalid");
-  const actionTransition = operation.type === "rerun_check" || operation.type === "dispatch_workflow";
+  const actionTransition = operation.type === "rerun_check" || operation.type === "dispatch_repository";
   if (entry.operationDigest !== digestJson(operation) || entry.status !== "complete" || entry.beforeRevision !== expectedBefore || !REVISION_DIGEST.test(entry.preparedRevision) || !REVISION_DIGEST.test(entry.afterRevision) || (!actionTransition && entry.preparedRevision !== entry.afterRevision)) throw new AdwError("contract", "apply operation receipt is invalid");
   return Object.freeze({ operationDigest: entry.operationDigest, status: "complete", beforeRevision: entry.beforeRevision, preparedRevision: entry.preparedRevision, afterRevision: entry.afterRevision });
 }
@@ -251,8 +252,26 @@ export function normalizeEvent(name, payload) {
   } else if (name === "dependabot_alert" || name === "code_scanning_alert") {
     const alert = payload.alert ?? payload.dependabot_alert ?? payload.code_scanning_alert;
     kind = "alert"; entityId = restId(alert?.number, "alert number"); revisionHints = { alertKind: name, updatedAt: alert?.updated_at };
+  } else if (name === "workflow_dispatch") {
+    const inputs = payload.inputs;
+    contract(inputs && !Array.isArray(inputs) && Object.getPrototypeOf(inputs) === Object.prototype && Object.keys(inputs).length === 1 && Object.hasOwn(inputs, "lane"), "manual dispatch inputs are invalid");
+    contract(inputs.lane === "audit" || inputs.lane === "reconcile", "manual dispatch lane is invalid");
+    const ownerId = restId(payload.repository?.owner?.id, "repository owner id");
+    contract(actor.type === "User" && actor.id === ownerId && actor.login === repository.owner, "manual dispatch actor is not repository owner");
+    kind = "dispatch"; entityId = repository.id; action = inputs.lane; revisionHints = { lane: inputs.lane };
   } else {
-    kind = "dispatch"; entityId = repository.id; action = "requested"; revisionHints = { inputs: payload.inputs ?? {} };
+    contract(actor.type === "Bot", "repository dispatch actor is not an App bot");
+    const clientPayload = validateRepositoryDispatchPayload(action, payload.client_payload, true);
+    contract(clientPayload.repositoryId === repository.id, "repository dispatch repository does not match");
+    const issueDispatch = action === "retry_route" || action === "fallback_route" || action === "retry_pioneer";
+    kind = issueDispatch ? "issue" : "pull_request";
+    entityId = issueDispatch ? clientPayload.issueId : clientPayload.prId;
+    revisionHints = {
+      ...(clientPayload.sourceRevision === undefined ? {} : { sourceRevision: clientPayload.sourceRevision }),
+      ...(clientPayload.headSha === undefined ? {} : { headSha: clientPayload.headSha }),
+      ...(clientPayload.mergeSha === undefined ? {} : { mergeSha: clientPayload.mergeSha }),
+      repositoryDispatch: Object.freeze({ eventType: action, clientPayload }),
+    };
   }
   text(action, "event action");
   for (const [key, value] of Object.entries(revisionHints)) contract(value !== undefined && value !== null, `revision hint ${key} is required`);
@@ -644,7 +663,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     const changedPaths = rawFiles.map(file => text(file.filename, "changed path")).sort();
     const closing = await methods.closingIssues(Number(pull.number));
     if (pull.merged && !pull.mergeSha) throw new AdwError("forge", "merged pull lacks merge SHA");
-    const obligations = pull.merged ? ["linked-work", "docs-writer"].map(roleName => Object.freeze({ role: roleName, status: "missing", artifactDigest: null, expectedArtifactDigest: null })) : [];
+    const obligations = pull.merged ? [Object.freeze({ role: "docs-writer", status: "missing", artifactDigest: null, expectedArtifactDigest: null })] : [];
     const checks = maintenance && !pull.merged ? (await methods.commitChecks(pull.headSha)).map(normalizeCheck) : [];
     const comments = maintenance && !pull.merged ? await methods.comments("issues", Number(pull.number)) : [];
     const evidence = reviewEvidence(comments, pull.headSha, pull.number);
@@ -715,6 +734,16 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       }
       contract(typeof controlSha === "string" && /^[0-9a-f]{40}$/.test(controlSha), "control SHA is invalid");
       contract(appId === appIdentity.appId, "snapshot trust is invalid");
+      const repositoryDispatch = event.revisionHints?.repositoryDispatch;
+      if (repositoryDispatch !== undefined) {
+        contract(!control && !deterministic, "repository dispatch cannot select control authority");
+        const clientPayload = validateRepositoryDispatchPayload(repositoryDispatch.eventType, repositoryDispatch.clientPayload, true);
+        contract(event.actor?.id === appIdentity.botUserId && event.actor?.login === appIdentity.login && event.actor?.type === "Bot", "repository dispatch App identity does not match");
+        contract(clientPayload.role === rolePolicy.name && clientPayload.provider === rolePolicy.primary, "repository dispatch role/provider does not match snapshot policy");
+      }
+      if (event.kind === "dispatch") {
+        contract(control && ((event.revisionHints?.lane === "audit" && rolePolicy.name === "auditor") || (event.revisionHints?.lane === "reconcile" && rolePolicy.name === "reconciler")), "manual dispatch control authority does not match lane");
+      }
       const repositoryValue = await methods.repository();
       const repositoryOwnerId = restId(repositoryValue.owner?.id, "repository owner id");
       const normalizedRepository = {
@@ -772,6 +801,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         put(`issue:${event.entityId}:children`, "sub_issues", Object.freeze(children), digestJson(children));
         for (const field of ["issue", "claim", "spec", "labels", "comment", "entity", "owner", "route"]) if (fields.has(field)) satisfied.add(field);
         if (event.kind === "issue" && event.revisionHints.updatedAt && issueValue.updatedAt !== event.revisionHints.updatedAt) throw new AdwError("forge", "stale");
+        if (event.revisionHints.sourceRevision && issueValue.sourceRevision !== event.revisionHints.sourceRevision) throw new AdwError("forge", "stale");
         if (event.revisionHints.commentId) {
           sourceComment = comments.find(comment => comment.id === event.revisionHints.commentId && comment.updatedAt === canonicalInstant(event.revisionHints.updatedAt, "event comment updatedAt")) ?? null;
           if (sourceComment === null) throw new AdwError("forge", "stale");
@@ -825,6 +855,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         put(`pull:${event.entityId}:checks`, "checks", Object.freeze(checks), digestJson(checks));
         for (const field of ["pull", "diff", "files", "reviews", "security", "changed_paths", "findings", "docs", "dependency"]) if (fields.has(field)) satisfied.add(field);
         if (event.revisionHints.headSha && pullValue.headSha !== event.revisionHints.headSha) throw new AdwError("forge", "stale");
+        if (event.revisionHints.mergeSha && (!pullValue.merged || pullValue.mergeSha !== event.revisionHints.mergeSha)) throw new AdwError("forge", "stale");
         if (event.revisionHints.headBranch && pullValue.headBranch !== event.revisionHints.headBranch) throw new AdwError("forge", "stale");
         if (event.revisionHints.baseRef && pullValue.base !== event.revisionHints.baseRef) throw new AdwError("forge", "stale");
         if (event.revisionHints.headRepository && pullValue.headRepository !== event.revisionHints.headRepository) throw new AdwError("forge", "stale");
@@ -1180,7 +1211,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
           complete = true;
         }
         prepared = { method: "POST", endpoint: `/repos/${owner}/${name}/check-runs`, body: { name: value.name, head_sha: value.headSha, status: "completed", conclusion: value.conclusion, output: { title: value.name, summary: value.summary }, external_id: value.externalId } };
-      } else if (value.type === "rerun_check" || value.type === "dispatch_workflow") {
+      } else if (value.type === "rerun_check" || value.type === "dispatch_repository") {
         contract(binding !== null, "action operation binding is missing");
         let action;
         let target;
@@ -1200,19 +1231,32 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
               && validTime(fresh?.updated_at) && Date.parse(fresh.updated_at) >= Date.parse(markerTime);
           };
         } else {
-          const workflow = safeSegment(value.workflow, "workflow");
-          contract(/^[A-Za-z0-9._/-]+$/.test(value.ref) && !value.ref.includes(".."), "workflow ref is invalid");
-          contract(!Object.hasOwn(value.inputs, "smith_operation_digest"), "workflow inputs use reserved operation digest");
-          const ref = await get(`/repos/${owner}/${name}/git/ref/heads/${value.ref.split("/").map(encodeURIComponent).join("/")}`);
+          const clientPayload = validateRepositoryDispatchPayload(value.eventType, value.clientPayload);
+          contract(clientPayload.repositoryId === trustedSnapshot.repository.id, "repository dispatch repository does not match snapshot");
+          contract(trustedSnapshot.repository.defaultBranch === "main", "repository dispatch default branch is invalid");
+          if (clientPayload.issueId !== undefined) {
+            contract(trustedSnapshot.state?.currentRevisions?.[`issue:${clientPayload.issueId}`] === clientPayload.sourceRevision, "repository dispatch issue revision does not match snapshot");
+            const liveIssue = await issueAt(clientPayload.issueId);
+            contract(issueSourceRevision(liveIssue) === clientPayload.sourceRevision, "repository dispatch issue revision is stale");
+          } else {
+            const livePull = await pullAt(clientPayload.prId);
+            if (value.eventType === "run_review") contract(livePull?.state === "open" && livePull?.head?.sha === clientPayload.headSha, "repository dispatch pull head is stale");
+            else contract((livePull?.merged === true || typeof livePull?.merged_at === "string") && livePull?.merge_commit_sha === clientPayload.mergeSha, "repository dispatch merge is stale");
+          }
+          const workflow = REPOSITORY_DISPATCH_WORKFLOWS[value.eventType];
+          contract(typeof workflow === "string", "repository dispatch workflow is unavailable");
+          const ref = await get(`/repos/${owner}/${name}/git/ref/heads/main`);
           const headSha = text(ref.object?.sha, "dispatch head");
-          const inputs = Object.freeze({ ...value.inputs, smith_operation_digest: binding.operationDigest });
+          contract(headSha === trustedSnapshot.controlSha, "repository dispatch control head is stale");
+          const sentPayload = Object.freeze({ ...clientPayload, smith_operation_digest: binding.operationDigest });
+          validateRepositoryDispatchPayload(value.eventType, sentPayload, true);
           const path = `.github/workflows/${workflow}`;
-          target = Object.freeze({ type: "dispatch_workflow", path, ref: value.ref, headSha, inputs });
-          action = { method: "POST", endpoint: `/repos/${owner}/${name}/actions/workflows/${workflow}/dispatches`, body: { ref: value.ref, inputs } };
+          target = Object.freeze({ type: "dispatch_repository", path, eventType: value.eventType, headSha, clientPayload: sentPayload });
+          action = { method: "POST", endpoint: `/repos/${owner}/${name}/dispatches`, body: { event_type: value.eventType, client_payload: sentPayload } };
           delivered = async markerTime => {
-            const response = await page(`/repos/${owner}/${name}/actions/workflows/${workflow}/runs?event=workflow_dispatch&per_page=100&page=1`);
+            const response = await page(`/repos/${owner}/${name}/actions/workflows/${workflow}/runs?event=repository_dispatch&per_page=100&page=1`);
             if (!Array.isArray(response?.workflow_runs) || response.workflow_runs.length >= 100) throw new AdwError("forge", "overflow");
-            const matches = response.workflow_runs.filter(run => run?.path === target.path && run?.head_branch === target.ref && run?.head_sha === target.headSha && run?.event === "workflow_dispatch" && run?.display_title === binding.operationDigest
+            const matches = response.workflow_runs.filter(run => run?.path === target.path && run?.head_branch === "main" && run?.head_sha === target.headSha && run?.event === "repository_dispatch" && run?.display_title === binding.operationDigest
               && String(run?.triggering_actor?.id ?? "") === appIdentity.botUserId && run?.triggering_actor?.login === appIdentity.login && run?.triggering_actor?.type === "Bot"
               && validTime(run?.created_at) && Date.parse(run.created_at) >= Date.parse(markerTime));
             return matches.length === 1;

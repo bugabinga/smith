@@ -219,7 +219,7 @@ test("missed post-merge work remains retryable while holds suppress writes", () 
     obligations: [{ role: "docs-writer", status: "failed", artifactDigest: null, expectedArtifactDigest: null }],
   };
   const base = { snapshot, routes: [], pulls: [pull], labelSync: { wantedDigest: "1".repeat(64), liveDigest: "1".repeat(64) }, comments: [], trust, reviews: [], pioneers: [], holds: [] };
-  assert.deepEqual(planReconciliation(base), [{ kind: "run_obligation", prId: "2", mergeSha: "e".repeat(40), role: "docs-writer" }]);
+  assert.deepEqual(planReconciliation(base), [{ kind: "run_obligation", repositoryId: "R_1", prId: "2", mergeSha: "e".repeat(40), role: "docs-writer", provider: "codex" }]);
   assert.deepEqual(planReconciliation({ ...base, holds: [{ entityId: "pr:2", reasons: ["hold"] }] }), [{ kind: "held", entityId: "pr:2", reasons: ["hold"] }]);
 });
 
@@ -230,48 +230,57 @@ test("review-comment and check routes have reconciliation authority but no asses
   }
 });
 
-test("injected E2E: issue route maps reconciliation into provider-free closed dispatch authority", () => {
+test("injected E2E: issue route maps reconciliation into provider-free closed repository dispatch authority", () => {
   const policy = controlAuthority("reconciler");
+  const previousRevision = "1".repeat(64);
+  const currentRevision = "2".repeat(64);
   const snapshot = {
     ...snapshotFor("sweeper"),
+    repository: { id: "42", owner: "bugabinga", name: "smith", defaultBranch: "main" },
     event: { kind: "schedule", action: "reconcile", entityId: "repository" },
     routing: { role: policy.name, mode: "single", primary: null },
-    state: { currentRevisions: { "issue:7": "r2" } },
+    state: { currentRevisions: { "issue:7": currentRevision }, reconciliation: { pulls: [] } },
   };
   const request = {
     snapshot,
-    routes: [{ issueId: "7", sourceRevision: "r1", status: "primary", primary: "claude", fallback: "codex", primaryOutcome: null, fallbackOutcome: null, artifactDigest: null, prId: null }],
+    routes: [{ issueId: "7", sourceRevision: previousRevision, status: "primary", primary: "claude", fallback: "codex", primaryOutcome: null, fallbackOutcome: null, artifactDigest: null, prId: null }],
     pulls: [], labelSync: { wantedDigest: "1".repeat(64), liveDigest: "1".repeat(64) },
     comments: [], trust, reviews: [], pioneers: [], holds: [],
   };
   const intents = planReconciliation(request);
   const operations = mapReconciliationIntents({ snapshot, intents });
   assert.deepEqual(operations, [{
-    type: "dispatch_workflow", workflow: "adw-issues.yml", ref: "main",
-    inputs: { kind: "retry_route", issueId: "7", sourceRevision: "r2" },
+    type: "dispatch_repository", eventType: "retry_route",
+    clientPayload: { repositoryId: "42", issueId: "7", sourceRevision: currentRevision, role: "builder", provider: "claude" },
   }]);
   const decision = reduceControlArtifact({ name: "reconciler", snapshot, operations });
   assert.equal(decision.assessmentDigests.length, 0);
-  assert.equal(role("sweeper").operations.includes("dispatch_workflow"), false);
-  assert.deepEqual(policy.operations, ["add_label", "dispatch_workflow", "noop", "sync_labels"]);
+  assert.equal(role("sweeper").operations.includes("dispatch_repository"), false);
+  assert.deepEqual(policy.operations, ["add_label", "dispatch_repository", "noop", "sync_labels"]);
 });
 
 test("injected E2E: post-merge obligation and review/check repairs map deterministically", () => {
   const policy = controlAuthority("reconciler");
+  const mergeSha = "e".repeat(40);
   const snapshot = {
     ...snapshotFor("sweeper"),
+    repository: { id: "42", owner: "bugabinga", name: "smith", defaultBranch: "main" },
     event: { kind: "check", action: "completed", entityId: "90" },
     routing: { role: policy.name, mode: "single", primary: null },
-    state: { currentRevisions: {} },
+    state: { currentRevisions: {}, reconciliation: { pulls: [
+      { prId: "2", repositoryId: "42", headRepositoryId: "42", base: "main", closingIssues: [], headSha, merged: true, mergeSha, obligations: [] },
+      { prId: "3", repositoryId: "42", headRepositoryId: "42", base: "main", closingIssues: [], headSha, merged: false, mergeSha: null, obligations: [] },
+    ] } },
   };
   const intents = [
-    { kind: "run_obligation", prId: "2", mergeSha: "e".repeat(40), role: "docs-writer" },
-    { kind: "run_review", prId: "3", headSha, reviewKind: "security" },
+    { kind: "run_obligation", repositoryId: "42", prId: "2", mergeSha, role: "docs-writer", provider: "codex" },
+    { kind: "run_review", repositoryId: "42", prId: "3", headSha, role: "security-reviewer", provider: "claude" },
   ].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-  assert.deepEqual(mapReconciliationIntents({ snapshot, intents }).map(value => [value.workflow, value.inputs.kind]), [
-    ["adw-pulls.yml", "run_review"],
-    ["adw-maintenance.yml", "run_obligation"],
+  assert.deepEqual(mapReconciliationIntents({ snapshot, intents }).map(value => [value.eventType, value.clientPayload.role, value.clientPayload.provider]), [
+    ["run_review", "security-reviewer", "claude"],
+    ["run_obligation", "docs-writer", "codex"],
   ]);
+  assert.equal(controlSnapshotPlan("reconciler", "dispatch").role, "reconciler");
 });
 
 test("injected E2E: settings drift and labels use full provider-free audit state", () => {

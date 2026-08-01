@@ -22,6 +22,7 @@ import {
   parseLegacyMarkers,
   planMergeGate,
   planReconciliation,
+  mapReconciliationIntents,
   validateOperation,
   validatePatchManifest,
 } from "../core.mjs";
@@ -443,7 +444,7 @@ const operationSamples = [
   { type: "update_pr", prId: "P_1", headSha },
   { type: "publish_check", headSha, name: "merge-gate", conclusion: "success", summary: "ok", externalId: "e1" },
   { type: "rerun_check", runId: "R_1" },
-  { type: "dispatch_workflow", workflow: "check.yml", ref: "main", inputs: {} },
+  { type: "dispatch_repository", eventType: "retry_route", clientPayload: { repositoryId: "42", issueId: "1", sourceRevision: "1".repeat(64), role: "builder", provider: "claude" } },
   { type: "arm_auto_merge", prId: "P_1", headSha, method: "squash" },
   { type: "sync_labels", definitionsDigest: "a".repeat(64) },
   { type: "report_drift", title: "drift", body: "body", marker: "m5" },
@@ -524,6 +525,52 @@ test("marker ordering uses canonical timestamps then numeric REST comment IDs", 
   );
 });
 
+test("reconciliation dispatch authority is closed over repository, entity, revision, role, and provider", () => {
+  const sourceRevision = "1".repeat(64);
+  const mergeSha = "c".repeat(40);
+  const authoritySnapshot = {
+    ...snapshot,
+    repository: { id: "42", owner: "bugabinga", name: "smith", defaultBranch: "main" },
+    routing: { role: "reconciler", mode: "single", primary: null },
+    state: {
+      currentRevisions: { "issue:1": sourceRevision },
+      reconciliation: {
+        pulls: [
+          { prId: "2", repositoryId: "42", headRepositoryId: "42", base: "main", closingIssues: [], headSha, merged: true, mergeSha, obligations: [] },
+          { prId: "3", repositoryId: "42", headRepositoryId: "42", base: "main", closingIssues: [], headSha, merged: false, mergeSha: null, obligations: [] },
+        ],
+      },
+    },
+  };
+  const intents = [
+    { kind: "retry_route", repositoryId: "42", issueId: "1", sourceRevision, role: "builder", provider: "claude" },
+    { kind: "fallback_route", repositoryId: "42", issueId: "1", sourceRevision, role: "codex-builder", provider: "codex" },
+    { kind: "retry_pioneer", repositoryId: "42", issueId: "1", sourceRevision, role: "pioneer", provider: "claude" },
+    { kind: "run_review", repositoryId: "42", prId: "3", headSha, role: "security-reviewer", provider: "claude" },
+    { kind: "run_obligation", repositoryId: "42", prId: "2", mergeSha, role: "docs-writer", provider: "codex" },
+  ];
+  const operations = mapReconciliationIntents({ snapshot: authoritySnapshot, intents });
+  assert.deepEqual(new Map(operations.map(operation => [operation.eventType, operation])), new Map(intents.map(({ kind, ...clientPayload }) => [kind, {
+    type: "dispatch_repository", eventType: kind, clientPayload,
+  }])));
+  assert.equal(operations.some(operation => Object.hasOwn(operation.clientPayload, "smith_operation_digest")), false);
+
+  const rejects = [
+    { ...intents[0], repositoryId: "99" },
+    { ...intents[0], sourceRevision: "2".repeat(64) },
+    { ...intents[0], provider: "codex" },
+    { ...intents[0], role: "planner" },
+    { ...intents[0], smith_operation_digest: "f".repeat(64) },
+    { ...intents[3], headSha: "e".repeat(40) },
+    { ...intents[4], mergeSha: "e".repeat(40) },
+    { ...intents[4], role: "release-manager" },
+  ];
+  for (const intent of rejects) assert.throws(
+    () => mapReconciliationIntents({ snapshot: authoritySnapshot, intents: [intent] }),
+    error => error?.code === "contract",
+  );
+});
+
 test("reconciliation emits only missing normalized obligations", () => {
   const request = {
     snapshot: { ...snapshot, state: { currentRevisions: { "issue:1": "r2" } } },
@@ -536,8 +583,8 @@ test("reconciliation emits only missing normalized obligations", () => {
     comments: [], trust, reviews: [], pioneers: [], holds: [],
   };
   assert.deepEqual(planReconciliation(request), [
-    { kind: "retry_route", issueId: "1", sourceRevision: "r2" },
-    { kind: "run_obligation", prId: "2", mergeSha: "c".repeat(40), role: "docs-writer" },
+    { kind: "retry_route", repositoryId: "R_1", issueId: "1", sourceRevision: "r2", role: "builder", provider: "claude" },
+    { kind: "run_obligation", repositoryId: "R_1", prId: "2", mergeSha: "c".repeat(40), role: "docs-writer", provider: "codex" },
     { kind: "sync_labels", definitionsDigest: "f".repeat(64) },
   ].sort((a, b) => canonicalBytes(a).compare(canonicalBytes(b))));
 });
@@ -556,8 +603,8 @@ test("reconciliation derives reviews, holds, pioneer retries, and imported final
   };
   assert.deepEqual(planReconciliation(request), [
     { kind: "held", entityId: "issue:1", reasons: ["needs:spec"] },
-    { kind: "retry_pioneer", issueId: "3", sourceRevision: "r3" },
-    { kind: "run_review", prId: "2", headSha, reviewKind: "security" },
+    { kind: "retry_pioneer", repositoryId: "R_1", issueId: "3", sourceRevision: "r3", role: "pioneer", provider: "claude" },
+    { kind: "run_review", repositoryId: "R_1", prId: "2", headSha, role: "security-reviewer", provider: "claude" },
   ].sort((a, b) => canonicalBytes(a).compare(canonicalBytes(b))));
 });
 
@@ -570,7 +617,7 @@ test("reconciliation rejects cross-resource authority and stale verdicts", () =>
     pioneers: [{ issueId: "3", sourceRevision: "r2", verdict: "disproved", artifactDigest: "a".repeat(64), closingPrId: null }], holds: [],
   };
   const intents = planReconciliation(staleDisproof);
-  assert.ok(intents.some(value => value.kind === "run_review" && value.reviewKind === "correctness"));
+  assert.ok(intents.some(value => value.kind === "run_review" && value.role === "reviewer" && value.provider === "claude"));
   assert.ok(intents.some(value => value.kind === "retry_pioneer"));
   assert.equal(intents.some(value => value.kind === "hold_spec"), false);
 
@@ -770,7 +817,7 @@ test("reconciliation rejects malformed forge state and retries stale completed a
     labelSync: { wantedDigest: "f".repeat(64), liveDigest: "f".repeat(64) },
     comments: [], trust, reviews: [], pioneers: [], holds: [],
   };
-  assert.deepEqual(planReconciliation(base), [{ kind: "retry_route", issueId: "1", sourceRevision: "r2" }]);
+  assert.deepEqual(planReconciliation(base), [{ kind: "retry_route", repositoryId: "R_1", issueId: "1", sourceRevision: "r2", role: "builder", provider: "claude" }]);
   assert.throws(() => planReconciliation({ ...base, snapshot: { ...base.snapshot, state: {} } }), error => error?.code === "contract");
   assert.throws(() => planReconciliation({ ...base, routes: [], pulls: [{ ...reconcilePull(), prId: {}, merged: "false" }] }), error => error?.code === "contract");
   const failed = {
@@ -778,7 +825,7 @@ test("reconciliation rejects malformed forge state and retries stale completed a
     routes: [],
     pulls: [reconcilePull({ obligations: [{ role: "docs-writer", status: "failed", artifactDigest: null, expectedArtifactDigest: "1".repeat(64) }] })],
   };
-  assert.deepEqual(planReconciliation(failed), [{ kind: "run_obligation", prId: "2", mergeSha: "c".repeat(40), role: "docs-writer" }]);
+  assert.deepEqual(planReconciliation(failed), [{ kind: "run_obligation", repositoryId: "R_1", prId: "2", mergeSha: "c".repeat(40), role: "docs-writer", provider: "codex" }]);
   assert.throws(() => planReconciliation({ ...base, routes: [base.routes[0], base.routes[0]] }), error => error?.code === "contract");
   assert.throws(() => planReconciliation({ ...base, routes: [{ ...base.routes[0], status: "complete", artifactDigest: null }] }), error => error?.code === "contract");
   assert.throws(() => planReconciliation({ ...failed, pulls: [failed.pulls[0], failed.pulls[0]] }), error => error?.code === "contract");

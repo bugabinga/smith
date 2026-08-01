@@ -10,5 +10,5 @@
   { "name": "schedule", "kind": "schedule", "entity": "42", "body": { "schedule": "0 * * * *" } },
   { "name": "dependabot_alert", "kind": "alert", "entity": "50", "body": { "action": "created", "alert": { "number": 50, "updated_at": "2026-07-28T00:00:00Z" } } },
   { "name": "code_scanning_alert", "kind": "alert", "entity": "51", "body": { "action": "created", "alert": { "number": 51, "updated_at": "2026-07-28T00:00:00Z" } } },
-  { "name": "workflow_dispatch", "kind": "dispatch", "entity": "42", "body": { "inputs": { "role": "sweeper" } } }
+  { "name": "workflow_dispatch", "kind": "dispatch", "entity": "42", "body": { "inputs": { "lane": "audit" } } }
 ]

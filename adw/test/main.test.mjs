@@ -218,8 +218,8 @@ test("operational reconcile consumes only canonical snapshot/source and writes a
     event: { kind: "schedule", action: "reconcile", entityId: "R_1" },
     repository: snapshot.repository,
     revisions: [], routing: { role: "reconciler", mode: "single", primary: null },
-    state: { entityId: "R_1", currentRevisions: { "issue:7": "r2" }, reconciliation: {
-      routes: [{ issueId: "7", sourceRevision: "r1", status: "primary", primary: "claude", fallback: "codex", primaryOutcome: null, fallbackOutcome: null, artifactDigest: null, prId: null }],
+    state: { entityId: "R_1", currentRevisions: { "issue:7": "2".repeat(64) }, reconciliation: {
+      routes: [{ issueId: "7", sourceRevision: "1".repeat(64), status: "primary", primary: "claude", fallback: "codex", primaryOutcome: null, fallbackOutcome: null, artifactDigest: null, prId: null }],
       pulls: [], labelSync: { wantedDigest: "1".repeat(64), liveDigest: "1".repeat(64) }, comments: [],
       trust: { ownerIds: ["7"], appId: "9" }, reviews: [], pioneers: [], holds: [],
     } },
@@ -235,8 +235,9 @@ test("operational reconcile consumes only canonical snapshot/source and writes a
   const result = await invoke(["reconcile"], "", {}, env, { executablePath: fixture.executablePath });
   assert.equal(result.code, 0, result.err);
   const decision = JSON.parse(await readFile(join(fixture.decisionArtifact, "decision.json")));
-  assert.equal(decision.operations[0].type, "dispatch_workflow");
-  assert.equal(decision.operations[0].inputs.kind, "retry_route");
+  assert.equal(decision.operations[0].type, "dispatch_repository");
+  assert.equal(decision.operations[0].eventType, "retry_route");
+  assert.equal(decision.operations[0].clientPayload.role, "builder");
   assert.equal(decision.assessmentDigests.length, 0);
   const outputs = await readFile(githubOutput, "utf8");
   assert.match(outputs, /^apply_class=actions:write\+checks:write$/m);

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { AdwError, digestJson, planReconciliation } from "../core.mjs";
-import { createDefaultGitHub, createGitHub, deterministicSnapshotPlan, normalizeEvent, roleSnapshotPlan } from "../github.mjs";
+import { controlSnapshotPlan, createDefaultGitHub, createGitHub, deterministicSnapshotPlan, normalizeEvent, roleSnapshotPlan } from "../github.mjs";
 import { deriveDeterministicArtifacts, role } from "../roles.mjs";
 
 const repository = {
@@ -33,6 +33,93 @@ test("GitHub events normalize into forge-neutral records", async () => {
     assert.deepEqual(value.actor, { id: "7", login: "bugabinga", type: "User" });
     if (item.name === "pull_request") assert.equal(value.revisionHints.headBranch, "feature/task-5");
   }
+});
+
+test("manual workflow dispatch is owner-only and exposes only audit or reconcile", () => {
+  for (const lane of ["audit", "reconcile"]) {
+    const event = normalizeEvent("workflow_dispatch", { repository, sender, inputs: { lane } });
+    assert.deepEqual(event, {
+      kind: "dispatch", action: lane, entityId: "42",
+      repository: { id: "42", owner: "bugabinga", name: "smith", defaultBranch: "main" },
+      actor: { id: "7", login: "bugabinga", type: "User" },
+      revisionHints: { lane },
+    });
+  }
+  assert.equal(controlSnapshotPlan("auditor", "dispatch").role, "auditor");
+  assert.equal(controlSnapshotPlan("reconciler", "dispatch").role, "reconciler");
+  for (const payload of [
+    { repository, sender: { id: 8, login: "collaborator", type: "User" }, inputs: { lane: "audit" } },
+    { repository, sender, inputs: { lane: "provider" } },
+    { repository, sender, inputs: { lane: "audit", role: "reviewer" } },
+    { repository, sender, inputs: { lane: "audit", smith_operation_digest: "f".repeat(64) } },
+  ]) assert.throws(() => normalizeEvent("workflow_dispatch", payload), error => error?.code === "contract");
+});
+
+test("repository dispatch normalizes only exact App internal intent payloads", () => {
+  const operationDigest = "f".repeat(64);
+  const sourceRevision = "1".repeat(64);
+  const mergeSha = "c".repeat(40);
+  const cases = [
+    ["retry_route", { repositoryId: "42", issueId: "1", sourceRevision, role: "builder", provider: "claude", smith_operation_digest: operationDigest }, "issue", "1"],
+    ["fallback_route", { repositoryId: "42", issueId: "1", sourceRevision, role: "codex-builder", provider: "codex", smith_operation_digest: operationDigest }, "issue", "1"],
+    ["retry_pioneer", { repositoryId: "42", issueId: "1", sourceRevision, role: "pioneer", provider: "claude", smith_operation_digest: operationDigest }, "issue", "1"],
+    ["run_review", { repositoryId: "42", prId: "3", headSha: "b".repeat(40), role: "reviewer", provider: "claude", smith_operation_digest: operationDigest }, "pull_request", "3"],
+    ["run_obligation", { repositoryId: "42", prId: "3", mergeSha, role: "docs-writer", provider: "codex", smith_operation_digest: operationDigest }, "pull_request", "3"],
+  ];
+  for (const [action, client_payload, kind, entityId] of cases) {
+    const event = normalizeEvent("repository_dispatch", { action, client_payload, repository, sender: bot });
+    assert.equal(event.kind, kind);
+    assert.equal(event.action, action);
+    assert.equal(event.entityId, entityId);
+    assert.deepEqual(event.revisionHints.repositoryDispatch, { eventType: action, clientPayload: client_payload });
+  }
+  for (const payload of [
+    { action: "run_review", client_payload: { ...cases[3][1], provider: "codex" }, repository, sender: bot },
+    { action: "run_obligation", client_payload: { ...cases[4][1], role: "release-manager" }, repository, sender: bot },
+    { action: "run_review", client_payload: { ...cases[3][1], repositoryId: "99" }, repository, sender: bot },
+    { action: "run_review", client_payload: { ...cases[3][1], extra: true }, repository, sender: bot },
+    { action: "unknown", client_payload: cases[3][1], repository, sender: bot },
+    { action: "run_review", client_payload: cases[3][1], repository, sender },
+  ]) assert.throws(() => normalizeEvent("repository_dispatch", payload), error => error?.code === "contract");
+});
+
+test("App internal pull dispatch binds bot identity and current head or merge SHA", async () => {
+  const operationDigest = "f".repeat(64);
+  const currentHead = "b".repeat(40);
+  const currentMerge = "c".repeat(40);
+  let apiCalls = 0;
+  const github = adapter(async request => {
+    apiCalls++;
+    const endpoint = request.args.at(-1);
+    const response = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
+    if (request.args[1] === "graphql") return response({ data: { repository: { pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false } } } } } });
+    if (endpoint === "/repos/bugabinga/smith") return response(repository);
+    if (endpoint.includes("/contents/.claude/agents/reviewer.md?ref=") || endpoint.includes("/contents/.claude/agents/docs-writer.md?ref=")) return response({ encoding: "base64", content: Buffer.from("charter").toString("base64"), sha: "d".repeat(40) });
+    if (endpoint.includes("/contents/adw/schemas/role-payloads/review.schema.json?ref=") || endpoint.includes("/contents/adw/schemas/role-payloads/change.schema.json?ref=")) return response({ encoding: "base64", content: Buffer.from("{}").toString("base64"), sha: "e".repeat(40) });
+    if (endpoint === "/repos/bugabinga/smith/pulls/3") return response({ id: 3, number: 3, state: "closed", merged: true, merged_at: "2026-08-01T00:00:00.000Z", merge_commit_sha: currentMerge, updated_at: "2026-08-01T00:00:00.000Z", head: { sha: currentHead, ref: "feature/3", repo: { full_name: "bugabinga/smith" } }, base: { ref: "main" }, title: "Pull", body: "", labels: [] });
+    if (endpoint.startsWith("/repos/bugabinga/smith/pulls/3/files?")) return response([]);
+    if (endpoint.startsWith("/repos/bugabinga/smith/pulls/3/reviews?")) return response([]);
+    if (endpoint.startsWith("/repos/bugabinga/smith/issues/3/comments?")) return response([]);
+    if (endpoint.startsWith(`/repos/bugabinga/smith/commits/${currentHead}/check-runs?`)) return response({ check_runs: [] });
+    if (endpoint === "/repos/bugabinga/smith/git/ref/heads/main") return response({ object: { sha: "a".repeat(40) } });
+    throw new Error(`unexpected ${endpoint}`);
+  });
+  const dispatched = (action, client_payload, actor = bot) => normalizeEvent("repository_dispatch", { action, client_payload: { repositoryId: "42", smith_operation_digest: operationDigest, ...client_payload }, repository, sender: actor });
+  const reviewEvent = dispatched("run_review", { prId: "3", headSha: currentHead, role: "reviewer", provider: "claude" });
+  assert.equal((await github.readRoleSnapshot(reviewEvent, role("reviewer"), { controlSha: "a".repeat(40), appId: appIdentity.appId })).state.headSha, currentHead);
+  await assert.rejects(
+    () => github.readRoleSnapshot(dispatched("run_review", { prId: "3", headSha: "9".repeat(40), role: "reviewer", provider: "claude" }), role("reviewer"), { controlSha: "a".repeat(40), appId: appIdentity.appId }),
+    error => error?.code === "forge" && error.message === "stale",
+  );
+  assert.equal((await github.readRoleSnapshot(dispatched("run_obligation", { prId: "3", mergeSha: currentMerge, role: "docs-writer", provider: "codex" }), role("docs-writer"), { controlSha: "a".repeat(40), appId: appIdentity.appId })).state.entityId, "3");
+  await assert.rejects(
+    () => github.readRoleSnapshot(dispatched("run_obligation", { prId: "3", mergeSha: "9".repeat(40), role: "docs-writer", provider: "codex" }), role("docs-writer"), { controlSha: "a".repeat(40), appId: appIdentity.appId }),
+    error => error?.code === "forge" && error.message === "stale",
+  );
+  const beforeMismatch = apiCalls;
+  const mismatchedBot = normalizeEvent("repository_dispatch", { action: "run_review", client_payload: { repositoryId: "42", prId: "3", headSha: currentHead, role: "reviewer", provider: "claude", smith_operation_digest: operationDigest }, repository, sender: { id: 999, login: "forged[bot]", type: "Bot" } });
+  await assert.rejects(() => github.readRoleSnapshot(mismatchedBot, role("reviewer"), { controlSha: "a".repeat(40), appId: appIdentity.appId }), error => error?.code === "contract");
+  assert.equal(apiCalls, beforeMismatch);
 });
 
 test("event normalization rejects unsupported or incomplete events", () => {
@@ -304,7 +391,7 @@ test("list-derived merged pulls retain post-merge obligations", async () => {
   const event = normalizeEvent("schedule", { schedule: "0 * * * *", repository, sender });
   const snapshot = await github.readDeterministicSnapshot(event, "jam-detector", { controlSha: "a".repeat(40), appId: appIdentity.appId });
   assert.equal(snapshot.state.resources.pulls[0].merged, true);
-  assert.deepEqual(snapshot.state.resources.pulls[0].obligations.map(value => value.role), ["linked-work", "docs-writer"]);
+  assert.deepEqual(snapshot.state.resources.pulls[0].obligations.map(value => value.role), ["docs-writer"]);
 });
 
 test("maintenance snapshots enrich open pulls with merge state and current checks", async () => {
