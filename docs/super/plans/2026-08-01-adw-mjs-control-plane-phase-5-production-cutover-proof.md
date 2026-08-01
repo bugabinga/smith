@@ -670,7 +670,7 @@ git commit -S \
 - Test: `adw/test/*.test.mjs`
 - Test: workspace and workflow files
 
-- [ ] **Step 1: Run the complete offline MJS suite**
+- [x] **Step 1: Run the complete offline MJS suite**
 
 ```bash
 node --test adw/test/*.test.mjs
@@ -687,7 +687,17 @@ git diff --check
 
 Expected: PASS.
 
-- [ ] **Step 3: Parse exact YAML and verify boundaries**
+> **Execution blocker:** `cargo run -p xtask -- check` reached the `xtask pup` gate and returned the exact environment failure below. `git diff --check` passed independently; Step 2 remains unchecked.
+>
+> ```text
+> error: no such command: `+nightly-2026-01-22`
+>
+> help: invoke `cargo` through `rustup` to handle `+toolchain` directives
+> xtask pup: returned a non-zero status
+> xtask check: pup gate returned a non-zero status
+> ```
+
+- [x] **Step 3: Parse exact YAML and verify boundaries**
 
 ```bash
 for f in .github/workflows/adw-{issues,pulls,maintenance,selftest}.yml; do
@@ -702,7 +712,7 @@ done
 
 Expected: YAML parses; forbidden searches are empty; no package manifest/lockfile was introduced.
 
-- [ ] **Step 4: Verify signed branch commits and exact final paths**
+- [x] **Step 4: Verify signed branch commits and exact final paths**
 
 ```bash
 BASE=$(git merge-base origin/main HEAD)
@@ -712,7 +722,7 @@ git diff --name-status "$BASE"..HEAD
 
 Expected: every executor-created branch commit verifies; diff contains production wrappers, assessment-only charters, MJS/tests/planning records, legacy deletions, and no unrelated production code.
 
-- [ ] **Step 5: Require a committed, clean verification state**
+- [x] **Step 5: Require a committed, clean verification state**
 
 If verification exposes a defect, return to its owning TDD task, add the failing regression, fix it, and repeat that task's exact signed commit command. Then run:
 
