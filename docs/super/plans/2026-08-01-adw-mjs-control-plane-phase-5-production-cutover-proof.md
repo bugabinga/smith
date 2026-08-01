@@ -4,7 +4,7 @@
 
 **Goal:** Atomically make the three MJS wrappers the sole production ADW writers and prove their positive behavior on production without destructive failure injection.
 
-**Architecture:** The final protected PR carries the already-completed Phase 4 control plane, production-adapted byte-identical wrappers, assessment-only charters, and removal of every legacy writer. Before the squash merge, the owner seeds the existing App identity, disables and drains legacy workflows, and rehearses a signed rollback; after merge, all writes pass through operation-scoped App tokens and one `adw-write` concurrency group while production evidence is captured from positive runs only.
+**Architecture:** The final protected PR carries the already-completed Phase 4 control plane, production-adapted byte-identical wrappers, assessment-only charters, and removal of every legacy writer. Before the squash merge, the owner seeds the existing App identity, disables and drains legacy workflows, and rehearses a signed rollback; after merge, all writes pass through operation-scoped App tokens and the `adw-write` repository-wide lock while production evidence is captured from positive runs only. GitHub concurrency is not a FIFO queue, so cancelled pending apply is recovered by reconciliation and never treated as success.
 
 **Tech Stack:** Node.js ESM/`node:test`, GitHub Actions, pinned Actions, `gh`, `git`, `jq`, `yq`, exact-pinned Claude/Codex CLIs.
 
@@ -33,7 +33,7 @@ On 2026-08-01, the owner approved the first offered authorization route: current
 - Seed exact non-secret variables `APP_BOT_USER_ID=306488075` and `APP_BOT_LOGIN=agent-smith-bugabinga-adc[bot]` before cutover.
 - Internal App intents use only `repository_dispatch` event types `retry_route`, `fallback_route`, `retry_pioneer`, `run_review`, and `run_obligation`; manual `workflow_dispatch` exposes only owner choices `audit` and `reconcile`. `dispatch_repository` mints only `contents:write` plus implicit `metadata:read`; it never requests Actions or Checks write.
 - Production proof is positive-only. Never inject malformed artifacts, stale revisions, cancelled jobs, partial writes, invalid credentials, changed permissions, malformed events, provider outages, ruleset damage, or secret rotation.
-- Existing organic `BLOCKED`/`BEHIND` state on PRs #150, #163, #165, and #166 is observed, never created or worsened for this proof.
+- Existing organic `BLOCKED`/`BEHIND` state on PRs #150, #163, #165, and #166 is observed, never created or worsened for this proof. `BLOCKED` is not independently disqualifying because a missing required `merge-gate` can cause it; only explicit `BEHIND`/`DIRTY`, draft, ADW holds/evidence, or native protection may block merge.
 - Settings/rulesets remain read-only. Audit may report their existing drift but may not mutate it. Label sync may repair only checked-in label definitions through the closed `sync_labels` operation.
 - `pull_request_review_comment` and `check_run`/`check_suite` remain reconcile-only. Their proof runs contain no provider assessment artifact and no provider job execution.
 - No legacy and MJS operational writer may be enabled simultaneously. `adw-selftest` is non-writing and remains enabled. `adw-release` is disabled and receives no replacement because release automation remains deferred.
@@ -56,9 +56,9 @@ The 2026-08-01 planning snapshot is:
 - PR #163 head `1b1891ee0000c817891fdcc963d778c030e5a74d` is `BEHIND`.
 - PR #165 head `adf17c538ff655d8fb065a848bdc1f499622d482` is `BEHIND`.
 - PR #166 head `9b3e822ef7eef3563fa22b57daa6ced68520f676` is `BEHIND`.
-- All four PRs have current-head legacy App review evidence and are open; their pre-existing auto-merge state must not be interpreted as permission to merge while blocked/behind.
+- All four PRs have current-head legacy App review evidence and are open. The three explicit `BEHIND` states remain fail-closed. PR #150's composite `BLOCKED` state is not proof of an independent blocker and must not be used for a no-merge claim.
 
-At execution, re-read every value. A changed SHA or merge state is not a reason to inject state. If one of the four PRs is no longer organically blocked/behind, stop that assertion and ask the owner for another naturally blocked/behind PR; do not make one.
+At execution, re-read every value. A changed SHA or merge state is not a reason to inject state. If an explicit behind/dirty proof candidate is no longer organically behind/dirty, stop that assertion and ask the owner for another natural candidate; do not make one. Before live audit, pause if any blocked-only PR could merge when its missing `merge-gate` is published; obtain an independently existing blocker or owner disposition without manufacturing failure state.
 
 ### Actual pre-hold execution record
 
@@ -819,6 +819,32 @@ Give `dispatch_repository` only Contents write plus implicit Metadata read, keep
 
 Focused Node passed 109/109; full Node passed 238/238; `git diff --check` passed. Read-only `createGitHub` snapshots at control `491a42a3cc8848853e4ccd6cedc5695d9bd06e8c` succeeded for auditor (77,432 bytes, digest `a64aacc951e7fe303c7cc68c3dbd181d965c4eca39550e7852effc978a8ab926`), reconciler (220,840 bytes, digest `97159347d3648e7175a97f03d29f2f2ee166e79906c4e18dd2287f2ac8764cd6`), and planner (165,884 bytes, digest `72960ee37776fd9494bd41f50b659581d506f78610eb2073e8c0916b698e40b1`). No token value or GitHub mutation was emitted.
 
+### Task 7D: Close adversarial production blockers and concurrency recovery
+
+**Files:**
+
+- Modify: `adw/{core,github,main,roles}.mjs`
+- Modify: `adw/test/{apply,core,github,roles,scenarios,wrappers}.test.mjs`
+- Modify: `docs/super/plans/2026-08-01-adw-mjs-control-plane-phase-5-production-cutover-proof.md`
+
+- [x] **Step 1: Record focused RED before implementation**
+
+The focused six-file run recorded 156 passes and 13 expected failures. Regressions proved receipt-chain laundering after a later write plus unrelated body/label drift, duplicate positive marker rejection, circular `BLOCKED` merge gating, unsafe repository/ref/run issue endpoints, absent cancelled-apply reconciliation, and unsupported FIFO planning claims. Follow-up read-only live reduction exposed GitHub's synthetic `merge_commit_sha` on unmerged pulls, and a mixed-operation scenario exposed unsafe dispatch/action ordering; both received focused RED regressions before correction. No GitHub object was mutated.
+
+- [x] **Step 2: Implement strict authority and endpoint corrections**
+
+Natural completion now follows expected-before/current authority; only an exact reversible transition or operation marker can reconstruct a lost receipt, and unrelated drift is stale. One-or-more exact current-head App approvals—including bounded legacy compatibility markers—satisfy each review kind while reject evidence vetoes and stale/wrong-actor evidence never counts. Unmerged synthetic merge candidates normalize to no merge SHA. `BLOCKED` no longer circularly fails the ADW gate; explicit `BEHIND`/`DIRTY` remains fail-closed and native rules retain other protection/freshness authority. Planner/surveyor/alert/maintenance findings reduce only to bounded create/report/no-op or valid run reruns, never repository/ref/run issue endpoints.
+
+- [x] **Step 3: Preserve the lock without claiming queue order**
+
+`adw-write` remains the repository-wide lock with `cancel-in-progress:false`. GitHub permits one running and at most one pending job; a newer pending job can cancel the older pending job, so there is no FIFO guarantee. Exact current-control ADW runs with successful verify, cancelled apply, and no successful evidence are snapshot-bound as recoverable reconciliation work and retried idempotently. Revision-observing state repairs run before action reruns, and repository dispatches run last under their chained receipt authority. A cancelled apply result is never positive proof of success.
+
+- [x] **Step 4: Re-run complete offline, read-only live, diff, and signature verification**
+
+On 2026-08-01, focused Node passed 172/172 and full Node passed 248/248; workspace Rust tests passed 34/34 across seven suites. `git diff --check`, YAML parsing, and all three canonical/production wrapper byte comparisons passed. `cargo run -p xtask -- check` still reached `xtask pup` and failed only because this Termux environment has no rustup-style `cargo +nightly-2026-01-22`; the earlier project-plan blocker remains open.
+
+Read-only live reduction at main `491a42a3cc8848853e4ccd6cedc5695d9bd06e8c` produced an auditor snapshot of 78,778 bytes (digest `94137e8e76db3e82f379ffaa3343d318aae70e79a2d9e11484da0c1365cd5ce3`) and a reconciler snapshot of 223,611 bytes (digest `1d30d6deedb293a8ec810d05b33a27622e738ca969706a6168b76f444f6909b6`). Auditor failed the three explicit-behind heads, judged #150 eligible without circular `BLOCKED`, and would reconstruct its existing auto-merge arm; reconciler reduced successfully with zero cancelled applies in the bounded live window. Therefore live audit remains blocked until Task 12's independent #150 safety proof or owner disposition. No GitHub object was mutated.
+
 ### Task 8: Push the owner-authored protected PR and record owner approval on its exact head
 
 **Files:** none
@@ -1219,6 +1245,20 @@ jq -e '
 ' "$HOME/adw-phase5-evidence/pre-audit-prs.json"
 ```
 
+Prove #150 has an independent native blocker before audit; composite `BLOCKED` and missing `merge-gate` do not satisfy this gate:
+
+```bash
+gh pr view 150 --repo bugabinga/smith \
+  --json number,state,isDraft,reviewDecision,mergeStateStatus,autoMergeRequest,statusCheckRollup \
+  > "$HOME/adw-phase5-evidence/pr-150-native-safety.json"
+jq -e '
+  .state == "OPEN" and .mergeStateStatus == "BLOCKED" and
+  (.isDraft == true or .reviewDecision == "REVIEW_REQUIRED" or .reviewDecision == "CHANGES_REQUESTED")
+' "$HOME/adw-phase5-evidence/pr-150-native-safety.json" >/dev/null
+```
+
+If this read-only proof fails—as the 2026-08-01 snapshot with empty `reviewDecision` does—stop before audit and obtain owner disposition. Do not infer safety from auto-merge already being armed, and do not add a synthetic hold for proof.
+
 Capture immutable policy baselines before audit:
 
 ```bash
@@ -1229,7 +1269,7 @@ gh api repos/bugabinga/smith | jq -S \
   > "$HOME/adw-phase5-evidence/settings.before.json"
 ```
 
-Expected: current organic PR states match. If not, pause; never force them back.
+Expected: current organic PR states match. If not, pause; never force them back. `BLOCKED` for #150 may be caused solely by missing `merge-gate`; before dispatching audit, prove an independently existing native/ADW blocker or obtain owner disposition. Do not use `BLOCKED` itself as no-merge evidence and do not manufacture a hold.
 
 - [ ] **Step 2: Dispatch owner manual audit**
 
@@ -1246,7 +1286,7 @@ AUDIT_RUN=$(gh run list --repo bugabinga/smith --workflow adw-maintenance.yml \
 gh run watch "$AUDIT_RUN" --repo bugabinga/smith --exit-status
 ```
 
-Expected: success; auditor provider jobs skipped; existing label drift repaired only for checked-in labels; settings/ruleset drift reported through an owner-visible issue/comment; #150/#163/#165/#166 receive current-head `merge-gate` failure checks or deterministic jam reports and remain open.
+Expected: success; auditor provider jobs skipped; existing label drift repaired only for checked-in labels; settings/ruleset drift reported through an owner-visible issue; #163/#165/#166 receive explicit-behind failure checks. #150's gate conclusion comes only from ADW labels, exact current-head App evidence, product `check`, and sticky risk; native protection handles other blockers.
 
 - [ ] **Step 3: Capture and validate audit artifacts/receipt**
 
@@ -1260,8 +1300,7 @@ jq -e '.authority.name == "auditor" and .status == "complete"' \
 jq -e '
   [.operations[] | select(
     .type == "arm_auto_merge" and
-    (.prId == "150" or .prId == "163" or
-     .prId == "165" or .prId == "166"))] | length == 0
+    (.prId == "163" or .prId == "165" or .prId == "166"))] | length == 0
 ' "$AUDIT_DIR"/adw-decision/decision.json >/dev/null
 gh api repos/bugabinga/smith/labels/urgent \
   --jq '.color == "e03131" and .description == "Time-critical (regression, security-adjacent, or blocking others) — the planner ranks it ahead of same/lower-priority work when ordering the backlog"'
@@ -1287,30 +1326,26 @@ DRIFT_URL=$(gh api --paginate 'repos/bugabinga/smith/issues?state=all&per_page=1
 test -n "$DRIFT_URL"
 ```
 
-Expected: no assessment artifacts; complete auditor receipt; no blocked/behind auto-merge operation; exact `urgent` repair; byte-equivalent live ruleset/settings snapshots; and an App-authored drift report URL.
+Expected: no assessment artifacts; complete auditor receipt; no auto-merge operation for explicit behind/dirty PRs; #150 is judged without circular `mergeable_state=blocked`; exact `urgent` repair; byte-equivalent live ruleset/settings snapshots; and an App-authored drift report URL.
 
-- [ ] **Step 4: Prove current-head App checks and no auto-merge**
+- [ ] **Step 4: Prove current-head App checks and independently fail-closed merge states**
 
 ```bash
-for pr in 150 163 165 166; do
+for pr in 163 165 166; do
   head=$(gh pr view "$pr" --repo bugabinga/smith --json headRefOid --jq .headRefOid)
   gh api "repos/bugabinga/smith/commits/$head/check-runs?filter=latest&per_page=100" |
     jq -e --arg head "$head" '
-      ([.check_runs[] |
-        select(.name == "check" and .head_sha == $head and
-               .app.slug == "github-actions" and .status == "completed" and
-               .conclusion == "success")] | length >= 1) and
-      ([.check_runs[] |
-        select(.name == "merge-gate" and .head_sha == $head and
-               .app.slug == "agent-smith-bugabinga-adc" and
-               .app.id != null and .status == "completed" and
-               .conclusion == "failure")] | length >= 1)
+      ([.check_runs[] | select(.name == "check" and .head_sha == $head and .app.slug == "github-actions" and .status == "completed" and .conclusion == "success")] | length >= 1) and
+      ([.check_runs[] | select(.name == "merge-gate" and .head_sha == $head and .app.slug == "agent-smith-bugabinga-adc" and .app.id != null and .status == "completed" and .conclusion == "failure")] | length >= 1)
     ' >/dev/null
   test "$(gh pr view "$pr" --repo bugabinga/smith --json state --jq .state)" = OPEN
 done
+head=$(gh pr view 150 --repo bugabinga/smith --json headRefOid --jq .headRefOid)
+gh api "repos/bugabinga/smith/commits/$head/check-runs?filter=latest&per_page=100" |
+  jq -e --arg head "$head" '[.check_runs[] | select(.name == "merge-gate" and .head_sha == $head and .app.slug == "agent-smith-bugabinga-adc" and .status == "completed")] | length >= 1' >/dev/null
 ```
 
-Expected: each blocked/behind PR has exact-current-head successful product `check`, failing `merge-gate` from the App, and remains open. Audit decision contains no `arm_auto_merge` operation for these PRs.
+Expected: explicit behind PRs fail and cannot arm. #150 has a current-head App gate derived without using composite `BLOCKED`; its remaining native state is recorded separately and was proven safe before audit.
 
 - [ ] **Step 5: Dispatch owner manual reconciliation**
 
@@ -1519,34 +1554,30 @@ for pr in 150 163 165 166; do
   head=$(gh pr view "$pr" --repo bugabinga/smith --json headRefOid --jq .headRefOid)
   gh api --paginate "repos/bugabinga/smith/issues/$pr/comments?per_page=100" |
     jq -e --arg head "$head" '
-      [.[] | select(
-        .user.id == 306488075 and
-        .user.login == "agent-smith-bugabinga-adc[bot]" and
-        ((.body | startswith("Review: " + $head + "\nVERDICT: reviewed")) or
-         (.body | startswith("Security review: " + $head + "\nVERDICT: security-cleared")) or
-         (.body | test("smith:review-evidence/v1 .*head=" + $head + ".*conclusion=approve"))))]
-      | length >= 2' >/dev/null
+      def app: .user.id == 306488075 and .user.login == "agent-smith-bugabinga-adc[bot]" and .user.type == "Bot";
+      ([.[] | select(app and ((.body | startswith("Review: " + $head + "\nVERDICT: reviewed")) or (.body | test("smith:review-evidence/v1 kind=correctness head=" + $head + " conclusion=approve .*authoritative=true"))))] | length >= 1) and
+      ([.[] | select(app and ((.body | startswith("Security review: " + $head + "\nVERDICT: security-cleared")) or (.body | test("smith:review-evidence/v1 kind=security head=" + $head + " conclusion=approve .*authoritative=true"))))] | length >= 1)' >/dev/null
 done
 ```
 
-Expected: each PR has two exact current-head App evidence records accepted by legacy import or native MJS format; stale-head evidence does not count.
+Expected: each PR has one-or-more exact current-head App-authored positive records for each of correctness and security. Duplicate positives are valid; reject, stale-head, malformed, or wrong-actor records never satisfy either kind.
 
 ### Task 15: Reconcile #150/#163/#165/#166 and observe two schedule cycles
 
 **Files:** none
 
-- [ ] **Step 1: Verify no blocked/behind PR auto-merged during proof**
+- [ ] **Step 1: Verify explicit behind/dirty PRs did not auto-merge during proof**
 
 ```bash
 for pr in 150 163 165 166; do
   gh pr view "$pr" --repo bugabinga/smith \
     --json number,state,mergedAt,headRefOid,mergeStateStatus,url
  done | jq -s '.' > "$HOME/adw-phase5-evidence/post-proof-prs.json"
-jq -e 'all(.[]; .state == "OPEN" and .mergedAt == null)' \
+jq -e 'all(.[] | select(.number == 163 or .number == 165 or .number == 166); .state == "OPEN" and .mergedAt == null)' \
   "$HOME/adw-phase5-evidence/post-proof-prs.json"
 ```
 
-Expected: all four remain open; MJS reported their organic blocked/behind state and never auto-merged them.
+Expected: every explicit behind/dirty proof PR remains open and unmerged. #150's observed state is retained without claiming `BLOCKED` itself forbids a successful ADW gate.
 
 - [ ] **Step 2: Wait for first natural six-hour reconciliation schedule**
 
@@ -1626,9 +1657,9 @@ gh workflow list --repo bugabinga/smith --all --json path,state \
 
 Expected: both cycles provider-free and complete; active inventory remains exactly the four MJS/self-test files.
 
-- [ ] **Step 5: Final current-head and blocked/behind assertions**
+- [ ] **Step 5: Final current-head and independent-blocker assertions**
 
-Re-run Task 12 Step 4, Task 14 Step 5, and Task 15 Step 1. Expected: exact current-head App evidence/checks remain valid, all four PRs remain open, and no receipt contains an `arm_auto_merge` for a blocked/behind PR.
+Re-run Task 12 Step 4, Task 14 Step 5, and Task 15 Step 1. Expected: exact current-head App evidence/checks remain valid; explicit behind/dirty PRs remain open; no receipt arms those PRs; #150's composite blocked state is not represented as independent merge authority.
 
 ### Task 16: Publish evidence and close the quiet window
 
@@ -1647,7 +1678,7 @@ for decision in "${decisions[@]}"; do
   jq -e '
     [.operations[] | select(
       .type == "arm_auto_merge" and
-      (.prId == "150" or .prId == "163" or .prId == "165" or .prId == "166"))]
+      (.prId == "163" or .prId == "165" or .prId == "166"))]
     | length == 0
   ' "$decision" >/dev/null
 done
@@ -1702,7 +1733,7 @@ Trigger rollback immediately on any of:
 - malformed/missing artifact, sidecar mismatch, incomplete/failed receipt, stale write reaching mutation, or duplicate operation digest;
 - current-head `check`/`merge-gate` or App evidence bound to a different head/actor;
 - review-comment/check path executing a provider;
-- #150/#163/#165/#166 auto-merging while blocked/behind;
+- any explicit behind/dirty PR being armed or merged, or any blocked-only PR proceeding without the pre-audit independent safety proof;
 - settings/ruleset mutation;
 - unbounded provider recursion from label/App comments;
 - either required schedule cycle missing, failing, cancelling, or running on unexpected control SHA;
@@ -1745,4 +1776,4 @@ Expected: signed fast-forward rollback lands directly through owner bypass; MJS 
 
 ## Phase boundary
 
-Phase 5 ends with one GitHub-verified squash decision on main, three MJS operational wrappers plus self-test, no legacy writer or shell reducer, release automation still deferred, signed rollback available, positive production receipts captured, #150/#163/#165/#166 still open while blocked/behind, and two consecutive scheduled reconciliation cycles green. Legacy marker compatibility, long-term docs, rollback-branch retirement, and backlog cleanup remain Phase 6.
+Phase 5 ends with one GitHub-verified squash decision on main, three MJS operational wrappers plus self-test, no legacy writer or shell reducer, release automation still deferred, signed rollback available, positive production receipts captured, explicit behind/dirty candidates still fail-closed, blocked-only state delegated without circularity, and two consecutive scheduled reconciliation cycles green. Legacy marker compatibility, long-term docs, rollback-branch retirement, and backlog cleanup remain Phase 6.

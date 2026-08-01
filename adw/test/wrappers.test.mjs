@@ -506,6 +506,16 @@ test("cutover plan treats legacy merge-gate absence as an explicit owner bypass"
   assert.doesNotMatch(task8, /gh pr checks[^\n]*--required/);
 });
 
+test("Phase 5 treats adw-write as a lock, not FIFO, and recovers cancelled pending apply", async () => {
+  const plan = await readFile(phase5Plan, "utf8");
+  assert.match(plan, /`adw-write`.*repository-wide lock/i);
+  assert.match(plan, /one running and at most one pending/i);
+  assert.match(plan, /newer pending.*cancel.*older pending/i);
+  assert.match(plan, /no FIFO/i);
+  assert.match(plan, /cancelled.*apply.*never.*proof of success/is);
+  assert.match(plan, /reconciliation.*retry.*cancelled.*apply/is);
+});
+
 test("cutover hold guards every operational job before tokens, artifacts, or assessment", async () => {
   const values = await sources();
   for (const [file, source] of Object.entries(values)) for (const [name, block] of jobs(source)) {

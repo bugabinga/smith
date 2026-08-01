@@ -26,7 +26,7 @@ import {
   validateOperation,
   validatePatchManifest,
 } from "../core.mjs";
-import { defineRole } from "../roles.mjs";
+import { defineRole, reduceStatusArtifact, role } from "../roles.mjs";
 
 test("canonical JSON sorts object keys without sorting arrays", () => {
   assert.equal(
@@ -464,6 +464,24 @@ test("closed operations accept exact fields only", () => {
   assert.throws(() => validateOperation({ type: "publish_everything" }, allOperations), error => error?.code === "contract");
 });
 
+test("status publication never interprets repository or ref identifiers as issue numbers", () => {
+  const cases = [
+    ["planner", { kind: "push", action: "pushed", entityId: "refs/heads/main" }],
+    ["surveyor", { kind: "schedule", action: "scheduled", entityId: "42" }],
+    ["alert-triager", { kind: "schedule", action: "scheduled", entityId: "42" }],
+  ];
+  for (const [name, event] of cases) {
+    const authority = role(name);
+    const value = {
+      ...snapshot, event, routing: { role: name, mode: authority.mode, primary: authority.primary },
+      state: { entityId: event.entityId, labels: [] },
+    };
+    const result = reduceStatusArtifact({ snapshot: value, rolePolicy: authority, reduction: { status: "terminal", reason: "providers_unavailable" } });
+    assert.equal(result.operations[0].type, "create_issue", name);
+    assert.equal(Object.hasOwn(result.operations[0], "entityId"), false, name);
+  }
+});
+
 test("semantic idempotency keys ignore irrelevant ordering", () => {
   const route = { issueId: "1", route: "claude", sourceRevision: "r1" };
   assert.equal(idempotencyKey("issue_route", route), idempotencyKey("issue_route", { ...route }));
@@ -587,6 +605,16 @@ test("reconciliation emits only missing normalized obligations", () => {
     { kind: "run_obligation", repositoryId: "R_1", prId: "2", mergeSha: "c".repeat(40), role: "docs-writer", provider: "codex" },
     { kind: "sync_labels", definitionsDigest: "f".repeat(64) },
   ].sort((a, b) => canonicalBytes(a).compare(canonicalBytes(b))));
+});
+
+test("cancelled pending apply is recoverable work, never successful reconciliation evidence", () => {
+  const request = {
+    snapshot: { ...snapshot, state: { currentRevisions: {}, resources: { runs: [{ id: "99", name: "ADW issue and reusable execution lanes", event: "issues", status: "completed", conclusion: "cancelled", headSha: controlSha, attempt: 1 }] } } },
+    routes: [], pulls: [], labelSync: { wantedDigest: "f".repeat(64), liveDigest: "f".repeat(64) },
+    comments: [], trust, reviews: [], pioneers: [], holds: [],
+    cancelledApplies: [{ runId: "99", headSha: controlSha, attempt: 1 }],
+  };
+  assert.deepEqual(planReconciliation(request), [{ kind: "retry_cancelled_apply", runId: "99", headSha: controlSha, attempt: 1 }]);
 });
 
 test("reconciliation derives reviews, holds, pioneer retries, and imported finalization", () => {

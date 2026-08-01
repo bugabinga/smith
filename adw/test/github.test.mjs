@@ -472,7 +472,7 @@ test("list-derived merged pulls retain post-merge obligations", async () => {
 
 test("maintenance snapshots enrich open pulls with merge state and current checks", async () => {
   const headSha = "b".repeat(40);
-  const pull = { id: 2, number: 2, state: "open", merged: false, merge_commit_sha: null, updated_at: "2026-07-28T00:00:00Z", head: { sha: headSha, repo: { full_name: "bugabinga/smith" } }, base: { ref: "main" }, title: "Ready", body: "", labels: [{ name: "reviewed" }, { name: "security-cleared" }] };
+  const pull = { id: 2, number: 2, state: "open", merged: false, merge_commit_sha: "c".repeat(40), updated_at: "2026-07-28T00:00:00Z", head: { sha: headSha, repo: { full_name: "bugabinga/smith" } }, base: { ref: "main" }, title: "Ready", body: "", labels: [{ name: "reviewed" }, { name: "security-cleared" }] };
   const github = adapter(async request => {
     const endpoint = request.args.at(-1);
     const reply = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
@@ -488,6 +488,9 @@ test("maintenance snapshots enrich open pulls with merge state and current check
       { id: 11, user: bot, created_at: "2026-07-28T00:00:01.000Z", body: reviewMarker("security-reviewer", "security", headSha, "2".repeat(64)) },
       { id: 12, user: bot, created_at: "2026-07-28T00:00:02.000Z", body: `<!-- smith:review-evidence/v1 kind=security head=${headSha} conclusion=approve provider=claude authoritative=true artifact=${"3".repeat(64)} -->` },
       { id: 13, user: bot, created_at: "2026-07-28T00:00:03.000Z", body: reviewMarker("reviewer", "security", headSha, "4".repeat(64)) },
+      { id: 14, user: bot, created_at: "2026-07-28T00:00:04.000Z", body: `Review: ${headSha}\nVERDICT: reviewed\nLegacy detail` },
+      { id: 15, user: bot, created_at: "2026-07-28T00:00:05.000Z", body: `Security review: ${headSha}\nVERDICT: security-cleared\nLegacy detail` },
+      { id: 16, user: { id: 7, login: "bugabinga", type: "User" }, created_at: "2026-07-28T00:00:06.000Z", body: `Review: ${headSha}\nVERDICT: reviewed` },
     ]);
     if (endpoint.startsWith("/repos/bugabinga/smith/issues/2/timeline?")) return reply([
       { node_id: "C_1", event: "committed" },
@@ -502,8 +505,9 @@ test("maintenance snapshots enrich open pulls with merge state and current check
   const event = normalizeEvent("schedule", { schedule: "0 * * * *", repository, sender });
   const snapshot = await github.readDeterministicSnapshot(event, "jam-detector", { controlSha: "a".repeat(40), appId: appIdentity.appId });
   assert.equal(snapshot.state.resources.pulls[0].mergeState, "blocked");
+  assert.equal(snapshot.state.resources.pulls[0].mergeSha, null);
   assert.deepEqual(snapshot.state.resources.pulls[0].checks.map(value => value.name), ["check", "merge-gate"]);
-  assert.deepEqual(snapshot.state.resources.pulls[0].evidence.map(value => value.kind), ["correctness", "security"]);
+  assert.deepEqual(snapshot.state.resources.pulls[0].evidence.map(value => value.kind), ["correctness", "security", "correctness", "security"]);
   const audit = await github.readControlSnapshot(event, "auditor", { controlSha: "a".repeat(40), appId: appIdentity.appId });
   assert.deepEqual(audit.state.resources.pulls[0].timeline, [{ id: "14", kind: "label_removed", actorId: "7", createdAt: "2026-07-28T00:00:04.000Z", label: "risk:high", headSha }]);
 });
@@ -544,7 +548,7 @@ test("deterministic settings snapshot preserves full new rules and reports diges
   assert.match(audit.body, /Live digest: [0-9a-f]{64}/);
 });
 
-test("reconciliation derives reachable pioneer retry and hold states from bounded strict markers", async () => {
+test("reconciliation derives pioneer states and exact cancelled-apply recovery from bounded forge evidence", async () => {
   const firstRevision = "2026-07-28T00:00:00.000Z";
   const secondRevision = "2026-07-28T00:00:01.000Z";
   const artifactDigest = "f".repeat(64);
@@ -564,7 +568,12 @@ test("reconciliation derives reachable pioneer retry and hold states from bounde
     if (endpoint.startsWith("/repos/bugabinga/smith/issues?state=open")) return reply(issues);
     if (endpoint.startsWith("/repos/bugabinga/smith/pulls?state=all")) return reply([]);
     if (endpoint.startsWith("/repos/bugabinga/smith/labels?")) return reply([]);
-    if (endpoint.startsWith("/repos/bugabinga/smith/actions/runs?")) return reply({ workflow_runs: [] });
+    if (endpoint.startsWith("/repos/bugabinga/smith/actions/runs?")) return reply({ workflow_runs: [{ id: 99, name: "ADW issue and reusable execution lanes", path: ".github/workflows/adw-issues.yml", event: "issues", status: "completed", conclusion: "cancelled", head_sha: "a".repeat(40), head_branch: "main", run_attempt: 1 }] });
+    if (endpoint.startsWith("/repos/bugabinga/smith/actions/runs/99/jobs?")) return reply({ jobs: [
+      { id: 1, name: "verify", status: "completed", conclusion: "success" },
+      { id: 2, name: "apply", status: "completed", conclusion: "cancelled" },
+      { id: 3, name: "evidence", status: "completed", conclusion: "skipped" },
+    ] });
     if (endpoint.startsWith("/repos/bugabinga/smith/issues/1/comments?")) return reply([]);
     if (endpoint.startsWith("/repos/bugabinga/smith/issues/2/comments?")) return reply([{ id: 20, user: bot, created_at: secondRevision, body: marker }]);
     throw new Error(`unexpected ${endpoint}`);
@@ -575,7 +584,8 @@ test("reconciliation derives reachable pioneer retry and hold states from bounde
     { issueId: "1", sourceRevision: firstSource, verdict: "missing", artifactDigest: null, closingPrId: null },
     { issueId: "2", sourceRevision: secondSource, verdict: "disproved", artifactDigest, closingPrId: null },
   ]);
-  assert.deepEqual(planReconciliation({ snapshot, ...snapshot.state.reconciliation }).map(intent => intent.kind).sort(), ["hold_spec", "retry_pioneer"]);
+  assert.deepEqual(snapshot.state.reconciliation.cancelledApplies, [{ runId: "99", headSha: "a".repeat(40), attempt: 1 }]);
+  assert.deepEqual(planReconciliation({ snapshot, ...snapshot.state.reconciliation }).map(intent => intent.kind).sort(), ["hold_spec", "retry_cancelled_apply", "retry_pioneer"]);
 });
 
 test("role snapshot rejects repository drift and untrusted App identity", async () => {

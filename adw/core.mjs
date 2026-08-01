@@ -724,8 +724,8 @@ export function parseLegacyMarkers({ comments, trust }) {
 }
 
 export function planReconciliation(request) {
-  exact(request, ["snapshot", "routes", "pulls", "labelSync", "comments", "trust", "reviews", "pioneers", "holds"], "reconciliation");
-  const { snapshot, routes, pulls, labelSync, comments, trust, reviews, pioneers, holds } = request;
+  exactOptional(request, ["snapshot", "routes", "pulls", "labelSync", "comments", "trust", "reviews", "pioneers", "holds"], ["cancelledApplies"], "reconciliation");
+  const { snapshot, routes, pulls, labelSync, comments, trust, reviews, pioneers, holds, cancelledApplies = [] } = request;
   const markers = parseLegacyMarkers({ comments, trust });
   validateSnapshot(snapshot);
   array(routes, "routes");
@@ -733,6 +733,18 @@ export function planReconciliation(request) {
   array(reviews, "reconciliation reviews");
   array(pioneers, "reconciliation pioneers");
   array(holds, "reconciliation holds");
+  array(cancelledApplies, "cancelled applies", 20);
+  const cancelledRunIds = new Set();
+  for (const cancelled of cancelledApplies) {
+    exact(cancelled, ["runId", "headSha", "attempt"], "cancelled apply");
+    restId(cancelled.runId, "cancelled apply run");
+    sha(cancelled.headSha, "cancelled apply head");
+    if (!Number.isSafeInteger(cancelled.attempt) || cancelled.attempt < 1) fail("cancelled apply attempt is invalid");
+    if (cancelledRunIds.has(cancelled.runId)) fail("duplicate cancelled apply");
+    cancelledRunIds.add(cancelled.runId);
+    const run = snapshot.state?.resources?.runs?.find(candidate => candidate?.id === cancelled.runId);
+    if (!run || run.headSha !== cancelled.headSha || run.attempt !== cancelled.attempt || run.status !== "completed" || run.conclusion !== "cancelled") fail("cancelled apply is not snapshot-bound");
+  }
   const currentRevisions = snapshot.state.currentRevisions;
   if (!currentRevisions || Array.isArray(currentRevisions) || Object.getPrototypeOf(currentRevisions) !== Object.prototype) fail("snapshot current revisions are required");
   const intents = [];
@@ -746,6 +758,7 @@ export function planReconciliation(request) {
     held.set(hold.entityId, reasons);
     intents.push({ kind: "held", entityId: hold.entityId, reasons });
   }
+  if (!held.has("repository")) for (const cancelled of cancelledApplies) intents.push({ kind: "retry_cancelled_apply", ...cancelled });
   const routeIds = new Set();
   for (const route of routes) {
     exact(route, ["issueId", "sourceRevision", "status", "primary", "fallback", "primaryOutcome", "fallbackOutcome", "artifactDigest", "prId"], "route");
@@ -856,6 +869,10 @@ function validateReconciliationIntent(intent) {
   } else if (REPOSITORY_DISPATCH_TYPES.has(intent.kind)) {
     const { kind, ...clientPayload } = intent;
     validateRepositoryDispatchPayload(kind, clientPayload);
+  } else if (intent.kind === "retry_cancelled_apply") {
+    exact(intent, ["kind", "runId", "headSha", "attempt"], "reconciliation intent");
+    restId(intent.runId, "reconciliation run"); sha(intent.headSha, "reconciliation run head");
+    if (!Number.isSafeInteger(intent.attempt) || intent.attempt < 1) fail("reconciliation run attempt is invalid");
   } else if (intent.kind === "hold_spec") {
     exact(intent, ["kind", "issueId", "artifactDigest"], "reconciliation intent");
     restId(intent.issueId, "reconciliation issue"); digest(intent.artifactDigest, "reconciliation artifact");
@@ -895,7 +912,11 @@ export function mapReconciliationIntents({ snapshot, intents }) {
   const operations = [];
   for (const intent of ordered) {
     if (intent.kind === "held") continue;
-    if (intent.kind === "hold_spec") {
+    if (intent.kind === "retry_cancelled_apply") {
+      const run = trustedSnapshot.state?.resources?.runs?.find(candidate => candidate?.id === intent.runId);
+      if (!run || run.headSha !== intent.headSha || run.attempt !== intent.attempt || run.status !== "completed" || run.conclusion !== "cancelled") fail("cancelled apply retry is not current");
+      operations.push({ type: "rerun_check", runId: intent.runId });
+    } else if (intent.kind === "hold_spec") {
       operations.push({ type: "add_label", entityId: intent.issueId, label: "needs:spec" });
     } else if (intent.kind === "sync_labels") {
       operations.push({ type: "sync_labels", definitionsDigest: intent.definitionsDigest });
@@ -907,7 +928,8 @@ export function mapReconciliationIntents({ snapshot, intents }) {
   }
   if (operations.length === 0) operations.push({ type: "noop", reason: "unchanged" });
   const unique = new Map(operations.map(operation => [digestJson(operation), validateOperationShape(operation)]));
-  return deepFreeze([...unique.values()]);
+  const priority = operation => operation.type === "dispatch_repository" ? 2 : operation.type === "rerun_check" ? 1 : 0;
+  return deepFreeze([...unique.values()].sort((left, right) => priority(left) - priority(right)));
 }
 
 export function validateVerification(value) {

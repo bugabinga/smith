@@ -333,6 +333,62 @@ test("natural post-state reconstructs a lost receipt without repeating the write
   assert.equal(calls.filter(call => call.args[2] !== "GET").length, writes);
 });
 
+test("lost later receipt cannot launder unrelated body or label drift through prior natural completion", async () => {
+  const operations = [
+    { type: "add_label", entityId: "1", label: "ready" },
+    { type: "add_label", entityId: "1", label: "blocked" },
+  ];
+  const original = { id: 1, number: 1, state: "open", title: "T", body: "B", labels: [], milestone: null, updated_at: "2026-01-01T00:00:00.000Z" };
+  const runCase = async drift => {
+    let issue = structuredClone(original);
+    const value = routedSnapshot(operations[0], snapshot([{ resource: "issue:1", kind: "issue", token: issueSourceRevision(issue) }]));
+    const canonicalDecision = decision(value, operations);
+    const proof = verification(value, canonicalDecision);
+    let loseSecondReceipt = true;
+    let writes = 0;
+    const { github } = harness(request => {
+      if (request.args[2] === "GET") return reply(issue);
+      writes++;
+      const label = body(request).labels[0];
+      issue = { ...issue, labels: [...issue.labels, { name: label }], updated_at: `2026-01-01T00:00:0${writes}.000Z` };
+      if (label === "blocked" && loseSecondReceipt) {
+        loseSecondReceipt = false;
+        const error = new Error("receipt upload was interrupted");
+        error.details = { httpStatus: 500 };
+        throw error;
+      }
+      return reply(issue);
+    });
+    let partialReceipt;
+    await assert.rejects(
+      () => github.apply({ decision: canonicalDecision, snapshot: value, verification: proof, previousReceipt: null }),
+      error => {
+        partialReceipt = error?.details?.partialReceipt;
+        return error?.code === "forge" && partialReceipt?.operations?.length === 1;
+      },
+    );
+    assert.deepEqual(exactLiveLabelNames(issue), ["ready", "blocked"]);
+    if (drift) issue = { ...issue, body: "unrelated edit", labels: [...issue.labels, { name: "external" }], updated_at: "2026-01-01T00:00:03.000Z" };
+    const beforeRetryWrites = writes;
+    if (drift) {
+      await assert.rejects(
+        () => github.apply({ decision: canonicalDecision, snapshot: value, verification: proof, previousReceipt: partialReceipt }),
+        error => error?.code === "stale" && error.message === "precondition changed",
+      );
+    } else {
+      const recovered = await github.apply({ decision: canonicalDecision, snapshot: value, verification: proof, previousReceipt: partialReceipt });
+      assert.equal(recovered.operations.length, 2);
+    }
+    assert.equal(writes, beforeRetryWrites);
+  };
+  await runCase(false);
+  await runCase(true);
+});
+
+function exactLiveLabelNames(issue) {
+  return issue.labels.map(label => label.name);
+}
+
 test("semantic review and risk markers remain anchored before the role-bound apply marker", async () => {
   const cases = [
     ["reviewer", `<!-- smith:review-evidence/v1 kind=correctness head=${headSha} conclusion=approve provider=claude authoritative=true artifact=${"1".repeat(64)} -->`],
@@ -372,6 +428,51 @@ test("forge markers make create retries authoritative and conflicts fail closed"
   await assert.rejects(() => apply(github, operation), error => error?.code === "stale" && error.message === "conflicting forge marker");
 });
 
+test("exact operation marker reconstructs a lost comment receipt but cannot absorb unrelated comment drift", async () => {
+  const operation = { type: "comment", entityId: "1", body: "hello", marker: "marker-1" };
+  const value = snapshot([{ resource: "issue:1:comments", kind: "comments", token: digestJson([]) }]);
+  let comments = [];
+  const { github, calls } = harness(request => {
+    const path = endpoint(request);
+    if (request.args[2] === "GET" && path.includes("/issues/1/comments?")) return reply(comments);
+    if (request.args[2] === "POST" && path.endsWith("/issues/1/comments")) {
+      const comment = { id: 10, body: body(request).body, user: bot, created_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z" };
+      comments.push(comment);
+      return reply(comment);
+    }
+    throw new Error(`unexpected ${request.args[2]} ${path}`);
+  });
+  await apply(github, operation, value);
+  const writes = calls.filter(call => call.args[2] !== "GET").length;
+  assert.equal((await apply(github, operation, value)).status, "complete");
+  assert.equal(calls.filter(call => call.args[2] !== "GET").length, writes);
+  comments.push({ id: 11, body: "unrelated", user: { id: 7, login: "bugabinga", type: "User" }, created_at: "2026-01-01T00:00:01.000Z", updated_at: "2026-01-01T00:00:01.000Z" });
+  await assert.rejects(() => apply(github, operation, value), error => error?.code === "stale" && error.message === "precondition changed");
+});
+
+test("create marker recovery removes only its exact issue transition", async () => {
+  const operation = { type: "create_issue", title: "Finding", body: "Details", labels: ["adw:drift"], marker: "finding-marker" };
+  const value = snapshot([{ resource: "issues", kind: "issues", token: digestJson([]) }]);
+  let issues = [];
+  const { github, calls } = harness(request => {
+    const path = endpoint(request);
+    if (request.args[2] === "GET" && path.includes("/issues?")) return reply(issues);
+    if (request.args[2] === "POST" && path.endsWith("/issues")) {
+      const input = body(request);
+      const issue = { id: 10, number: 10, state: "open", title: input.title, body: input.body, labels: input.labels.map(name => ({ name })), milestone: null, user: bot, updated_at: "2026-01-01T00:00:00.000Z" };
+      issues.push(issue);
+      return reply(issue);
+    }
+    throw new Error(`unexpected ${request.args[2]} ${path}`);
+  });
+  await apply(github, operation, value);
+  const writes = calls.filter(call => call.args[2] !== "GET").length;
+  assert.equal((await apply(github, operation, value)).status, "complete");
+  assert.equal(calls.filter(call => call.args[2] !== "GET").length, writes);
+  issues.push({ id: 11, number: 11, state: "open", title: "External", body: "Drift", labels: [], milestone: null, user: { id: 7, login: "bugabinga", type: "User" }, updated_at: "2026-01-01T00:00:01.000Z" });
+  await assert.rejects(() => apply(github, operation, value), error => error?.code === "stale" && error.message === "precondition changed");
+});
+
 test("auto-merge parses only exact role-bound review and risk marker pairs", () => {
   const correctness = `<!-- smith:review-evidence/v1 kind=correctness head=${headSha} conclusion=approve provider=claude authoritative=true artifact=${"1".repeat(64)} -->`;
   const security = `<!-- smith:review-evidence/v1 kind=security head=${headSha} conclusion=approve provider=codex authoritative=true artifact=${"2".repeat(64)} -->`;
@@ -380,11 +481,28 @@ test("auto-merge parses only exact role-bound review and risk marker pairs", () 
     { id: 2, user: bot, body: pairedMarker("security-reviewer", security) },
   ];
   assert.doesNotThrow(() => validateAutoMergeMarkers({ comments, headSha, prId: "3", appIdentity, ownerIds: ["7"], ownerLogin: "bugabinga" }));
+  const duplicateCorrectness = `<!-- smith:review-evidence/v1 kind=correctness head=${headSha} conclusion=approve provider=codex authoritative=true artifact=${"4".repeat(64)} -->`;
+  assert.doesNotThrow(() => validateAutoMergeMarkers({ comments: [...comments, { id: 3, user: bot, body: pairedMarker("reviewer", duplicateCorrectness, "3", 2) }], headSha, prId: "3", appIdentity, ownerIds: ["7"], ownerLogin: "bugabinga" }));
+  const legacy = [
+    { id: 4, user: bot, body: `Review: ${headSha}\nVERDICT: reviewed\nLegacy detail` },
+    { id: 5, user: bot, body: `Review: ${headSha}\nVERDICT: reviewed\nDuplicate` },
+    { id: 6, user: bot, body: `Security review: ${headSha}\nVERDICT: security-cleared\nLegacy detail` },
+  ];
+  assert.doesNotThrow(() => validateAutoMergeMarkers({ comments: legacy, headSha, prId: "3", appIdentity, ownerIds: ["7"], ownerLogin: "bugabinga" }));
+  for (const invalidLegacy of [
+    [{ ...legacy[0], body: `Review: ${headSha}\nVERDICT: changes-requested` }, legacy[2]],
+    [{ ...legacy[0], user: { id: 7, login: "bugabinga", type: "User" } }, legacy[2]],
+    [{ ...legacy[0], body: `Review: ${"e".repeat(40)}\nVERDICT: reviewed` }, legacy[2]],
+  ]) assert.throws(() => validateAutoMergeMarkers({ comments: invalidLegacy, headSha, prId: "3", appIdentity, ownerIds: ["7"], ownerLogin: "bugabinga" }), error => error?.code === "stale");
   const correctnessReject = `<!-- smith:review-evidence/v1 kind=correctness head=${headSha} conclusion=reject provider=claude authoritative=true artifact=${"3".repeat(64)} -->`;
+  const staleCorrectness = `<!-- smith:review-evidence/v1 kind=correctness head=${"e".repeat(40)} conclusion=approve provider=claude authoritative=true artifact=${"5".repeat(64)} -->`;
   for (const malformed of [
     [{ ...comments[0], body: correctness }, comments[1]],
     [{ ...comments[0], body: pairedMarker("security-reviewer", correctness) }, comments[1]],
     [{ ...comments[0], body: `${correctness}\n\n${pairedMarker("reviewer", correctness).split("\n")[1]}` }, comments[1]],
+    [{ ...comments[0], user: { id: 7, login: "bugabinga", type: "User" } }, comments[1]],
+    [{ ...comments[0], body: pairedMarker("reviewer", staleCorrectness) }, comments[1]],
+    [{ ...comments[0], body: pairedMarker("reviewer", correctnessReject) }, comments[1]],
     [...comments, { id: 3, user: bot, body: pairedMarker("reviewer", correctnessReject, "3", 3) }],
   ]) {
     assert.throws(() => validateAutoMergeMarkers({ comments: malformed, headSha, prId: "3", appIdentity, ownerIds: ["7"], ownerLogin: "bugabinga" }), error => error?.code === "stale" && error.message === "auto-merge evidence failed");
@@ -649,6 +767,36 @@ test("auto-merge freshly enforces non-draft clean current-head authority immedia
     error => error?.code === "stale" && error.message === "auto-merge precondition failed",
   );
   assert.equal(graphqlCalls, 0);
+});
+
+test("auto-merge may arm while GitHub reports blocked by its missing gate, but not when explicitly behind or dirty", async () => {
+  const operation = { type: "arm_auto_merge", prId: "3", headSha, method: "squash" };
+  const routing = { role: "auditor", mode: "single", primary: null };
+  const value = {
+    ...snapshot([{ resource: "pull:3", kind: "pull", token: headSha }]), routing,
+    state: { entityId: "3", trust: { ownerIds: ["7"], appId: appIdentity.botUserId }, resources: {} },
+  };
+  const correctness = `<!-- smith:review-evidence/v1 kind=correctness head=${headSha} conclusion=approve provider=claude authoritative=true artifact=${"1".repeat(64)} -->`;
+  const security = `<!-- smith:review-evidence/v1 kind=security head=${headSha} conclusion=approve provider=codex authoritative=true artifact=${"2".repeat(64)} -->`;
+  const comments = [{ id: 1, user: bot, body: pairedMarker("reviewer", correctness) }, { id: 2, user: bot, body: pairedMarker("security-reviewer", security) }];
+  for (const mergeState of ["blocked", "behind", "dirty"]) {
+    let armed = false;
+    const { github } = harness(request => {
+      const path = endpoint(request);
+      if (request.args[1] === "graphql") { armed = true; return reply({ data: { enablePullRequestAutoMerge: { pullRequest: { id: "P_3" } } } }); }
+      if (path.endsWith("/pulls/3")) return reply({ id: 3, node_id: "P_3", number: 3, state: "open", draft: false, mergeable_state: mergeState, labels: [], head: { sha: headSha }, auto_merge: armed ? { merge_method: "squash" } : null });
+      if (path.includes(`/commits/${headSha}/check-runs?`)) return reply({ check_runs: [{ id: 4, name: "check", head_sha: headSha, status: "completed", conclusion: "success", app: { id: 15368, slug: "github-actions" } }] });
+      if (path.includes("/issues/3/comments?")) return reply(comments);
+      throw new Error(`unexpected ${request.args[2]} ${path}`);
+    });
+    if (mergeState === "blocked") {
+      assert.equal((await apply(github, operation, value, { routing })).status, "complete");
+      assert.equal(armed, true);
+    } else {
+      await assert.rejects(() => apply(github, operation, value, { routing }), error => error?.code === "stale" && error.message === "auto-merge precondition failed");
+      assert.equal(armed, false);
+    }
+  }
 });
 
 test("operation capabilities are exact, operation-scoped, and exclude settings writes", () => {

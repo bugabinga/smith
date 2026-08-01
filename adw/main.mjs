@@ -1068,7 +1068,7 @@ async function reduceCommand(env, executablePath) {
 function reconciliationRequest(snapshot) {
   const value = snapshot.state?.reconciliation;
   if (!value || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) inputError("reconciliation snapshot state is missing");
-  exactObject(value, ["routes", "pulls", "labelSync", "comments", "trust", "reviews", "pioneers", "holds"], "reconciliation snapshot state");
+  exactObject(value, ["routes", "pulls", "labelSync", "comments", "trust", "reviews", "pioneers", "holds", "cancelledApplies"], "reconciliation snapshot state");
   return { snapshot, ...value };
 }
 

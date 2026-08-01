@@ -221,7 +221,7 @@ test("operational reconcile consumes only canonical snapshot/source and writes a
     state: { entityId: "R_1", currentRevisions: { "issue:7": "2".repeat(64) }, reconciliation: {
       routes: [{ issueId: "7", sourceRevision: "1".repeat(64), status: "primary", primary: "claude", fallback: "codex", primaryOutcome: null, fallbackOutcome: null, artifactDigest: null, prId: null }],
       pulls: [], labelSync: { wantedDigest: "1".repeat(64), liveDigest: "1".repeat(64) }, comments: [],
-      trust: { ownerIds: ["7"], appId: "9" }, reviews: [], pioneers: [], holds: [],
+      trust: { ownerIds: ["7"], appId: "9" }, reviews: [], pioneers: [], holds: [], cancelledApplies: [],
     } },
   };
   const fixture = await operationalFixture(t, authoritySnapshot, { ".github/labels.yml": "" });

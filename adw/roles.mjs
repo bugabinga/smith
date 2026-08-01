@@ -16,6 +16,7 @@ const providerSet = new Set(PROVIDERS);
 const operationSet = new Set(OPERATIONS);
 const efforts = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const outcomes = new Set(["positive", "negative", "noop", "unable"]);
+const ISSUE_ENDPOINT_EVENTS = new Set(["issue", "issue_comment", "pull_request", "pull_request_review", "pull_request_review_comment"]);
 const requiredDenials = ["adw/**", "docs/SPEC.md"];
 
 function fail(message) {
@@ -133,19 +134,19 @@ const patch = allowedPrefixes => ({ maxBytes: 1_048_576, maxFiles: 100, allowedP
 const BASE_ROLES = deepFreeze({
   "steerer": config({ name: "steerer", charter: ".claude/agents/steerer.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: sol("high"), capabilities: ["comments:read", "comments:write"], fields: ["comment", "entity", "owner"], operations: ["comment", "noop", "terminal"] }),
   "triager": config({ name: "triager", charter: ".claude/agents/triager.md", primary: "codex", fallback: "claude", claude: opus("high"), codex: luna("medium"), capabilities: ["issues:read", "issues:write"], fields: ["issue", "labels", "milestones"], operations: ["add_label", "comment", "noop", "terminal"] }),
-  "planner": config({ name: "planner", charter: ".claude/agents/planner.md", primary: "claude", fallback: "codex", claude: fable("xhigh"), codex: sol("xhigh"), capabilities: ["issues:read", "issues:write", "milestones:write"], fields: ["issues", "milestones", "spec_change"], operations: ["add_label", "comment", "create_issue", "noop", "terminal"] }),
-  "surveyor": config({ name: "surveyor", charter: ".claude/agents/surveyor.md", primary: "claude", fallback: "codex", claude: fable("high"), codex: sol("high"), capabilities: ["issues:read", "issues:write"], fields: ["issues", "milestones", "repository"], operations: ["add_label", "comment", "create_issue", "noop", "terminal"] }),
+  "planner": config({ name: "planner", charter: ".claude/agents/planner.md", primary: "claude", fallback: "codex", claude: fable("xhigh"), codex: sol("xhigh"), capabilities: ["issues:read", "issues:write", "milestones:write"], fields: ["issues", "milestones", "spec_change"], operations: ["create_issue", "noop", "terminal"] }),
+  "surveyor": config({ name: "surveyor", charter: ".claude/agents/surveyor.md", primary: "claude", fallback: "codex", claude: fable("high"), codex: sol("high"), capabilities: ["issues:read", "issues:write"], fields: ["issues", "milestones", "repository"], operations: ["create_issue", "noop", "terminal"] }),
   "builder": config({ name: "builder", charter: ".claude/agents/builder.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: terra("high"), capabilities: ["contents:write", "issues:read", "pulls:write"], fields: ["issue", "repository", "route"], operations: ["add_label", "comment", "create_pr", "noop", "terminal"], patch: patch(broadPrefixes) }),
   "codex-builder": config({ name: "codex-builder", charter: ".claude/agents/builder.md", primary: "codex", fallback: null, codex: terra("high"), capabilities: ["contents:write", "issues:read", "pulls:write"], fields: ["issue", "repository", "route"], operations: ["add_label", "comment", "create_pr", "noop", "terminal"], patch: patch(broadPrefixes) }),
   "pioneer": config({ name: "pioneer", charter: ".claude/skills/pioneer/SKILL.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: sol("high"), capabilities: ["contents:write", "issues:write", "pulls:write"], fields: ["claim", "issue", "spec"], operations: ["add_label", "comment", "create_pr", "noop", "terminal"], patch: patch(["prototypes/"]) }),
   "reviewer": config({ name: "reviewer", charter: ".claude/agents/reviewer.md", primary: "claude", fallback: "codex", claude: opus("xhigh"), codex: sol("high"), capabilities: ["checks:write", "pulls:read"], fields: ["diff", "files", "pull", "reviews"], operations: ["add_label", "comment", "publish_check", "remove_label", "terminal", "noop"], limits: fallbackAuthority }),
   "security-reviewer": config({ name: "security-reviewer", charter: ".claude/agents/security-reviewer.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: sol("high"), capabilities: ["checks:write", "pulls:read"], fields: ["diff", "files", "pull", "security"], operations: ["add_label", "comment", "publish_check", "remove_label", "terminal", "noop"], limits: fallbackAuthority }),
   "reviser": config({ name: "reviser", charter: ".claude/agents/builder.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: terra("high"), capabilities: ["contents:write", "pulls:write"], fields: ["changed_paths", "findings", "pull"], operations: ["add_label", "comment", "noop", "terminal", "update_pr"], patch: patch(broadPrefixes) }),
-  "sweeper": config({ name: "sweeper", charter: ".claude/agents/sweeper.md", primary: "codex", fallback: null, codex: luna("low"), capabilities: ["actions:write", "issues:write", "pulls:write"], fields: ["issues", "pulls", "routes", "runs"], operations: ["add_label", "create_issue", "noop", "rerun_check", "terminal"] }),
+  "sweeper": config({ name: "sweeper", charter: ".claude/agents/sweeper.md", primary: "codex", fallback: null, codex: luna("low"), capabilities: ["actions:write", "issues:write", "pulls:write"], fields: ["issues", "pulls", "routes", "runs"], operations: ["create_issue", "noop", "rerun_check", "terminal"] }),
   "adw-doctor": config({ name: "adw-doctor", charter: ".claude/agents/adw-doctor.md", primary: "codex", fallback: "claude", claude: opus("high"), codex: sol("xhigh"), capabilities: ["actions:read", "issues:write", "settings:read"], fields: ["config", "runs", "settings"], operations: ["create_issue", "noop", "report_drift", "terminal"] }),
   "docs-writer": config({ name: "docs-writer", charter: ".claude/agents/docs-writer.md", primary: "codex", fallback: "claude", claude: opus("high"), codex: terra("medium"), capabilities: ["contents:write", "pulls:write"], fields: ["diff", "docs", "pull"], operations: ["add_label", "comment", "create_pr", "noop", "terminal"], patch: patch(["book/", "docs/", "site/"]) }),
   "dependency-manager": config({ name: "dependency-manager", charter: ".claude/agents/dependency-manager.md", primary: "codex", fallback: "claude", claude: opus("high"), codex: terra("medium"), capabilities: ["issues:write", "pulls:read"], fields: ["dependency", "diff", "pull"], operations: ["add_label", "comment", "noop", "terminal"] }),
-  "alert-triager": config({ name: "alert-triager", charter: ".claude/agents/security-reviewer.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: sol("high"), capabilities: ["alerts:read", "issues:write"], fields: ["alert", "issues", "pulls"], operations: ["comment", "create_issue", "noop", "terminal"] }),
+  "alert-triager": config({ name: "alert-triager", charter: ".claude/agents/security-reviewer.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: sol("high"), capabilities: ["alerts:read", "issues:write"], fields: ["alert", "issues", "pulls"], operations: ["create_issue", "noop", "terminal"] }),
 });
 
 const ROLE_FAMILIES = Object.freeze({
@@ -171,8 +172,8 @@ const DETERMINISTIC_ROLES = deepFreeze({
 // separate prevents reconciliation/audit writes from widening any model's role.
 const CONTROL_AUTHORITIES = deepFreeze({
   reconciler: {
-    name: "reconciler", kind: "control", mode: "single", primary: null, patch: null, capabilities: ["actions:read", "checks:read", "contents:write", "issues:write", "pulls:read", "repository:read"],
-    operations: ["add_label", "dispatch_repository", "noop", "sync_labels"],
+    name: "reconciler", kind: "control", mode: "single", primary: null, patch: null, capabilities: ["actions:read", "actions:write", "checks:read", "checks:write", "contents:write", "issues:write", "pulls:read", "repository:read"],
+    operations: ["add_label", "dispatch_repository", "noop", "rerun_check", "sync_labels"],
     snapshot: { fields: ["issues", "labels", "pulls", "routes", "runs"], maxBytes: 262144 },
     trustedPaths: [".github/labels.yml"],
     eventKinds: ["check", "dispatch", "pull_request", "pull_request_review_comment", "push", "schedule", "workflow"],
@@ -199,6 +200,11 @@ function payloadObject(value, keys, name = "payload") {
 
 function payloadText(value, name) {
   if (typeof value !== "string" || value.length === 0 || value.length > 16_384) payloadFail(`${name} is invalid`);
+}
+
+function payloadRestId(value, name) {
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) payloadFail(`${name} is invalid`);
+  return value;
 }
 
 function payloadArray(value, name, max = 100) {
@@ -324,6 +330,33 @@ function semanticOutcome(verdict) {
   return "positive";
 }
 
+function boundedFindingReport(summary, actions) {
+  const limit = 65_536;
+  let safeSummary = "";
+  let summaryBytes = 0;
+  for (const character of summary) {
+    const bytes = Buffer.byteLength(character);
+    if (summaryBytes + bytes > 16_384) break;
+    safeSummary += character;
+    summaryBytes += bytes;
+  }
+  const prefix = `${safeSummary}\n\nFindings: ${actions.length}\nDigest: ${digestJson(actions)}`;
+  let body = prefix;
+  const omitted = `\n- ${actions.length} finding(s) are bound by the digest above; remaining text omitted.`;
+  for (let index = 0; index < actions.length; index++) {
+    const action = actions[index];
+    const line = `\n- ${action.kind} ${action.entityId}: ${action.reason}`;
+    const reserve = index === actions.length - 1 ? "" : omitted;
+    if (Buffer.byteLength(body) + Buffer.byteLength(line) + Buffer.byteLength(reserve) > limit) {
+      body += omitted;
+      break;
+    }
+    body += line;
+  }
+  if (Buffer.byteLength(body) > limit) payloadFail("maintenance report is oversized");
+  return body;
+}
+
 export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessments }) {
   validateSnapshot(snapshot);
   const canonicalPolicy = role(rolePolicy?.name);
@@ -352,6 +385,9 @@ export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessment
   if (digestJson(assessment.patch) !== digestJson(reduction.patch)) payloadFail("reduction patch does not match assessment");
   if (payload.patch !== undefined && digestJson(payload.patch) !== digestJson(assessment.patch)) payloadFail("payload patch does not match assessment");
   const state = reductionState(snapshot);
+  const issueEndpoint = ISSUE_ENDPOINT_EVENTS.has(snapshot.event.kind)
+    && /^[1-9][0-9]*$/.test(state.entityId) && Number.isSafeInteger(Number(state.entityId));
+  const requireIssueEndpoint = () => { if (!issueEndpoint) payloadFail("role operation target is not an issue endpoint"); };
   if (rolePolicy.name === "reviser" && assessment.patch && (!Array.isArray(state.changedPaths) || assessment.patch.files.some(file => !state.changedPaths.includes(file.path)))) payloadFail("revision patch escapes current pull paths");
   if (state.entityId !== snapshot.event.entityId) payloadFail("snapshot entity does not match event");
   const pioneerRevision = (snapshot.revisions.find(revision => revision.resource === `issue:${state.entityId}`) ?? (snapshot.revisions.length === 1 ? snapshot.revisions[0] : null))?.token;
@@ -371,20 +407,27 @@ export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessment
     kind = "terminal";
     operations = [{ type: "terminal", reason: "held" }];
   } else if (rolePolicy.payloadFamily === "steering") {
+    requireIssueEndpoint();
     if (state.ownerAuthenticated !== true) payloadFail("steering actor is not owner-authenticated");
     operations = [{ type: "comment", entityId: state.entityId, body: payload.body, marker }];
   } else if (rolePolicy.payloadFamily === "triage") {
+    requireIssueEndpoint();
     const required = { accept: "ready", needs_info: "needs:info", needs_spec: "needs:spec" }[payload.verdict];
     operations = [
       { type: "comment", entityId: state.entityId, body: payload.body, marker },
       ...[...new Set([...payload.labels, required])].map(label => ({ type: "add_label", entityId: state.entityId, label })),
     ];
   } else if (rolePolicy.payloadFamily === "plan" || rolePolicy.payloadFamily === "survey") {
-    operations = payload.issues.map(issue => ({ type: "create_issue", ...issue, marker }));
-    if (payload.verdict === "blocked") operations.push({ type: "add_label", entityId: state.entityId, label: "blocked" });
-    operations.push({ type: "comment", entityId: state.entityId, body: payload.summary, marker });
+    operations = payload.issues.map(issue => ({
+      type: "create_issue", ...issue,
+      labels: payload.verdict === "blocked" ? [...new Set([...issue.labels, "blocked"])] : issue.labels,
+      marker,
+    }));
+    if (operations.length === 0 && payload.verdict === "blocked") operations.push({ type: "create_issue", title: `ADW ${rolePolicy.name} blocked`, body: payload.summary, labels: ["blocked"], marker });
+    if (operations.length === 0) operations.push({ type: "noop", reason: "not_applicable" });
   } else if (rolePolicy.payloadFamily === "change") {
     if (payload.verdict === "blocked") {
+      requireIssueEndpoint();
       kind = "state";
       operations = [{ type: "comment", entityId: state.entityId, body: payload.reason, marker }, { type: "add_label", entityId: state.entityId, label: "blocked" }];
     } else if (rolePolicy.name === "reviser") {
@@ -394,6 +437,7 @@ export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessment
       operations = [{ type: "create_pr", head: state.headBranch, base: state.baseBranch, title: stateContent(state.title, "snapshot title"), body: stateContent(state.body, "snapshot body"), marker }];
     }
   } else if (rolePolicy.payloadFamily === "pioneer") {
+    requireIssueEndpoint();
     if (payload.verdict === "proved") {
       if (state.closingArtifactQualifies === true) operations = [{ type: "noop", reason: "already_complete" }];
       else if (assessment.patch) {
@@ -404,6 +448,7 @@ export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessment
       operations = [{ type: "add_label", entityId: state.entityId, label: "needs:spec" }, { type: "comment", entityId: state.entityId, body: `${payload.summary}\n\nFalsified claim: ${payload.claim}`, marker }];
     } else operations = [{ type: "comment", entityId: state.entityId, body: payload.summary, marker }];
   } else if (rolePolicy.payloadFamily === "review") {
+    requireIssueEndpoint();
     if (!snapshot.revisions.some(revision => revision.token === state.headSha)) payloadFail("review head is not a snapshot revision");
     const security = rolePolicy.name === "security-reviewer";
     const reviewKind = security ? "security" : "correctness";
@@ -427,18 +472,24 @@ export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessment
     else operations.push({ type: "remove_label", entityId: state.entityId, label: "changes-requested" });
   } else if (rolePolicy.payloadFamily === "maintenance") {
     if (!Array.isArray(state.actionTargets) || payload.actions.some(action => !state.actionTargets.includes(action.entityId))) payloadFail("maintenance target is outside snapshot");
-    operations = payload.actions.map(action => action.kind === "retry"
-      ? { type: "rerun_check", runId: action.entityId }
-      : action.kind === "hold"
-        ? { type: "add_label", entityId: action.entityId, label: "hold" }
-        : { type: "create_issue", title: action.reason, body: payload.summary, labels: ["adw:drift"], marker });
+    const runTargets = new Set((state.resources?.runs ?? []).map(run => run?.id).filter(value => typeof value === "string"));
+    const retries = payload.actions.filter(action => action.kind === "retry");
+    if ((retries.length > 0 && !rolePolicy.operations.includes("rerun_check")) || retries.some(action => !runTargets.has(action.entityId)) || new Set(retries.map(action => action.entityId)).size !== retries.length) payloadFail("maintenance retry target is not a workflow run");
+    operations = retries.map(action => ({ type: "rerun_check", runId: action.entityId }));
+    const findings = payload.actions.filter(action => action.kind !== "retry");
+    if (findings.length > 0) {
+      const report = { title: `ADW ${rolePolicy.name} findings`, body: boundedFindingReport(payload.summary, findings), marker };
+      operations.push(rolePolicy.name === "adw-doctor" ? { type: "report_drift", ...report } : { type: "create_issue", ...report, labels: ["adw:drift"] });
+    }
+    if (operations.length === 0) operations.push({ type: "noop", reason: "not_applicable" });
   } else if (rolePolicy.payloadFamily === "dependency") {
+    requireIssueEndpoint();
     operations = [{ type: "comment", entityId: state.entityId, body: payload.summary, marker }];
     if (payload.verdict === "risky") operations.push({ type: "add_label", entityId: state.entityId, label: "needs:spec" });
   } else if (rolePolicy.payloadFamily === "alert") {
     operations = payload.verdict === "issue"
       ? [{ type: "create_issue", ...payload.issue, marker }]
-      : [{ type: "comment", entityId: state.entityId, body: payload.summary, marker }];
+      : [{ type: "noop", reason: "already_complete" }];
   } else payloadFail("role payload family cannot be reduced");
   operations = operations.map(operation => validateOperation(operation, rolePolicy));
   return validateDecision({
@@ -606,7 +657,7 @@ export function reduceDeterministicArtifact(name, payload) {
     });
   } else if (name === "jam-detector") {
     payloadObject(payload, ["entityId", "headSha", "stalled", "reason"]);
-    payloadText(payload.entityId, "jam entity"); payloadText(payload.reason, "jam reason");
+    payloadRestId(payload.entityId, "jam entity"); payloadText(payload.reason, "jam reason");
     if (!/^[0-9a-f]{40}$/.test(payload.headSha) || typeof payload.stalled !== "boolean") payloadFail("jam input is invalid");
     const marker = `<!-- smith:jam/v1 entity=${payload.entityId} head=${payload.headSha} status=open artifact=${digestJson(payload)} -->`;
     operations = payload.stalled ? [{ type: "comment", entityId: payload.entityId, body: payload.reason, marker }] : [];
@@ -648,8 +699,8 @@ export function planAudit(snapshot) {
   for (const pull of pulls) {
     const prId = String(pull?.prId ?? pull?.number ?? "");
     if (!prId || pull?.state !== "open" || pull.merged !== false || pull.base !== trustedSnapshot.repository.defaultBranch || pull.headRepository !== repositoryName) continue;
-    if (pull.draft !== false || pull.mergeState !== "clean") {
-      const mergeState = pull.draft === true ? "draft" : pull.mergeState ?? "unknown";
+    if (pull.draft === true || ["behind", "dirty"].includes(pull.mergeState)) {
+      const mergeState = pull.draft === true ? "draft" : pull.mergeState;
       const finding = { prId, headSha: pull.headSha, mergeState };
       checks.push({ type: "publish_check", headSha: pull.headSha, name: "merge-gate", conclusion: "failure", summary: `merge_state_${mergeState}`, externalId: `merge-gate:${prId}:${pull.headSha}:${digestJson(finding)}` });
       continue;
@@ -706,7 +757,7 @@ export function reduceStatusArtifact({ snapshot, rolePolicy, reduction, assessme
   let operation;
   if (authority.operations.includes("publish_check") && /^[0-9a-f]{40}$/.test(trustedSnapshot.state?.headSha ?? "")) {
     operation = { type: "publish_check", headSha: trustedSnapshot.state.headSha, name: authority.name, conclusion: status === "fallback" ? "neutral" : "failure", summary: body, externalId: marker };
-  } else if (authority.operations.includes("comment") && typeof trustedSnapshot.state?.entityId === "string") {
+  } else if (authority.operations.includes("comment") && ISSUE_ENDPOINT_EVENTS.has(trustedSnapshot.event.kind) && /^[1-9][0-9]*$/.test(trustedSnapshot.state?.entityId ?? "") && Number.isSafeInteger(Number(trustedSnapshot.state.entityId))) {
     operation = { type: "comment", entityId: trustedSnapshot.state.entityId, body, marker };
   } else if (authority.operations.includes("create_issue")) {
     operation = { type: "create_issue", title: `ADW ${authority.name} ${status}`, body, labels: [], marker };

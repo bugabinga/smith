@@ -22,6 +22,11 @@ const MAX_COMMENT_ITEMS = 1_000;
 const MAX_COLLECTION_BYTES = 8_388_608;
 const DISPATCH_POLL_ATTEMPTS = 12;
 const DISPATCH_POLL_INTERVAL_MS = 5_000;
+const ADW_OPERATIONAL_WORKFLOW_PATHS = new Set([
+  ".github/workflows/adw-issues.yml",
+  ".github/workflows/adw-maintenance.yml",
+  ".github/workflows/adw-pulls.yml",
+]);
 const GITHUB_WRITE_OPERATIONS = new Set([
   "comment", "add_label", "remove_label", "create_issue", "update_issue", "close_issue",
   "create_milestone", "update_milestone", "close_milestone", "assign_milestone", "link_sub_issue",
@@ -185,6 +190,17 @@ function parsedReviewMarker(comment, headSha, prId, identity) {
   return Object.freeze({ kind: marker[1], headSha, conclusion: marker[3], provider: marker[4], artifactDigest: marker[5] });
 }
 
+function parsedLegacyReviewMarker(comment, headSha, identity) {
+  const authored = String(comment?.user?.id ?? "") === identity.botUserId && comment?.user?.login === identity.login && comment?.user?.type === "Bot";
+  if (!authored || !Number.isSafeInteger(comment?.id) || comment.id < 1 || typeof comment?.body !== "string") return null;
+  const match = /^(Review|Security review): ([0-9a-f]{40})\nVERDICT: (reviewed|changes-requested|security-cleared|risk-high)(?:\n|$)/.exec(comment.body);
+  if (match === null || match[2] !== headSha) return null;
+  const kind = match[1] === "Review" ? "correctness" : "security";
+  const allowed = kind === "correctness" ? new Set(["reviewed", "changes-requested"]) : new Set(["security-cleared", "risk-high"]);
+  if (!allowed.has(match[3])) return null;
+  return Object.freeze({ kind, headSha, conclusion: new Set(["reviewed", "security-cleared"]).has(match[3]) ? "approve" : "reject", provider: "claude", artifactDigest: digestJson({ commentId: String(comment.id), body: comment.body }) });
+}
+
 export function validateAutoMergeMarkers({ comments, headSha, prId, appIdentity, ownerIds, ownerLogin }) {
   const identity = githubIdentity(appIdentity);
   contract(Array.isArray(comments) && comments.length < 100, "auto-merge comments are invalid");
@@ -192,10 +208,10 @@ export function validateAutoMergeMarkers({ comments, headSha, prId, appIdentity,
   contract(typeof prId === "string" && /^[1-9][0-9]*$/.test(prId), "auto-merge pull is invalid");
   contract(Array.isArray(ownerIds) && ownerIds.every(id => typeof id === "string" && /^[1-9][0-9]*$/.test(id)), "auto-merge owners are invalid");
   text(ownerLogin, "repository owner");
-  const reviews = comments.map(comment => parsedReviewMarker(comment, headSha, prId, identity)).filter(Boolean);
+  const reviews = comments.map(comment => parsedReviewMarker(comment, headSha, prId, identity) ?? parsedLegacyReviewMarker(comment, headSha, identity)).filter(Boolean);
   for (const kind of ["correctness", "security"]) {
     const matches = reviews.filter(review => review.kind === kind);
-    if (matches.length !== 1 || matches[0].conclusion !== "approve") throw new AdwError("stale", "auto-merge evidence failed");
+    if (!matches.some(review => review.conclusion === "approve") || matches.some(review => review.conclusion === "reject")) throw new AdwError("stale", "auto-merge evidence failed");
   }
   const validTime = value => typeof value === "string" && Number.isFinite(Date.parse(value));
   const ownerSet = new Set(ownerIds);
@@ -426,6 +442,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       return request(`/repos/${owner}/${name}/${kind === "check_suite" ? "check-suites" : "check-runs"}/${positiveInteger(number)}`);
     },
     workflowRun: number => request(`/repos/${owner}/${name}/actions/runs/${positiveInteger(number)}`),
+    runJobs: number => request(`/repos/${owner}/${name}/actions/runs/${positiveInteger(number)}/jobs?filter=latest`, "jobs", { pageSize: 100, maxItems: 100, maxBytes: MAX_COLLECTION_BYTES }),
     alert: (kind, number) => {
       contract(kind === "dependabot_alert" || kind === "code_scanning_alert", "alert kind is invalid");
       return request(`/repos/${owner}/${name}/${kind === "dependabot_alert" ? "dependabot/alerts" : "code-scanning/alerts"}/${positiveInteger(number)}`);
@@ -527,10 +544,12 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     contract(value && Number.isSafeInteger(value.number) && value.number > 0, "pull is malformed");
     const headSha = text(value.head?.sha, "pull head SHA");
     contract(/^[0-9a-f]{40}$/.test(headSha), "pull head SHA is malformed");
-    const mergeSha = value.merge_commit_sha === null || value.merge_commit_sha === undefined ? null : text(value.merge_commit_sha, "pull merge SHA");
-    contract(mergeSha === null || /^[0-9a-f]{40}$/.test(mergeSha), "pull merge SHA is malformed");
+    const rawMergeSha = value.merge_commit_sha === null || value.merge_commit_sha === undefined ? null : text(value.merge_commit_sha, "pull merge SHA");
+    contract(rawMergeSha === null || /^[0-9a-f]{40}$/.test(rawMergeSha), "pull merge SHA is malformed");
+    const merged = value.merged === true || typeof value.merged_at === "string";
+    const mergeSha = merged ? rawMergeSha : null;
     return Object.freeze({
-      id: restId(value.id, "pull id"), number: String(value.number), state: text(value.state, "pull state"), draft: value.draft === true, merged: value.merged === true || typeof value.merged_at === "string",
+      id: restId(value.id, "pull id"), number: String(value.number), state: text(value.state, "pull state"), draft: value.draft === true, merged,
       mergeSha, mergeState: value.mergeable_state === undefined || value.mergeable_state === null ? null : text(value.mergeable_state, "pull merge state").toLowerCase(),
       updatedAt: text(value.updated_at, "pull updatedAt"), headSha, headBranch: value.head?.ref === undefined ? null : text(value.head.ref, "pull head branch"), base: text(value.base?.ref, "pull base"),
       actorId: value.user ? restId(value.user.id, "pull actor") : null, actorLogin: value.user?.login ?? null, actorType: value.user?.type ?? null,
@@ -626,7 +645,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
   };
   const normalizeRun = value => Object.freeze({ id: restId(value.id, "run id"), name: text(value.name, "run name"), event: text(value.event, "run event"), status: text(value.status, "run status"), conclusion: value.conclusion === null ? null : text(value.conclusion, "run conclusion"), headSha: text(value.head_sha, "run head"), attempt: Number(value.run_attempt ?? 1) });
   const reviewEvidence = (comments, headSha, prId) => comments
-    .map(comment => parsedReviewMarker(comment, headSha, prId, appIdentity))
+    .map(comment => parsedReviewMarker(comment, headSha, prId, appIdentity) ?? parsedLegacyReviewMarker(comment, headSha, appIdentity))
     .filter(Boolean)
     .map(marker => Object.freeze({ kind: marker.kind, headSha: marker.headSha, conclusion: marker.conclusion, actorId: appIdentity.botUserId, provider: marker.provider, authoritative: true, artifactDigest: marker.artifactDigest }));
   const numericId = (value, name) => {
@@ -643,9 +662,9 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
   const markerMatches = (records, marker, expected, field = "body") => {
     const matches = records.filter(record => typeof record?.[field] === "string" && record[field].includes(marker));
     if (matches.length > 1) throw new AdwError("stale", "conflicting forge marker");
-    if (matches.length === 0) return false;
+    if (matches.length === 0) return null;
     if (!expected(matches[0])) throw new AdwError("stale", "conflicting forge marker");
-    return true;
+    return matches[0];
   };
   const labelValue = value => typeof value === "string" ? value : value?.name;
   const exactLiveLabels = value => Array.isArray(value?.labels) ? value.labels.map(labelValue) : [];
@@ -816,6 +835,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       let sourceComment = null;
       let qualifyingPioneerPulls = [];
       let fileValues = [];
+      let rawRunValues = [];
       if (issueRelated && ["issue", "issues", "claim", "spec", "labels", "milestones", "comment", "entity", "owner"].some(field => fields.has(field))) {
         issueValue = normalizeIssue(await methods.issue(Number(event.entityId)));
         put(`issue:${event.entityId}`, "issue", issueValue, issueValue.sourceRevision);
@@ -898,7 +918,8 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         }
       }
       if (fields.has("runs") || fields.has("routes")) {
-        const runs = (await methods.runs()).map(normalizeRun);
+        rawRunValues = await methods.runs();
+        const runs = rawRunValues.map(normalizeRun);
         put("runs", "workflow_runs", Object.freeze(runs), digestJson(runs));
         if (fields.has("runs")) satisfied.add("runs");
         if (fields.has("routes")) satisfied.add("routes");
@@ -1035,6 +1056,18 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
           const reasons = holdReasons(pull.labels);
           if (reasons.length > 0) holds.push(Object.freeze({ entityId: `pr:${pull.number}`, reasons }));
         }
+        const cancelledApplies = [];
+        const calledJob = (job, name) => job?.name === name || (typeof job?.name === "string" && job.name.endsWith(` / ${name}`));
+        for (const run of rawRunValues) {
+          if (run?.status !== "completed" || run.conclusion !== "cancelled" || !ADW_OPERATIONAL_WORKFLOW_PATHS.has(run.path) || run.head_branch !== normalizedRepository.defaultBranch || run.head_sha !== controlSha || !Number.isSafeInteger(run.id) || run.id < 1 || !Number.isSafeInteger(run.run_attempt) || run.run_attempt < 1) continue;
+          const jobs = await methods.runJobs(run.id);
+          const applyJobs = jobs.filter(job => calledJob(job, "apply"));
+          const verifyJobs = jobs.filter(job => calledJob(job, "verify"));
+          const evidenceJobs = jobs.filter(job => calledJob(job, "evidence"));
+          if (applyJobs.length !== 1 || applyJobs[0]?.status !== "completed" || applyJobs[0]?.conclusion !== "cancelled" || verifyJobs.length !== 1 || verifyJobs[0]?.status !== "completed" || verifyJobs[0]?.conclusion !== "success" || evidenceJobs.some(job => job?.conclusion === "success")) continue;
+          cancelledApplies.push(Object.freeze({ runId: String(run.id), headSha: run.head_sha, attempt: run.run_attempt }));
+        }
+        cancelledApplies.sort((left, right) => Number(left.runId) - Number(right.runId));
         const definitionSource = resources["trusted:.github/labels.yml"]?.data;
         const definitions = parseLabelDefinitions(definitionSource);
         const liveByName = new Map((resources.labels ?? []).map(label => [label.name.data, { name: label.name.data, color: label.color.data.toLowerCase(), description: label.description.data }]));
@@ -1042,13 +1075,19 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         reconciliation = Object.freeze({
           routes: Object.freeze(routes), pulls: Object.freeze(trustedPulls),
           labelSync: Object.freeze({ wantedDigest: digestJson(definitions), liveDigest: digestJson(projectedLabels) }),
+          cancelledApplies: Object.freeze(cancelledApplies),
           comments: Object.freeze(markerComments), trust: Object.freeze({ ownerIds: [repositoryOwnerId], appId: appIdentity.botUserId }),
           reviews: Object.freeze(reviews), pioneers: Object.freeze(pioneers), holds: Object.freeze(holds),
         });
       }
       const state = {
         entityId: event.entityId, labels, input: Object.freeze(input), resources: Object.freeze(resources),
-        actionTargets: Object.freeze(resources.runs?.map(run => run.id) ?? []),
+        actionTargets: Object.freeze([...new Set([
+          event.entityId,
+          ...(resources.runs?.map(run => run.id) ?? []),
+          ...(resources.issues?.map(issue => issue.number) ?? []),
+          ...(resources.pulls?.map(pull => pull.number) ?? []),
+        ])]),
         ownerAuthenticated: event.kind === "issue_comment" && sourceComment !== null && event.actor.type === "User" && event.actor.login === normalizedRepository.owner && event.actor.id === repositoryOwnerId,
         closingArtifactQualifies: qualifyingPioneerPulls.length > 0,
         trust: Object.freeze({ ownerIds: [repositoryOwnerId], appId: appIdentity.botUserId }),
@@ -1172,21 +1211,62 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       let prepared = null;
       let preWrite = null;
       let syncTransition = null;
+      let naturalRecoveryBefore = null;
       if (value.type === "comment") {
         const expected = markedBody(value.body, value.marker);
-        complete = markerMatches(await commentsAt(value.entityId), value.marker, record => appAuthored(record) && record.body === expected);
+        const matched = markerMatches(await commentsAt(value.entityId), value.marker, record => appAuthored(record) && record.body === expected);
+        complete = matched !== null;
+        if (matched !== null) naturalRecoveryBefore = async observedRevisions => {
+          const current = await commentsAt(value.entityId);
+          const matches = current.filter(record => String(record?.id ?? "") === String(matched.id) && appAuthored(record) && record.body === expected);
+          if (matches.length !== 1) return null;
+          const predecessor = current.filter(record => String(record?.id ?? "") !== String(matched.id)).map(record => normalizeComment(record, value.entityId, trustedSnapshot.repository.id));
+          const replacements = new Map([
+            [`issue:${value.entityId}:comments`, digestJson(predecessor)],
+            [`pull:${value.entityId}:comments`, digestJson(predecessor)],
+          ]);
+          return digestJson(observedRevisions.map(revision => replacements.has(revision.resource) ? { ...revision, token: replacements.get(revision.resource) } : revision));
+        };
         prepared = { method: "POST", endpoint: `/repos/${owner}/${name}/issues/${numericId(value.entityId, "entity id")}/comments`, body: { body: expected } };
       } else if (value.type === "add_label" || value.type === "remove_label") {
         const issue = await issueAt(value.entityId);
         const present = exactLiveLabels(issue).includes(value.label);
         complete = value.type === "add_label" ? present : !present;
+        if (complete) naturalRecoveryBefore = async observedRevisions => {
+          const current = await issueAt(value.entityId);
+          const currentLabels = exactLiveLabels(current);
+          if (new Set(currentLabels).size !== currentLabels.length) return null;
+          const predecessorLabels = value.type === "add_label"
+            ? currentLabels.filter(label => label !== value.label)
+            : [...currentLabels, value.label];
+          if ((value.type === "add_label" && currentLabels.filter(label => label === value.label).length !== 1) || (value.type === "remove_label" && currentLabels.includes(value.label))) return null;
+          const predecessorIssue = { ...current, labels: predecessorLabels };
+          const replacements = new Map([[`issue:${value.entityId}`, issueSourceRevision(predecessorIssue)]]);
+          if (observedRevisions.some(revision => revision.resource === "issues")) {
+            const currentIssues = await openIssues();
+            if (currentIssues.filter(candidate => String(candidate?.number ?? "") === value.entityId).length !== 1) return null;
+            const predecessorIssues = currentIssues.filter(candidate => !candidate.pull_request).map(candidate => normalizeIssue(String(candidate.number) === value.entityId ? predecessorIssue : candidate));
+            replacements.set("issues", digestJson(predecessorIssues));
+          }
+          return digestJson(observedRevisions.map(revision => replacements.has(revision.resource) ? { ...revision, token: replacements.get(revision.resource) } : revision));
+        };
         prepared = value.type === "add_label"
           ? { method: "POST", endpoint: `/repos/${owner}/${name}/issues/${numericId(value.entityId, "entity id")}/labels`, body: { labels: [value.label] } }
           : { method: "DELETE", endpoint: `/repos/${owner}/${name}/issues/${numericId(value.entityId, "entity id")}/labels/${encodeURIComponent(value.label)}`, body: {} };
       } else if (value.type === "create_issue" || value.type === "report_drift") {
         const labels = value.type === "create_issue" ? value.labels : [];
         const expected = markedBody(value.body, value.marker);
-        complete = markerMatches((await allIssues()).filter(issue => !issue.pull_request), value.marker, issue => appAuthored(issue) && issue.title === value.title && issue.body === expected && canonicalBytes(exactLiveLabels(issue).sort()).equals(canonicalBytes([...labels].sort())));
+        const exactIssue = issue => appAuthored(issue) && issue.state === "open" && issue.title === value.title && issue.body === expected && canonicalBytes(exactLiveLabels(issue).sort()).equals(canonicalBytes([...labels].sort()));
+        const matched = markerMatches((await allIssues()).filter(issue => !issue.pull_request), value.marker, exactIssue);
+        complete = matched !== null;
+        if (matched !== null) naturalRecoveryBefore = async observedRevisions => {
+          const current = (await openIssues()).filter(issue => !issue.pull_request);
+          const matches = current.filter(issue => String(issue?.id ?? "") === String(matched.id) && exactIssue(issue));
+          if (matches.length !== 1) return null;
+          const predecessor = current.filter(issue => String(issue?.id ?? "") !== String(matched.id)).map(normalizeIssue);
+          const replacements = new Map([["issues", digestJson(predecessor)]]);
+          return digestJson(observedRevisions.map(revision => replacements.has(revision.resource) ? { ...revision, token: replacements.get(revision.resource) } : revision));
+        };
         prepared = { method: "POST", endpoint: `/repos/${owner}/${name}/issues`, body: { title: value.title, body: expected, labels } };
       } else if (value.type === "update_issue") {
         contract(value.title !== undefined || value.body !== undefined, "issue update is empty");
@@ -1355,7 +1435,8 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       } else if (value.type === "arm_auto_merge") {
         const assertMergeAuthority = async fresh => {
           const pull = fresh ? await page(`/repos/${owner}/${name}/pulls/${numericId(value.prId, "pull id")}`) : await pullAt(value.prId);
-          if (pull?.state !== "open" || pull?.draft !== false || pull?.mergeable_state?.toLowerCase() !== "clean" || pull?.head?.sha !== value.headSha || holdReasons(exactLiveLabels(pull)).length !== 0) throw new AdwError("stale", "auto-merge precondition failed");
+          const mergeState = typeof pull?.mergeable_state === "string" ? pull.mergeable_state.toLowerCase() : null;
+          if (pull?.state !== "open" || pull?.draft !== false || ["behind", "dirty"].includes(mergeState) || pull?.head?.sha !== value.headSha || holdReasons(exactLiveLabels(pull)).length !== 0) throw new AdwError("stale", "auto-merge precondition failed");
           const checkResponse = await page(`/repos/${owner}/${name}/commits/${value.headSha}/check-runs?filter=latest&per_page=100&page=1`);
           const checks = checkResponse?.check_runs;
           if (!Array.isArray(checks) || checks.length >= 100) throw new AdwError("forge", "overflow");
@@ -1507,7 +1588,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         throw new AdwError("stale", "named revision is unsupported for apply");
       };
       const observeRevisions = async () => {
-        if (value.type === "dispatch_repository") return Object.freeze({ revisions: trustedSnapshot.revisions, digest: proof.preconditionDigest });
+        if (value.type === "dispatch_repository") return Object.freeze({ revisions: trustedSnapshot.revisions, digest: binding?.expectedBefore ?? proof.preconditionDigest });
         cache.clear();
         const observed = [];
         for (const revision of trustedSnapshot.revisions) observed.push({ ...revision, token: await revisionToken(revision) });
@@ -1566,13 +1647,14 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       };
 
       const observedBefore = await observeRevisions();
-      if (complete && value.type !== "sync_labels" && value.type !== "comment" && binding?.vcsProjection == null) return Object.freeze({ state: "complete", revision: observedBefore.digest });
       const expectedBefore = binding?.expectedBefore ?? proof.preconditionDigest;
       const projectedAllowed = await vcsTransitionAllowed(observedBefore.revisions);
       const projectionMustBeObserved = binding?.vcsProjection != null && !recordOnly && !verifyOnly && expectedBefore === proof.preconditionDigest;
       if (projectionMustBeObserved && !projectedAllowed) throw new AdwError("stale", "precondition changed");
       const syncAllowed = value.type === "sync_labels" && await syncTransitionAllowed(observedBefore.revisions);
-      if (!binding?.skipRevision && observedBefore.digest !== expectedBefore && !syncAllowed && !projectedAllowed) throw new AdwError("stale", "precondition changed");
+      const recoveredAllowed = complete && !recordOnly && !verifyOnly && binding?.receiptAuthority !== true && naturalRecoveryBefore !== null
+        && await naturalRecoveryBefore(observedBefore.revisions) === expectedBefore;
+      if (!binding?.skipRevision && observedBefore.digest !== expectedBefore && !syncAllowed && !projectedAllowed && !recoveredAllowed) throw new AdwError("stale", "precondition changed");
       if (complete) return Object.freeze({ state: "complete", revision: observedBefore.digest });
       if (verifyOnly) throw new AdwError("stale", "operation postcondition was not reached");
 
@@ -1718,7 +1800,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       exactObject(vcsProjection, ["operationDigest", "headSha"], "VCS projection");
       contract(vcsProjection.operationDigest === operationDigest && /^[0-9a-f]{40}$/.test(vcsProjection.headSha), "VCS projection authority does not match operation");
     }
-    const binding = Object.freeze({ role: authority.name, decisionDigest: proof.decisionDigest, operationDigest, operationIndex: request.operationIndex, preconditionDigest: proof.preconditionDigest, expectedBefore: expectedReceipt?.afterRevision ?? expectedBefore, skipRevision: context.skipRevision === true, priorOperations: Object.freeze(priorReceipts), vcsProjection });
+    const binding = Object.freeze({ role: authority.name, decisionDigest: proof.decisionDigest, operationDigest, operationIndex: request.operationIndex, preconditionDigest: proof.preconditionDigest, expectedBefore: expectedReceipt?.afterRevision ?? expectedBefore, skipRevision: context.skipRevision === true, receiptAuthority: expectedReceipt !== null, priorOperations: Object.freeze(priorReceipts), vcsProjection });
     if (operation.type === "noop") return expectedReceipt ?? unchangedReceipt(operation, expectedBefore);
     if (operation.type === "terminal") throw new AdwError("terminal", operation.reason);
     const operationPermissions = operationCapabilities(operation, trustedSnapshot);
@@ -1811,7 +1893,8 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     }
     try {
       let latestRevisionAuthority = -1;
-      for (let index = 0; index < completed.length; index++) if (canonicalDecision.operations[index].type !== "noop") latestRevisionAuthority = index;
+      const remainingCanAnchorRevision = canonicalDecision.operations.slice(completed.length).some(operation => operation.type !== "noop" && operation.type !== "terminal");
+      if (!remainingCanAnchorRevision) for (let index = 0; index < completed.length; index++) if (canonicalDecision.operations[index].type !== "noop") latestRevisionAuthority = index;
       for (let index = 0; index < completed.length; index++) {
         const observed = await hardenedApplyOperation(
           { operation: canonicalDecision.operations[index], operationIndex: index, decision: canonicalDecision, snapshot: request.snapshot, verification: request.verification, priorOperations: completed.slice(0, index) },

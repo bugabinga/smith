@@ -4,7 +4,7 @@ import test from "node:test";
 import { canonicalBytes, digestBytes, digestJson } from "../core.mjs";
 import {
   OPERATIONS, PROVIDERS, defineRole, deriveDeterministicArtifacts, deterministicRole,
-  listDeterministicRoles, listRoles, reduceRoleArtifact, role, validateRolePayload,
+  listDeterministicRoles, listRoles, reduceDeterministicArtifact, reduceRoleArtifact, role, validateRolePayload,
 } from "../roles.mjs";
 
 const policy = {
@@ -99,16 +99,17 @@ test("provider roles expose only operations their reducers can emit", () => {
   const terminal = ["noop", "terminal"];
   const expected = {
     triager: ["comment", "add_label"],
-    planner: ["create_issue", "add_label", "comment"],
-    surveyor: ["create_issue", "add_label", "comment"],
+    planner: ["create_issue"],
+    surveyor: ["create_issue"],
     builder: ["create_pr", "comment", "add_label"],
     "codex-builder": ["create_pr", "comment", "add_label"],
     "docs-writer": ["create_pr", "comment", "add_label"],
     reviser: ["update_pr", "comment", "add_label"],
     pioneer: ["create_pr", "add_label", "comment"],
-    sweeper: ["rerun_check", "add_label", "create_issue"],
+    sweeper: ["rerun_check", "create_issue"],
+    "adw-doctor": ["create_issue", "report_drift"],
     "dependency-manager": ["comment", "add_label"],
-    "alert-triager": ["create_issue", "comment"],
+    "alert-triager": ["create_issue"],
   };
   for (const [name, operations] of Object.entries(expected)) {
     assert.deepEqual(role(name).operations, [...operations, ...terminal].sort(), name);
@@ -201,12 +202,37 @@ test("role artifacts reduce into closed decisions", () => {
   const alert = reduceRoleArtifact(roleCase("alert-triager", { verdict: "issue", summary: "Uncovered", issue }, { entityId: "3", labels: [] }));
   assert.equal(alert.operations[0].type, "create_issue");
 
-  const sweep = reduceRoleArtifact(roleCase("sweeper", { verdict: "action", summary: "Retry", actions: [{ kind: "retry", entityId: "run:1", reason: "stale" }] }, { entityId: "4", labels: [], actionTargets: ["run:1"] }));
-  assert.deepEqual(sweep.operations, [{ type: "rerun_check", runId: "run:1" }]);
+  const sweep = reduceRoleArtifact(roleCase("sweeper", { verdict: "action", summary: "Retry", actions: [{ kind: "retry", entityId: "1", reason: "stale" }] }, { entityId: "4", labels: [], actionTargets: ["1"], resources: { runs: [{ id: "1" }] } }));
+  assert.deepEqual(sweep.operations, [{ type: "rerun_check", runId: "1" }]);
   assert.throws(
-    () => reduceRoleArtifact(roleCase("sweeper", { verdict: "action", summary: "Retry", actions: [{ kind: "retry", entityId: "run:2", reason: "stale" }] }, { entityId: "4", labels: [], actionTargets: ["run:1"] })),
+    () => reduceRoleArtifact(roleCase("sweeper", { verdict: "action", summary: "Retry", actions: [{ kind: "retry", entityId: "2", reason: "stale" }] }, { entityId: "4", labels: [], actionTargets: ["1"], resources: { runs: [{ id: "1" }] } })),
     error => error?.code === "contract",
   );
+});
+
+test("repository, ref, and workflow-run findings collapse without issue-endpoint confusion", () => {
+  const planner = reduceRoleArtifact(roleCase("planner", { verdict: "blocked", summary: "Main ref cannot be planned", issues: [] }, { entityId: "refs/heads/main", labels: [] }));
+  assert.deepEqual(planner.operations.map(operation => operation.type), ["create_issue"]);
+  assert.deepEqual(planner.operations[0].labels, ["blocked"]);
+
+  const surveyor = reduceRoleArtifact(roleCase("surveyor", { verdict: "proposal", summary: "No gaps", issues: [] }, { entityId: "42", labels: [] }));
+  assert.deepEqual(surveyor.operations, [{ type: "noop", reason: "not_applicable" }]);
+
+  const covered = reduceRoleArtifact(roleCase("alert-triager", { verdict: "covered", summary: "PR already covers alert", issue: null }, { entityId: "991", labels: [] }));
+  assert.deepEqual(covered.operations, [{ type: "noop", reason: "already_complete" }]);
+
+  const maintenance = reduceRoleArtifact(roleCase("sweeper", {
+    verdict: "action", summary: "Maintenance findings", actions: [
+      { kind: "hold", entityId: "30713498516", reason: "cancelled apply" },
+      { kind: "report", entityId: "refs/heads/main", reason: "drift" },
+    ],
+  }, { entityId: "42", labels: [], actionTargets: ["30713498516", "refs/heads/main"] }));
+  assert.deepEqual(maintenance.operations.map(operation => operation.type), ["create_issue"]);
+  assert.match(maintenance.operations[0].body, /30713498516/);
+  assert.equal(maintenance.operations.some(operation => ["add_label", "comment"].includes(operation.type)), false);
+
+  const doctor = reduceRoleArtifact(roleCase("adw-doctor", { verdict: "action", summary: "Audit", actions: [{ kind: "report", entityId: "42", reason: "ruleset drift" }] }, { entityId: "42", labels: [], actionTargets: ["42"] }));
+  assert.deepEqual(doctor.operations.map(operation => operation.type), ["report_drift"]);
 });
 
 test("patch role decisions bind assessment metadata", () => {
@@ -268,6 +294,12 @@ test("deterministic snapshots expose settings drift and green blocked jams", () 
   const jams = deriveDeterministicArtifacts("jam-detector", { state: { resources: { pulls: [{ number: "2", state: "open", headSha: jamHead, merged: false, mergeState: "behind", labels: ["reviewed", "security-cleared"], evidence: [{ kind: "correctness", headSha: jamHead, conclusion: "approve" }, { kind: "security", headSha: jamHead, conclusion: "approve" }], checks: [{ name: "check", headSha: jamHead, status: "completed", conclusion: "success" }, { name: "merge-gate", headSha: jamHead, status: "completed", conclusion: "success" }] }] } } });
   assert.equal(jams.length, 1);
   assert.deepEqual(jams[0], { entityId: "2", headSha: "b".repeat(40), stalled: true, reason: "Current-head checks and reviews passed, but merge state is behind." });
+});
+
+test("deterministic jam reports require a valid pull issue endpoint", () => {
+  for (const entityId of ["repository", "refs/heads/main", "run:30713498516", "9007199254740992"]) {
+    assert.throws(() => reduceDeterministicArtifact("jam-detector", { entityId, headSha: "b".repeat(40), stalled: true, reason: "stalled" }), error => error?.code === "contract");
+  }
 });
 
 test("deterministic roles remain provider-free", () => {
