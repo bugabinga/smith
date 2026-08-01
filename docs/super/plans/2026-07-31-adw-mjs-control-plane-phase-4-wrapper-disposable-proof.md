@@ -25,9 +25,11 @@
 - Every write uses repository-wide `adw-write` concurrency with `cancel-in-progress: false`.
 - Release automation and Projects v2 remain absent.
 
-## External proof gate
+> **Owner-approved supersession (2026-08-01):** Tasks 7–8 are superseded by the positive production proof in `docs/super/plans/2026-08-01-adw-mjs-control-plane-phase-5-production-cutover-proof.md`. They remain unchecked and must not be reported complete. Tasks 1–6 retain the offline malformed/stale/partial/fallback evidence; the owner replaced disposable-repository proof with production testing and authorized a quiet-window cutover. Production execution must not rotate secrets or inject malformed artifacts, stale writes, cancellation, provider failure, or partial writes.
 
-Before Task 7, the owner must provide a separately scoped disposable GitHub App with no production access, its private key/provider credentials, and an owner bootstrap token allowed to create/delete one synthetic repository and add/remove it from that App installation. Task 7 creates the repository; it need not pre-exist. Exact inputs are bootstrap token, owner/repository name, App ID/login/installation ID, owner numeric ID, installation-permission digest, minted-scope digest, job-permission digest, and the four workflow secrets. Bootstrap authority remains local to the harness and never enters repository Actions. Missing scope or credentials blocks live proof; it never weakens tests or redirects writes to production.
+## External proof gate (superseded; do not execute)
+
+This historical gate described the now-superseded Tasks 7–8. Before Task 7, the owner would have had to provide a separately scoped disposable GitHub App with no production access, its private key/provider credentials, and an owner bootstrap token allowed to create/delete one synthetic repository and add/remove it from that App installation. No such repository or credential setup is now required or authorized.
 
 ## File map
 
