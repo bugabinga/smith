@@ -1020,7 +1020,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       const state = {
         entityId: event.entityId, labels, input: Object.freeze(input), resources: Object.freeze(resources),
         actionTargets: Object.freeze(resources.runs?.map(run => run.id) ?? []),
-        ownerAuthenticated: event.kind === "issue_comment" && sourceComment !== null && /(^|\s)@smith\b/.test(sourceComment.body.data) && event.actor.type === "User" && event.actor.login === normalizedRepository.owner && event.actor.id === repositoryOwnerId,
+        ownerAuthenticated: event.kind === "issue_comment" && sourceComment !== null && event.actor.type === "User" && event.actor.login === normalizedRepository.owner && event.actor.id === repositoryOwnerId,
         closingArtifactQualifies: qualifyingPioneerPulls.length > 0,
         trust: Object.freeze({ ownerIds: [repositoryOwnerId], appId: appIdentity.botUserId }),
       };

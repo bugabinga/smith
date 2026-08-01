@@ -18,6 +18,8 @@
 
 The owner explicitly approved this production path on 2026-08-01 and authorized a quiet-window cutover. Phase 4 Tasks 1–6 remain completed prerequisite work. Phase 4 Tasks 7–8 remain unchecked and are **superseded**, not completed: no disposable repository will be created, no production secret will be rotated, and no live failure will be manufactured. Their failure/retry claims remain supported by the offline `node:test` evidence from Tasks 1–6; the positive write path is proved on production in this phase.
 
+The owner also approved App-authenticated `repository_dispatch` for the five internal reconciliation intents. Those intents use a closed event-type/payload contract and the fixed repository-dispatch writer; `workflow_dispatch` is reserved exclusively for owner-invoked maintenance `audit` and `reconcile` lane choices. Internal authority is never represented as manual workflow inputs.
+
 This is exactly one Phase 5. It ends only after the atomic cutover, positive production proof, and two consecutive scheduled reconciliation cycles. Phase 6 compatibility removal, operational-document cleanup, and unrelated backlog work remain out of scope.
 
 ## Locked safety boundaries
@@ -27,6 +29,7 @@ This is exactly one Phase 5. It ends only after the atomic cutover, positive pro
 - Existing secrets `APP_ID`, `APP_PRIVATE_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, and `CODEX_AUTH_JSON` are presence-checked only. Their values are never read, printed, copied, replaced, or rotated.
 - Ephemeral non-secret variable `ADW_CUTOVER_HOLD=true` suppresses every operational MJS job from immediately before merge until the parent-correct signed rollback exists; it is then deleted before positive proof.
 - Seed exact non-secret variables `APP_BOT_USER_ID=306488075` and `APP_BOT_LOGIN=agent-smith-bugabinga-adc[bot]` before cutover.
+- Internal App intents use only `repository_dispatch` event types `retry_route`, `fallback_route`, `retry_pioneer`, `run_review`, and `run_obligation`; manual `workflow_dispatch` exposes only owner choices `audit` and `reconcile`.
 - Production proof is positive-only. Never inject malformed artifacts, stale revisions, cancelled jobs, partial writes, invalid credentials, changed permissions, malformed events, provider outages, ruleset damage, or secret rotation.
 - Existing organic `BLOCKED`/`BEHIND` state on PRs #150, #163, #165, and #166 is observed, never created or worsened for this proof.
 - Settings/rulesets remain read-only. Audit may report their existing drift but may not mutate it. Label sync may repair only checked-in label definitions through the closed `sync_labels` operation.
@@ -60,18 +63,18 @@ At execution, re-read every value. A changed SHA or merge state is not a reason 
 ### Control-plane production readiness
 
 - `adw/core.mjs`: make every reconciliation dispatch carry enough canonical role/provider/entity authority for the target wrapper.
-- `adw/github.mjs`: normalize owner manual dispatches and App-authenticated internal dispatches into bounded issue/pull/control events; reject spoofed or incomplete dispatches.
+- `adw/github.mjs`: normalize owner `workflow_dispatch` controls and App-authenticated `repository_dispatch` intents into bounded issue/pull/control events; provide only the fixed repository-dispatch writer and reject spoofed or incomplete dispatches.
 - `adw/roles.mjs`: permit owner-authenticated manual `dispatch` for the reconciler while preserving provider-free control authority.
-- `adw/test/core.test.mjs`: dispatch intent authority and exact workflow input tests.
+- `adw/test/core.test.mjs`: dispatch intent authority and exact repository-dispatch payload tests.
 - `adw/test/github.test.mjs`: owner/App dispatch authentication, entity/head binding, and stale rejection tests.
 - `adw/test/scenarios.test.mjs`: full reconciliation-dispatch-to-role scenarios.
 - `adw/test/wrappers.test.mjs`: production App input, event gating, dispatch grammar, exact promotion, sole-writer inventory, self-test, and charter boundaries.
 
 ### Wrappers and self-test
 
-- `prototypes/p38-adw-disposable/wrappers/adw-issues.yml`: canonical issue/reusable/internal-dispatch wrapper; use `app-id`, gate label/comment events, and expose exact dispatch inputs.
-- `prototypes/p38-adw-disposable/wrappers/adw-pulls.yml`: canonical pull/reconcile wrapper; provider-route only intended events and consume App review dispatches.
-- `prototypes/p38-adw-disposable/wrappers/adw-maintenance.yml`: canonical maintenance wrapper; support owner manual audit/reconcile and App post-merge obligations.
+- `prototypes/p38-adw-disposable/wrappers/adw-issues.yml`: canonical issue/reusable/internal-dispatch wrapper; use `app-id`, gate label/comment events, and consume only the three closed issue `repository_dispatch` payloads.
+- `prototypes/p38-adw-disposable/wrappers/adw-pulls.yml`: canonical pull/reconcile wrapper; provider-route only intended events and consume only App `run_review` repository dispatches.
+- `prototypes/p38-adw-disposable/wrappers/adw-maintenance.yml`: canonical maintenance wrapper; expose owner-only manual audit/reconcile choices and consume only App `run_obligation` repository dispatches.
 - `.github/workflows/adw-issues.yml`: byte-identical promoted issue wrapper.
 - `.github/workflows/adw-pulls.yml`: byte-identical promoted pull wrapper.
 - `.github/workflows/adw-maintenance.yml`: byte-identical promoted maintenance wrapper.
@@ -281,21 +284,21 @@ Expected: signed branch commit; plain imperative subject; no AI attribution.
 - Modify: `adw/test/scenarios.test.mjs`
 - Modify: `adw/test/wrappers.test.mjs`
 
-- [ ] **Step 1: Write failing dispatch-authority tests**
+- [x] **Step 1: Write failing dispatch-authority tests**
 
 Add table tests for these exact internal intents and targets:
 
 ```text
-retry_route     -> adw-issues.yml      -> issue entity -> original route provider
-fallback_route  -> adw-issues.yml      -> issue entity -> named fallback provider
-retry_pioneer   -> adw-issues.yml      -> issue entity -> pioneer/claude
-run_review      -> adw-pulls.yml       -> PR/current head -> reviewer or security-reviewer/claude
-run_obligation  -> adw-maintenance.yml -> merged PR/merge SHA -> named obligation role
+repository_dispatch retry_route     -> adw-issues.yml      -> {repositoryId,issueId,sourceRevision,role,provider} -> original route provider
+repository_dispatch fallback_route  -> adw-issues.yml      -> {repositoryId,issueId,sourceRevision,role,provider} -> named fallback provider
+repository_dispatch retry_pioneer   -> adw-issues.yml      -> {repositoryId,issueId,sourceRevision,role,provider} -> pioneer/claude
+repository_dispatch run_review      -> adw-pulls.yml       -> {repositoryId,prId,headSha,role,provider} -> reviewer or security-reviewer/claude
+repository_dispatch run_obligation  -> adw-maintenance.yml -> {repositoryId,prId,mergeSha,role,provider} -> docs-writer/codex
 ```
 
-Require `mapReconciliationIntents` to include role/provider/entity/head fields needed by the target, while reserving `smith_operation_digest` for `github.mjs`. Require owner manual `lane=audit|reconcile` dispatches to bind the repository entity and require owner identity. Require internal dispatches to bind exact App bot numeric ID/login and reject owner/manual attempts to forge internal kinds.
+Require `mapReconciliationIntents` to emit only the closed `dispatch_repository(eventType,clientPayload)` operation and include the role/provider/entity/revision fields needed by its target, while reserving `smith_operation_digest` for `github.mjs`. Require owner manual `workflow_dispatch` with `lane=audit|reconcile` to bind the repository entity and owner identity. Require internal `repository_dispatch` to bind exact App bot numeric ID/login and reject owner/manual attempts to forge internal event types.
 
-- [ ] **Step 2: Write failing wrapper truth-table tests**
+- [x] **Step 2: Write failing wrapper truth-table tests**
 
 Assert all of the following:
 
@@ -322,13 +325,13 @@ internal run_review                  -> exact requested review role/current head
 internal run_obligation              -> exact requested role/merge SHA
 ```
 
-Also require run-name to equal `${{ inputs.smith_operation_digest }}` for an internal dispatch so `github.mjs` can prove delivery, and require no unrecognized dispatch input.
+Also require internal run-name to equal `${{ github.event.client_payload.smith_operation_digest }}` so `github.mjs` can prove delivery. Require exact `client_payload` fields for each closed `repository_dispatch` event type and no internal `workflow_dispatch` input.
 
-- [ ] **Step 3: Write failing loop-prevention tests**
+- [x] **Step 3: Write failing loop-prevention tests**
 
 Assert triager-applied classification labels cannot start another triager, steerer App replies cannot start another steerer, and reviewer/security labels outside the two explicit handoff labels wake reconciliation rather than another provider. Assert every reconcile-only path has zero `assess` commands reachable. With `vars.ADW_CUTOVER_HOLD == 'true'`, every operational job across all three wrappers must skip, emit no artifact, and mint no token; self-test remains unaffected.
 
-- [ ] **Step 4: Run tests to verify the production gaps fail**
+- [x] **Step 4: Run tests to verify the production gaps fail**
 
 Run:
 
@@ -340,7 +343,7 @@ node --test \
   adw/test/wrappers.test.mjs
 ```
 
-Expected: FAIL because dispatch intents lack complete target authority, manual reconcile does not accept `dispatch`, wrappers lack internal dispatch grammar, and broad label/comment triggers can re-enter providers.
+Expected: FAIL because dispatch intents lack complete target authority, manual reconcile does not accept `dispatch`, wrappers lack closed `repository_dispatch` grammar, and broad label/comment triggers can re-enter providers.
 
 ### Task 3: Implement bounded manual and internal dispatch
 
@@ -353,29 +356,29 @@ Expected: FAIL because dispatch intents lack complete target authority, manual r
 - Modify: `adw/test/github.test.mjs`
 - Modify: `adw/test/scenarios.test.mjs`
 
-- [ ] **Step 1: Bind complete dispatch authority in pure reconciliation**
+- [x] **Step 1: Bind complete dispatch authority in pure reconciliation**
 
-Extend each intent with the minimum role/provider/entity revision required by the table in Task 2. Keep the closed workflow map and canonical sort/dedup. Reject unknown roles, provider/role mismatches, missing current head/merge SHA, non-current source revisions, reserved input names, and cross-repository entities.
+Extend each intent with the minimum role/provider/entity revision required by the table in Task 2. Keep the closed event-type-to-workflow map and canonical sort/dedup. Emit only `dispatch_repository` with exact client payloads. Reject unknown roles, provider/role mismatches, missing current head/merge SHA, non-current source revisions, reserved payload names, and cross-repository entities.
 
 Expected: no wrapper infers a role from arbitrary strings; it consumes validated closed values emitted by `core.mjs`.
 
-- [ ] **Step 2: Normalize owner manual dispatches**
+- [x] **Step 2: Normalize owner manual dispatches**
 
 Permit `reconciler.eventKinds` to include `dispatch`. In `github.mjs`, accept exactly owner-authenticated `workflow_dispatch` with `lane=audit` or `lane=reconcile`, repository entity, and no internal operation digest. Route to the provider-free auditor/reconciler authority.
 
 Expected: non-owner manual dispatch fails before snapshot creation.
 
-- [ ] **Step 3: Normalize App internal dispatches**
+- [x] **Step 3: Normalize App internal dispatches**
 
-Accept exactly the five internal kinds from Task 2 only when actor ID/login match `APP_BOT_USER_ID`/`APP_BOT_LOGIN`, `smith_operation_digest` is a lowercase 64-hex digest, and entity revisions match live issue/PR state. Convert issue intents to bounded `issue` events and PR intents to bounded `pull_request` events so existing role snapshot plans remain authoritative.
+Accept exactly the five `repository_dispatch` event types from Task 2 only when actor ID/login match `APP_BOT_USER_ID`/`APP_BOT_LOGIN`, `client_payload.smith_operation_digest` is a lowercase 64-hex digest, the remaining payload is exact, and entity revisions match live issue/PR state. Convert issue intents to bounded `issue` events and PR intents to bounded `pull_request` events so existing role snapshot plans remain authoritative. Never interpret a `workflow_dispatch` input as an internal intent.
 
 Expected: a stale `run_review.headSha`, stale `run_obligation.mergeSha`, mismatched provider, unsupported obligation role, owner-forged operation digest, or bot identity mismatch fails closed before provider execution.
 
-- [ ] **Step 4: Keep dispatch reads and writes bounded**
+- [x] **Step 4: Keep dispatch reads and writes bounded**
 
-Use only existing closed `github.mjs` methods. Add no generic URL/method/GraphQL escape and no wrapper-side `gh`, `jq`, policy shell, or inline prompt.
+Use only existing closed `github.mjs` methods. The only new writer permitted is fixed `POST /repos/bugabinga/smith/dispatches` with a closed event type and exact `client_payload`; it must add the operation digest, bind the App identity and current `main` head, validate entity/revision authority, and prove one matching workflow delivery before completing its receipt. Add no generic URL/method/GraphQL escape and no wrapper-side `gh`, `jq`, policy shell, or inline prompt.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 ```bash
 node --test \
@@ -386,7 +389,7 @@ node --test \
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit the dispatch contract**
+- [x] **Step 6: Commit the dispatch contract**
 
 ```bash
 git add \
@@ -407,7 +410,7 @@ git commit -S \
 - Modify: `prototypes/p38-adw-disposable/wrappers/adw-maintenance.yml`
 - Modify: `adw/test/wrappers.test.mjs`
 
-- [ ] **Step 1: Change App minting from unavailable client ID to existing App ID**
+- [x] **Step 1: Change App minting from unavailable client ID to existing App ID**
 
 In both token steps, replace:
 
@@ -423,27 +426,27 @@ app-id: ${{ secrets.APP_ID }}
 
 Keep `private-key: ${{ secrets.APP_PRIVATE_KEY }}` and every exact `permission-*` expression unchanged. Update tests to require exactly two `app-id` inputs, zero `client-id` inputs, and zero `APP_CLIENT_ID` references.
 
-- [ ] **Step 2: Add exact dispatch schemas and run names**
+- [x] **Step 2: Add exact dispatch schemas and run names**
 
-Expose only the validated intent fields from Task 3 plus reserved `smith_operation_digest`. Internal dispatch run-name must be exactly the digest. Owner maintenance dispatch exposes only `lane` with choices `audit` and `reconcile`; it does not expose provider, role, repository, ref, or token inputs. Natural/manual run names are exact and entity-bound: `ADW issue #<number>`, `ADW pull #<number>`, `ADW maintenance audit`, `ADW maintenance reconcile`, or `ADW maintenance <cron|push>`.
+Consume only the validated `repository_dispatch` `client_payload` fields from Task 3 plus writer-reserved `smith_operation_digest`; expose none of them through `workflow_dispatch`. Internal run-name must be exactly the digest. Owner maintenance `workflow_dispatch` exposes only `lane` with choices `audit` and `reconcile`; it does not expose provider, role, repository, ref, token, event type, entity, revision, or operation-digest inputs. Natural/manual run names are exact and entity-bound: `ADW issue #<number>`, `ADW pull #<number>`, `ADW maintenance audit`, `ADW maintenance reconcile`, or `ADW maintenance <cron|push>`.
 
-- [ ] **Step 3: Encode the event truth table**
+- [x] **Step 3: Encode the event truth table**
 
 Add job-level conditions and input expressions matching Task 2 exactly. Add the exact global `ADW_CUTOVER_HOLD != 'true'` guard to natural callers and every `always()` shared-graph path so no downstream verify/apply/evidence job runs when prepare is held. Preserve one reusable execution graph, one provider credential per provider job, tokenless reduce/verify, operation-scoped apply token, `adw-write`, and `cancel-in-progress:false`.
 
-- [ ] **Step 4: Prove internal dispatch delivery grammar**
+- [x] **Step 4: Prove internal dispatch delivery grammar**
 
 Require each dispatched workflow to:
 
-- run from `main` at the dispatch head selected by `github.mjs`;
+- run from `main` at the repository-dispatch head proven by `github.mjs`;
 - use the exact natural/manual/internal run names above so evidence selection binds entity or operation rather than timestamp alone;
 - derive control SHA from `github.sha`;
-- bind issue ID/source revision or PR/head/merge SHA from validated inputs;
+- bind issue ID/source revision or PR/head/merge SHA from validated `client_payload`;
 - execute the requested role/provider only;
 - never accept caller-supplied repository or arbitrary ref;
 - emit exactly the same artifact graph as natural events.
 
-- [ ] **Step 5: Run wrapper tests**
+- [x] **Step 5: Run wrapper tests**
 
 ```bash
 node --test adw/test/wrappers.test.mjs
@@ -451,7 +454,7 @@ node --test adw/test/wrappers.test.mjs
 
 Expected: PASS; combined canonical operational YAML remains below 400 physical lines.
 
-- [ ] **Step 6: Commit production wrapper adaptation**
+- [x] **Step 6: Commit production wrapper adaptation**
 
 ```bash
 git add \
@@ -1211,7 +1214,7 @@ Expected: success; no provider job runs unless reconciliation positively dispatc
 
 - [ ] **Step 6: Capture reconciliation and any child runs**
 
-Run `capture_run "$RECONCILE_RUN" provider-free "$MERGE_SHA"`. For each `dispatch_workflow` receipt, find the exact child run whose `display_title` is its operation digest, call `capture_run` with the intent's canonical provider lane and `MERGE_SHA`, and require bot actor ID/login `306488075`/`agent-smith-bugabinga-adc[bot]`.
+Run `capture_run "$RECONCILE_RUN" provider-free "$MERGE_SHA"`. For each `dispatch_repository` receipt, find the exact `repository_dispatch` child run whose `display_title` is its operation digest, call `capture_run` with the intent's canonical provider lane and `MERGE_SHA`, and require bot actor ID/login `306488075`/`agent-smith-bugabinga-adc[bot]`.
 
 Expected: parent receipt and every natural child receipt complete; no duplicate operation digest.
 

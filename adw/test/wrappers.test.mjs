@@ -215,12 +215,18 @@ test("candidate wrappers are inactive, complete, and physically below 400 lines"
 test("wrappers expose only exact triggers and semantically named lanes", async () => {
   const values = await sources();
   const issueOn = indentedBlock(values["adw-issues.yml"], "on");
-  for (const trigger of ["workflow_call:", "issues:", "issue_comment:"]) assert.match(issueOn, new RegExp(`^  ${trigger.replace(":", "\\:")}`, "m"));
+  for (const trigger of ["workflow_call:", "repository_dispatch:", "issues:", "issue_comment:"]) assert.match(issueOn, new RegExp(`^  ${trigger.replace(":", "\\:")}`, "m"));
+  assert.match(issueOn, /types:\s*\[retry_route, fallback_route, retry_pioneer\]/);
+  assert.doesNotMatch(issueOn, /workflow_dispatch/);
   const pullOn = indentedBlock(values["adw-pulls.yml"], "on");
-  for (const trigger of ["pull_request_target:", "pull_request_review:", "pull_request_review_comment:", "check_run:", "check_suite:"]) assert.match(pullOn, new RegExp(`^  ${trigger.replace(":", "\\:")}`, "m"));
+  for (const trigger of ["repository_dispatch:", "pull_request_target:", "pull_request_review:", "pull_request_review_comment:", "check_run:", "check_suite:"]) assert.match(pullOn, new RegExp(`^  ${trigger.replace(":", "\\:")}`, "m"));
+  assert.match(pullOn, /types:\s*\[run_review\]/);
   assert.doesNotMatch(pullOn, /^  pull_request:/m);
+  assert.doesNotMatch(pullOn, /workflow_dispatch/);
   const maintenanceOn = indentedBlock(values["adw-maintenance.yml"], "on");
-  for (const trigger of ["push:", "schedule:", "dependabot_alert:", "code_scanning_alert:", "workflow_dispatch:"]) assert.match(maintenanceOn, new RegExp(`^  ${trigger.replace(":", "\\:")}`, "m"));
+  for (const trigger of ["push:", "schedule:", "dependabot_alert:", "code_scanning_alert:", "repository_dispatch:", "workflow_dispatch:"]) assert.match(maintenanceOn, new RegExp(`^  ${trigger.replace(":", "\\:")}`, "m"));
+  assert.match(maintenanceOn, /repository_dispatch:\n    types:\s*\[run_obligation\]/);
+  assert.match(maintenanceOn, /lane:\s*\{description:[^}]*type:\s*choice, options:\s*\[audit, reconcile\]\}/);
   assert.match(maintenanceOn, /branches:\s*\[main\]/);
   assert.doesNotMatch(maintenanceOn, /\btags(?:-ignore)?\s*:/);
   assert.doesNotMatch(Object.values(values).join("\n"), /\brelease(?:s|[-_ ]manager)?\b/i);
@@ -228,8 +234,64 @@ test("wrappers expose only exact triggers and semantically named lanes", async (
   assert.ok(jobs(values["adw-maintenance.yml"]).has("maintenance-event-lane"));
   assert.match(values["adw-pulls.yml"], /pull-reconcile/);
   assert.match(values["adw-maintenance.yml"], /maintenance-(?:reconcile|audit)/);
+  assert.match(values["adw-issues.yml"], /^run-name: "\$\{\{ github\.event_name == 'repository_dispatch' && github\.event\.client_payload\.smith_operation_digest \|\| format\('ADW issue #\{0\}', github\.event\.issue\.number\) \}\}"$/m);
+  assert.match(values["adw-pulls.yml"], /^run-name: "\$\{\{ github\.event_name == 'repository_dispatch' && github\.event\.client_payload\.smith_operation_digest \|\|.*\}\}"$/m);
+  assert.match(values["adw-maintenance.yml"], /^run-name: "\$\{\{ github\.event_name == 'repository_dispatch' && github\.event\.client_payload\.smith_operation_digest \|\|.*\}\}"$/m);
+  assert.doesNotMatch(Object.values(values).join("\n"), /inputs\.smith_operation_digest/);
   assert.match(values["adw-maintenance.yml"], /cron:\s*'7 \*\/6 \* \* \*'/);
   assert.doesNotMatch(Object.values(values).join("\n"), /cancel-in-progress:\s*true/);
+});
+
+test("wrapper event truth table prevents provider loops and reserves manual dispatch for owner controls", async () => {
+  const values = await sources();
+  const issue = values["adw-issues.yml"];
+  const pull = values["adw-pulls.yml"];
+  const maintenance = values["adw-maintenance.yml"];
+  const prepare = jobs(issue).get("prepare");
+  const pullLane = jobs(pull).get("pull-event-lane");
+  const maintenanceLane = jobs(maintenance).get("maintenance-event-lane");
+
+  for (const value of ["ready", "codex", "needs:prototype", "needs:breakdown"]) assert.match(prepare, new RegExp(`github\\.event\\.label\\.name == '${value.replace(":", "\\:")}'`));
+  assert.match(prepare, /github\.event\.action != 'labeled'.*'triager'/s);
+  assert.match(prepare, /github\.event_name == 'issues'.*github\.event\.action == 'labeled'.*\('ready'|'ready'.*'codex'.*'needs:prototype'.*'needs:breakdown'/s);
+  assert.match(prepare, /github\.event_name == 'issue_comment'.*github\.event\.sender\.id == github\.event\.repository\.owner\.id.*github\.event\.sender\.type == 'User'/s);
+  assert.doesNotMatch(prepare, /contains\(github\.event\.comment\.body/);
+  assert.match(prepare, /github\.event_name == 'repository_dispatch'.*APP_BOT_USER_ID|github\.event\.sender\.id == fromJSON\(vars\.APP_BOT_USER_ID\)/s);
+  assert.match(prepare, /github\.event_name == 'issue_comment'.*'steerer'/s);
+  assert.match(prepare, /github\.event\.label\.name == 'codex'.*'codex-builder'/s);
+  assert.match(prepare, /github\.event\.label\.name == 'needs:prototype'.*'pioneer'/s);
+  assert.match(prepare, /github\.event\.label\.name == 'needs:breakdown'.*'planner'/s);
+  assert.match(prepare, /github\.event\.label\.name == 'ready'.*'builder'/s);
+
+  for (const handoff of ["changes-requested", "reviewed"]) assert.match(pullLane, new RegExp(`github\\.event\\.label\\.name == '${handoff}'`));
+  for (const roleName of ["reviewer", "reviser", "security-reviewer", "docs-writer", "reconciler"]) assert.match(pullLane, new RegExp(`'${roleName}'`));
+  assert.match(pullLane, /github\.event\.action == 'closed'.*github\.event\.pull_request\.merged == true.*'docs-writer'/s);
+  assert.match(pullLane, /github\.event\.action == 'closed'.*github\.event\.pull_request\.merged != true.*'reconciler'/s);
+  assert.match(pullLane, /github\.event\.action == 'labeled'.*github\.event\.label\.name != 'changes-requested'.*github\.event\.label\.name != 'reviewed'.*'reconciler'/s);
+  assert.match(pullLane, /pull_request_review_comment.*check_.*'reconciler'/s);
+  assert.match(pullLane, /github\.event_name == 'repository_dispatch'.*github\.event\.client_payload\.role/s);
+  assert.doesNotMatch(pullLane, /dependabot\[bot\]/);
+
+  assert.match(maintenanceLane, /inputs\.lane == 'reconcile'.*'reconciler'/s);
+  assert.match(maintenanceLane, /inputs\.lane == 'audit'.*'auditor'/s);
+  assert.match(maintenanceLane, /github\.event_name == 'workflow_dispatch'.*github\.event\.sender\.id == github\.event\.repository\.owner\.id/s);
+  assert.match(maintenanceLane, /github\.event_name == 'repository_dispatch'.*github\.event\.client_payload\.role/s);
+  assert.match(maintenanceLane, /github\.event\.client_payload\.mergeSha/);
+
+  for (const lane of [pullLane, maintenanceLane]) {
+    assert.match(lane, /decision:.*'reconcile'/s);
+    assert.match(lane, /primary:.*'none'/s);
+  }
+  for (const name of ["primary-claude", "primary-codex", "fallback-claude", "fallback-codex"]) assert.match(jobs(issue).get(name), /needs\.prepare\.outputs\.(?:decision|fallback|primary)/);
+});
+
+test("cutover hold guards every operational job before tokens, artifacts, or assessment", async () => {
+  const values = await sources();
+  for (const [file, source] of Object.entries(values)) for (const [name, block] of jobs(source)) {
+    assert.match(block, /^    if: .*vars\.ADW_CUTOVER_HOLD != 'true'/m, `${file}:${name} lacks the global hold guard`);
+  }
+  const selftest = await readFile(new URL("../../.github/workflows/adw-selftest.yml", import.meta.url), "utf8");
+  assert.doesNotMatch(selftest, /ADW_CUTOVER_HOLD/);
 });
 
 test("MJS rejects wrapper role and event mismatches; review-comment and checks reconcile only", () => {
@@ -245,6 +307,8 @@ test("MJS rejects wrapper role and event mismatches; review-comment and checks r
   for (const [event, roles] of Object.entries(providerRoutes)) for (const name of roles) assert.equal(roleSnapshotPlan(name, event).role, name);
   assert.equal(controlSnapshotPlan("reconciler", "pull_request_review_comment").role, "reconciler");
   assert.equal(controlSnapshotPlan("reconciler", "check").role, "reconciler");
+  assert.equal(controlSnapshotPlan("reconciler", "pull_request").role, "reconciler");
+  assert.equal(controlSnapshotPlan("reconciler", "dispatch").role, "reconciler");
   for (const event of ["pull_request_review_comment", "check"]) for (const roles of Object.values(providerRoutes)) for (const name of roles) assert.throws(() => roleSnapshotPlan(name, event), error => error?.code === "contract");
   assert.throws(() => roleSnapshotPlan("reviewer", "issue"), error => error?.code === "contract");
 });
@@ -268,11 +332,11 @@ test("shared graph separates prepare, providers, one fallback, decisions, verify
   assert.doesNotMatch(graph.get("fallback-codex"), /primary-codex\.result/);
   assert.match(graph.get("reduce"), /needs:\s*\[primary-claude, primary-codex, fallback-claude, fallback-codex\]/);
   assert.match(graph.get("reduce"), /ADW_FALLBACK_ATTEMPTED:.*fallback-claude\.result != 'skipped'.*fallback-codex\.result != 'skipped'/);
-  assert.match(graph.get("verify"), /if:\s*always\(\)/);
-  assert.match(graph.get("apply"), /if:\s*always\(\)/);
+  assert.match(graph.get("verify"), /if:.*vars\.ADW_CUTOVER_HOLD != 'true'.*always\(\)/);
+  assert.match(graph.get("apply"), /if:.*vars\.ADW_CUTOVER_HOLD != 'true'.*always\(\)/);
   assert.match(graph.get("apply"), /group:\s*adw-write/);
   assert.match(graph.get("apply"), /cancel-in-progress:\s*false/);
-  assert.match(graph.get("evidence"), /if:\s*always\(\)/);
+  assert.match(graph.get("evidence"), /if:.*vars\.ADW_CUTOVER_HOLD != 'true'.*always\(\)/);
   for (const [file, source] of Object.entries(await sources())) for (const [name, block] of jobs(source)) {
     assert.match(block, /^    (?:uses:|steps:)\s*/m, `${file}:${name} has no executable grammar`);
     if (/^    steps:\s*$/m.test(block)) assert.match(block, /^    runs-on: ubuntu-24\.04$/m, `${file}:${name} has no pinned runner`);
@@ -329,10 +393,10 @@ test("control and target checkouts are immutable and never persist credentials",
   assert.match(prepare, /name:\s*checkout immutable target[\s\S]*ref:\s*"\$\{\{ inputs\.target_sha \|\| github\.sha \}\}"[\s\S]*path:\s*target[\s\S]*persist-credentials:\s*false/);
   assert.match(prepare, /ADW_CONTROL_CHECKOUT:\s*\$\{\{ github\.workspace \}\}\/control/);
   assert.match(prepare, /ADW_TARGET_CHECKOUT:\s*\$\{\{ github\.workspace \}\}\/target/);
-  assert.match(values["adw-pulls.yml"], /control_sha:[^\n]*(?:base\.sha|base_sha)/);
-  assert.match(values["adw-pulls.yml"], /target_sha:[^\n]*(?:head\.sha|head_sha)/);
-  assert.match(values["adw-pulls.yml"], /target_repository:[^\n]*head\.repo\.full_name/);
-  assert.match(values["adw-pulls.yml"], /head\.repo\.full_name != github\.repository[^\n]*'reviewer'/);
+  assert.match(values["adw-pulls.yml"], /control_sha:[^\n]*github\.sha/);
+  assert.match(values["adw-pulls.yml"], /target_sha:[^\n]*(?:head\.sha|head_sha|client_payload\.headSha)/);
+  assert.match(values["adw-pulls.yml"], /target_repository:[^\n]*github\.repository/);
+  assert.doesNotMatch(Object.values(values).join("\n"), /client_payload\.(?:repository|ref|token)/);
   assert.match(prepare, /ADW_EVENT_NAME:\s*\$\{\{ github\.event_name == 'pull_request_target' && 'pull_request' \|\| github\.event_name \}\}/);
   assert.doesNotMatch(Object.values(values).join("\n"), /persist-credentials:\s*true|ref:\s*(?:main|master|refs\/heads\/)/);
 });
@@ -349,9 +413,9 @@ test("actions, commands, App inputs, and policy-free YAML are exact", async () =
     assert.doesNotMatch(source, /^\s+run:\s*[|>]/m);
     assert.doesNotMatch(source, /^\s+shell:/m);
   }
-  assert.equal((combined.match(/client-id:\s*\$\{\{ vars\.APP_CLIENT_ID \}\}/g) ?? []).length, 2);
+  assert.equal((combined.match(/app-id:\s*\$\{\{ secrets\.APP_ID \}\}/g) ?? []).length, 2);
   assert.match(combined, /private-key:\s*\$\{\{ secrets\.APP_PRIVATE_KEY \}\}/);
-  assert.doesNotMatch(combined, /\bapp-id\s*:/);
+  assert.doesNotMatch(combined, /client-id:|APP_CLIENT_ID/);
   assert.match(values["adw-issues.yml"], /APP_ID:\s*\{required: true\}/);
   assert.equal((values["adw-issues.yml"].match(/ADW_APP_ID:\s*\$\{\{ secrets\.APP_ID \}\}/g) ?? []).length, 2);
   for (const name of ["adw-pulls.yml", "adw-maintenance.yml"]) assert.match(values[name], /APP_ID:\s*\$\{\{ secrets\.APP_ID \}\}/);
@@ -379,10 +443,10 @@ test("all action inputs exist in the exact pinned action metadata contracts", as
     for (const input of actionInputKeys(source, action)) assert.ok(inputs.has(input), `${file} assumes unsupported ${action} input ${input}`);
   }
   const appInputs = actionInputKeys(values["adw-issues.yml"], ACTIONS.appToken);
-  assert.equal(appInputs.filter(value => value === "client-id").length, 2);
+  assert.equal(appInputs.filter(value => value === "app-id").length, 2);
   assert.equal(appInputs.filter(value => value === "private-key").length, 2);
-  assert.equal(appInputs.some(value => value === "app-id"), false);
-  assert.equal(appInputs.every(value => value === "client-id" || value === "private-key" || /^permission-[a-z-]+$/.test(value)), true);
+  assert.equal(appInputs.some(value => value === "client-id"), false);
+  assert.equal(appInputs.every(value => value === "app-id" || value === "private-key" || /^permission-[a-z-]+$/.test(value)), true);
 });
 
 test("artifact action inputs preserve exact hidden trees and rerun receipts", async () => {

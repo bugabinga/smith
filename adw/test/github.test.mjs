@@ -224,7 +224,7 @@ test("paginated reads keep REST IDs stable across webhook and API payloads", asy
     if (endpoint === "/repos/bugabinga/smith/issues/1") return reply({ id: 1, number: 1, state: "open", updated_at: "2026-07-28T00:00:00.000Z", user: { id: 7 }, title: "Issue", body: "Body", labels: [] });
     if (endpoint.startsWith("/repos/bugabinga/smith/issues/1/comments?")) {
       commentPage++;
-      return reply(commentPage === 1 ? Array.from({ length: 100 }, (_, id) => ({ id: id + 1, node_id: `IC_${id + 1}`, user: { id: 7, node_id: "U_7" }, created_at: "2026-07-28T00:00:00.000Z", body: id === 0 ? "@smith please" : "c" })) : [{ id: 101, node_id: "IC_101", user: { id: 7, node_id: "U_7" }, created_at: "2026-07-28T00:00:00.000Z", body: "c" }]);
+      return reply(commentPage === 1 ? Array.from({ length: 100 }, (_, id) => ({ id: id + 1, node_id: `IC_${id + 1}`, user: { id: 7, node_id: "U_7" }, created_at: "2026-07-28T00:00:00.000Z", body: id === 0 ? "please" : "c" })) : [{ id: 101, node_id: "IC_101", user: { id: 7, node_id: "U_7" }, created_at: "2026-07-28T00:00:00.000Z", body: "c" }]);
     }
     if (endpoint.startsWith("/repos/bugabinga/smith/issues/1/timeline?")) return reply([]);
     if (endpoint === "/repos/bugabinga/smith/issues/1/parent") { const error = new AdwError("provider", "exit", { httpStatus: 404 }); throw error; }

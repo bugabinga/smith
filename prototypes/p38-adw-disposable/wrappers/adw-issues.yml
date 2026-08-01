@@ -1,5 +1,5 @@
 name: ADW issue and reusable execution lanes
-run-name: ADW ${{ inputs.lane || 'issue-event' }}
+run-name: "${{ github.event_name == 'repository_dispatch' && github.event.client_payload.smith_operation_digest || format('ADW issue #{0}', github.event.issue.number) }}"
 on:
   workflow_call:
     inputs:
@@ -17,6 +17,8 @@ on:
       APP_PRIVATE_KEY: {required: true}
       CLAUDE_CODE_OAUTH_TOKEN: {required: true}
       CODEX_AUTH_JSON: {required: true}
+  repository_dispatch:
+    types: [retry_route, fallback_route, retry_pioneer]
   issues:
     types: [opened, reopened, labeled]
   issue_comment:
@@ -26,12 +28,13 @@ jobs:
   prepare:
     name: prepare trusted issue or called lane
     runs-on: ubuntu-24.04
+    if: vars.ADW_CUTOVER_HOLD != 'true' && (inputs.lane != '' || (github.event_name == 'repository_dispatch' && github.event.sender.id == fromJSON(vars.APP_BOT_USER_ID) && github.event.sender.login == vars.APP_BOT_LOGIN && github.event.sender.type == 'Bot') || (github.event_name == 'issues' && (github.event.action != 'labeled' || github.event.label.name == 'ready' || github.event.label.name == 'codex' || github.event.label.name == 'needs:prototype' || github.event.label.name == 'needs:breakdown')) || (github.event_name == 'issue_comment' && github.event.sender.id == github.event.repository.owner.id && github.event.sender.login == github.repository_owner && github.event.sender.type == 'User'))
     permissions:
       contents: read
     outputs:
-      role: ${{ inputs.role || (github.event_name == 'issue_comment' && 'steerer') || (github.event.label.name == 'codex' && 'codex-builder') || (github.event.label.name == 'needs:prototype' && 'pioneer') || (github.event.label.name == 'needs:breakdown' && 'planner') || (github.event.label.name == 'ready' && 'builder') || 'triager' }}
-      primary: ${{ inputs.primary || (github.event.label.name == 'codex' && 'codex') || ((github.event_name == 'issues' && github.event.action != 'labeled') && 'codex') || 'claude' }}
-      fallback: ${{ inputs.fallback || (github.event.label.name == 'codex' && 'none') || ((github.event_name == 'issues' && github.event.action != 'labeled') && 'claude') || 'codex' }}
+      role: ${{ inputs.role || (github.event_name == 'repository_dispatch' && github.event.client_payload.role) || (github.event_name == 'issue_comment' && 'steerer') || (github.event.label.name == 'codex' && 'codex-builder') || (github.event.label.name == 'needs:prototype' && 'pioneer') || (github.event.label.name == 'needs:breakdown' && 'planner') || (github.event.label.name == 'ready' && 'builder') || 'triager' }}
+      primary: ${{ inputs.primary || (github.event_name == 'repository_dispatch' && github.event.client_payload.provider) || (github.event.label.name == 'codex' && 'codex') || ((github.event_name == 'issues' && github.event.action != 'labeled') && 'codex') || 'claude' }}
+      fallback: ${{ inputs.fallback || (github.event_name == 'repository_dispatch' && 'none') || (github.event.label.name == 'codex' && 'none') || ((github.event_name == 'issues' && github.event.action != 'labeled') && 'claude') || 'codex' }}
       decision: ${{ inputs.decision || 'reduce' }}
     steps:
       - name: checkout immutable control
@@ -44,7 +47,7 @@ jobs:
         id: prepare-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
-          client-id: ${{ vars.APP_CLIENT_ID }}
+          app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           permission-actions: ${{ (inputs.read_class == 'prepare-pull' || inputs.read_class == 'prepare-maintenance') && 'read' || '' }}
           permission-administration: ${{ inputs.read_class == 'prepare-maintenance' && 'read' || '' }}
@@ -69,7 +72,7 @@ jobs:
           ADW_EVENT_PATH: ${{ github.event_path }}
           ADW_EVENT_NAME: ${{ github.event_name == 'pull_request_target' && 'pull_request' || github.event_name }}
           ADW_REPOSITORY: ${{ github.repository }}
-          ADW_ROLE: ${{ inputs.role || (github.event_name == 'issue_comment' && 'steerer') || (github.event.label.name == 'codex' && 'codex-builder') || (github.event.label.name == 'needs:prototype' && 'pioneer') || (github.event.label.name == 'needs:breakdown' && 'planner') || (github.event.label.name == 'ready' && 'builder') || 'triager' }}
+          ADW_ROLE: ${{ inputs.role || (github.event_name == 'repository_dispatch' && github.event.client_payload.role) || (github.event_name == 'issue_comment' && 'steerer') || (github.event.label.name == 'codex' && 'codex-builder') || (github.event.label.name == 'needs:prototype' && 'pioneer') || (github.event.label.name == 'needs:breakdown' && 'planner') || (github.event.label.name == 'ready' && 'builder') || 'triager' }}
           ADW_CONTROL_SHA: ${{ inputs.control_sha || github.sha }}
           ADW_GH_PATH: /usr/bin/gh
           ADW_GIT_PATH: /usr/bin/git
@@ -87,7 +90,7 @@ jobs:
   primary-claude:
     needs: prepare
     runs-on: ubuntu-24.04
-    if: needs.prepare.outputs.decision == 'reduce' && needs.prepare.outputs.primary == 'claude'
+    if: vars.ADW_CUTOVER_HOLD != 'true' && needs.prepare.outputs.decision == 'reduce' && needs.prepare.outputs.primary == 'claude'
     permissions: {}
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -103,7 +106,7 @@ jobs:
   primary-codex:
     needs: prepare
     runs-on: ubuntu-24.04
-    if: needs.prepare.outputs.decision == 'reduce' && needs.prepare.outputs.primary == 'codex'
+    if: vars.ADW_CUTOVER_HOLD != 'true' && needs.prepare.outputs.decision == 'reduce' && needs.prepare.outputs.primary == 'codex'
     permissions: {}
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -119,7 +122,7 @@ jobs:
   fallback-claude:
     needs: [prepare, primary-codex]
     runs-on: ubuntu-24.04
-    if: always() && needs.prepare.outputs.fallback == 'claude' && needs.primary-codex.result != 'success'
+    if: vars.ADW_CUTOVER_HOLD != 'true' && always() && needs.prepare.outputs.fallback == 'claude' && needs.primary-codex.result != 'success'
     permissions: {}
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -135,7 +138,7 @@ jobs:
   fallback-codex:
     needs: [prepare, primary-claude]
     runs-on: ubuntu-24.04
-    if: always() && needs.prepare.outputs.fallback == 'codex' && needs.primary-claude.result != 'success'
+    if: vars.ADW_CUTOVER_HOLD != 'true' && always() && needs.prepare.outputs.fallback == 'codex' && needs.primary-claude.result != 'success'
     permissions: {}
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -151,7 +154,7 @@ jobs:
   reduce:
     needs: [primary-claude, primary-codex, fallback-claude, fallback-codex]
     runs-on: ubuntu-24.04
-    if: always() && (needs.primary-claude.result != 'skipped' || needs.primary-codex.result != 'skipped')
+    if: vars.ADW_CUTOVER_HOLD != 'true' && always() && (needs.primary-claude.result != 'skipped' || needs.primary-codex.result != 'skipped')
     permissions: {}
     outputs: {apply_class: "${{ steps.decision.outputs.apply_class }}", apply_capabilities: "${{ steps.decision.outputs.apply_capabilities }}", apply_permissions: "${{ steps.decision.outputs.apply_permissions }}", permission_actions: "${{ steps.decision.outputs.permission_actions }}", permission_administration: "${{ steps.decision.outputs.permission_administration }}", permission_checks: "${{ steps.decision.outputs.permission_checks }}", permission_contents: "${{ steps.decision.outputs.permission_contents }}", permission_issues: "${{ steps.decision.outputs.permission_issues }}", permission_metadata: "${{ steps.decision.outputs.permission_metadata }}", permission_pull_requests: "${{ steps.decision.outputs.permission_pull_requests }}", permission_security_events: "${{ steps.decision.outputs.permission_security_events }}", permission_vulnerability_alerts: "${{ steps.decision.outputs.permission_vulnerability_alerts }}"}
     steps:
@@ -169,7 +172,7 @@ jobs:
   reconcile:
     needs: prepare
     runs-on: ubuntu-24.04
-    if: needs.prepare.outputs.decision == 'reconcile'
+    if: vars.ADW_CUTOVER_HOLD != 'true' && needs.prepare.outputs.decision == 'reconcile'
     permissions:
       contents: read
     outputs: {apply_class: "${{ steps.decision.outputs.apply_class }}", apply_capabilities: "${{ steps.decision.outputs.apply_capabilities }}", apply_permissions: "${{ steps.decision.outputs.apply_permissions }}", permission_actions: "${{ steps.decision.outputs.permission_actions }}", permission_administration: "${{ steps.decision.outputs.permission_administration }}", permission_checks: "${{ steps.decision.outputs.permission_checks }}", permission_contents: "${{ steps.decision.outputs.permission_contents }}", permission_issues: "${{ steps.decision.outputs.permission_issues }}", permission_metadata: "${{ steps.decision.outputs.permission_metadata }}", permission_pull_requests: "${{ steps.decision.outputs.permission_pull_requests }}", permission_security_events: "${{ steps.decision.outputs.permission_security_events }}", permission_vulnerability_alerts: "${{ steps.decision.outputs.permission_vulnerability_alerts }}"}
@@ -188,7 +191,7 @@ jobs:
   audit:
     needs: prepare
     runs-on: ubuntu-24.04
-    if: needs.prepare.outputs.decision == 'audit'
+    if: vars.ADW_CUTOVER_HOLD != 'true' && needs.prepare.outputs.decision == 'audit'
     permissions:
       contents: read
     outputs: {apply_class: "${{ steps.decision.outputs.apply_class }}", apply_capabilities: "${{ steps.decision.outputs.apply_capabilities }}", apply_permissions: "${{ steps.decision.outputs.apply_permissions }}", permission_actions: "${{ steps.decision.outputs.permission_actions }}", permission_administration: "${{ steps.decision.outputs.permission_administration }}", permission_checks: "${{ steps.decision.outputs.permission_checks }}", permission_contents: "${{ steps.decision.outputs.permission_contents }}", permission_issues: "${{ steps.decision.outputs.permission_issues }}", permission_metadata: "${{ steps.decision.outputs.permission_metadata }}", permission_pull_requests: "${{ steps.decision.outputs.permission_pull_requests }}", permission_security_events: "${{ steps.decision.outputs.permission_security_events }}", permission_vulnerability_alerts: "${{ steps.decision.outputs.permission_vulnerability_alerts }}"}
@@ -207,7 +210,7 @@ jobs:
   verify:
     needs: [prepare, reduce, reconcile, audit]
     runs-on: ubuntu-24.04
-    if: always()
+    if: vars.ADW_CUTOVER_HOLD != 'true' && always()
     permissions: {}
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -223,7 +226,7 @@ jobs:
   apply:
     needs: [prepare, reduce, reconcile, audit, verify]
     runs-on: ubuntu-24.04
-    if: always()
+    if: vars.ADW_CUTOVER_HOLD != 'true' && always()
     permissions:
       contents: read
     concurrency: {group: adw-write, cancel-in-progress: false}
@@ -242,7 +245,7 @@ jobs:
         if: needs.verify.result == 'success' && (needs.reduce.outputs.apply_class != 'none' && needs.reduce.outputs.apply_class != '' || needs.reconcile.outputs.apply_class != 'none' && needs.reconcile.outputs.apply_class != '' || needs.audit.outputs.apply_class != 'none' && needs.audit.outputs.apply_class != '')
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
-          client-id: ${{ vars.APP_CLIENT_ID }}
+          app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           permission-actions: ${{ needs.reduce.outputs.permission_actions || needs.reconcile.outputs.permission_actions || needs.audit.outputs.permission_actions }}
           permission-administration: ${{ needs.reduce.outputs.permission_administration || needs.reconcile.outputs.permission_administration || needs.audit.outputs.permission_administration }}
@@ -283,7 +286,7 @@ jobs:
   evidence:
     needs: apply
     runs-on: ubuntu-24.04
-    if: always()
+    if: vars.ADW_CUTOVER_HOLD != 'true' && always()
     permissions: {}
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
