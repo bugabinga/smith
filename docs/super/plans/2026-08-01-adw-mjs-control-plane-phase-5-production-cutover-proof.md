@@ -22,6 +22,8 @@ The owner also approved App-authenticated `repository_dispatch` for the five int
 
 This is exactly one Phase 5. It ends only after the atomic cutover, positive production proof, and two consecutive scheduled reconciliation cycles. Phase 6 compatibility removal, operational-document cleanup, and unrelated backlog work remain out of scope.
 
+On 2026-08-01, the owner approved the first offered authorization route: current `bugabinga` authentication may author the cutover PR. GitHub prohibits author self-approval, so an immutable exact-head owner approval comment bound by REST to numeric owner ID `876467` and login `bugabinga`, together with confirmed ruleset bypass, replaces the impossible review object. Administrative squash remains gated by the unchanged head, required checks, final legacy drain, and quiet-window controls.
+
 ## Locked safety boundaries
 
 - Production repository is exactly `bugabinga/smith`; default branch is exactly `main`.
@@ -732,11 +734,11 @@ test -z "$(git status --porcelain)"
 
 Expected: clean tree; no failing result or uncommitted fix is carried into review.
 
-### Task 8: Push the protected PR and obtain owner approval on its exact head
+### Task 8: Push the owner-authored protected PR and record owner approval on its exact head
 
 **Files:** none
 
-- [ ] **Step 1: Rebase only before review, then rerun Task 7**
+- [ ] **Step 1: Rebase only before approval, then rerun Task 7**
 
 ```bash
 git fetch origin
@@ -749,7 +751,7 @@ BASE=$(git merge-base origin/main HEAD)
 for commit in $(git rev-list "$BASE"..HEAD); do git verify-commit "$commit"; done
 ```
 
-Expected: final branch contains latest main and all checks pass. No rebase is permitted after owner review.
+Expected: final branch contains latest main and all checks pass. No rebase is permitted after the exact-head owner approval comment.
 
 - [ ] **Step 2: Push the branch**
 
@@ -762,7 +764,7 @@ Expected: branch push succeeds; branch name is retained because it already conta
 - [ ] **Step 3: Open one cutover PR**
 
 ```bash
-test "$(gh api user --jq .login)" != bugabinga
+gh api user | jq -e '.id == 876467 and .login == "bugabinga"' >/dev/null
 gh pr create --repo bugabinga/smith \
   --base main \
   --head adw/mjs-phase4 \
@@ -790,7 +792,7 @@ PR=$(gh pr view --repo bugabinga/smith --json number --jq .number)
 echo "$PR"
 ```
 
-Expected: one PR authored by a non-owner collaborator/App so `bugabinga` can review it; do not open a separate Phase 5 PR. If only owner credentials are available, stop and obtain a non-owner authenticated PR author rather than weakening owner review.
+Expected: one PR authored with the approved current `bugabinga` authentication; do not open a separate Phase 5 PR. Owner authorship is permitted because the exact-head comment and confirmed ruleset bypass provide the authorized evidence route.
 
 - [ ] **Step 4: Wait for required checks on the exact PR head**
 
@@ -803,20 +805,31 @@ test "$PR_HEAD" = "$(gh pr view "$PR" --repo bugabinga/smith --json headRefOid -
 
 Expected: all required checks green; head unchanged.
 
-- [ ] **Step 5: Obtain explicit owner approval**
+- [ ] **Step 5: Record the exact-head owner approval marker**
 
-From the authenticated owner shell:
+From the authenticated owner shell, post exactly one approval comment and retain its immutable REST coordinates:
 
 ```bash
-gh api user --jq '.login'
-gh pr review "$PR" --repo bugabinga/smith --approve \
-  --body "Owner approves the quiet-window MJS production cutover and positive-only proof on head $PR_HEAD."
-gh api --paginate "repos/bugabinga/smith/pulls/$PR/reviews?per_page=100" |
-  jq --arg head "$PR_HEAD" \
-  '[.[] | select(.user.login == "bugabinga" and .state == "APPROVED" and .commit_id == $head)] | length'
+gh api user | jq -e '.id == 876467 and .login == "bugabinga"' >/dev/null
+OWNER_APPROVAL_MARKER="Owner approval: quiet-window MJS production cutover and positive-only proof on exact head $PR_HEAD."
+OWNER_APPROVAL_COMMENT_JSON=$(gh api --method POST \
+  "repos/bugabinga/smith/issues/$PR/comments" \
+  -f body="$OWNER_APPROVAL_MARKER")
+OWNER_APPROVAL_COMMENT_ID=$(jq -er '.id' <<<"$OWNER_APPROVAL_COMMENT_JSON")
+OWNER_APPROVAL_COMMENT_CREATED_AT=$(jq -er '.created_at' <<<"$OWNER_APPROVAL_COMMENT_JSON")
+jq -e --arg body "$OWNER_APPROVAL_MARKER" --argjson pr "$PR" '
+  .id > 0 and
+  .user.id == 876467 and .user.login == "bugabinga" and
+  .author_association == "OWNER" and .body == $body and
+  .created_at == .updated_at and
+  (.issue_url | endswith("/issues/" + ($pr | tostring)))
+' <<<"$OWNER_APPROVAL_COMMENT_JSON" >/dev/null
+printf 'owner_approval_comment_id=%s\nowner_approval_created_at=%s\nowner_approval_marker=%s\n' \
+  "$OWNER_APPROVAL_COMMENT_ID" "$OWNER_APPROVAL_COMMENT_CREATED_AT" \
+  "$OWNER_APPROVAL_MARKER"
 ```
 
-Expected: login `bugabinga`; final count at least 1. If GitHub refuses approval, stop—an owner comment is not silently substituted for required review.
+Expected: the owner-authored comment has the exact marker containing `PR_HEAD`; its numeric comment ID and creation timestamp are retained. Any identity, body, issue binding, or creation-time mismatch stops cutover.
 
 ### Task 9: Seed production identity and prepare signed rollback
 
@@ -849,14 +862,14 @@ Expected:
 [{"name":"APP_BOT_LOGIN","value":"agent-smith-bugabinga-adc[bot]"},{"name":"APP_BOT_USER_ID","value":"306488075"}]
 ```
 
-- [ ] **Step 3: Freeze and recheck the reviewed head**
+- [ ] **Step 3: Freeze and recheck the owner-approved head**
 
 ```bash
 test "$PR_HEAD" = "$(gh pr view "$PR" --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
 test "$(git rev-parse origin/main)" = "$(gh api repos/bugabinga/smith/commits/main --jq .sha)"
 ```
 
-Expected: reviewed head and main baseline unchanged.
+Expected: owner-approved head and main baseline unchanged.
 
 - [ ] **Step 4: Create an encrypted/private rollback workspace and reverse patch**
 
@@ -977,7 +990,7 @@ Expected: zero active legacy runs, all legacy workflows disabled, self-test acti
 
 **Files:** none
 
-- [ ] **Step 1: Revalidate exact head, checks, owner review, and drain immediately before merge**
+- [ ] **Step 1: Revalidate exact head, checks, immutable owner comment, bypass, and drain immediately before merge**
 
 ```bash
 set -euo pipefail
@@ -986,9 +999,19 @@ test "$CUTOVER_BASE" = "$(gh api repos/bugabinga/smith/commits/main --jq .sha)"
 test "$CUTOVER_BASE" = "$(git rev-parse origin/main)"
 test "$(gh pr view "$PR" --repo bugabinga/smith --json mergeable --jq .mergeable)" = MERGEABLE
 gh pr checks "$PR" --repo bugabinga/smith --required
-OWNER_APPROVALS=$(gh api --paginate "repos/bugabinga/smith/pulls/$PR/reviews?per_page=100" |
-  jq --arg head "$PR_HEAD" '[.[] | select(.user.login == "bugabinga" and .state == "APPROVED" and .commit_id == $head)] | length')
-test "$OWNER_APPROVALS" -ge 1
+OWNER_APPROVAL_COMMENT_JSON=$(gh api \
+  "repos/bugabinga/smith/issues/comments/$OWNER_APPROVAL_COMMENT_ID")
+jq -e --argjson id "$OWNER_APPROVAL_COMMENT_ID" \
+  --arg body "$OWNER_APPROVAL_MARKER" \
+  --arg created "$OWNER_APPROVAL_COMMENT_CREATED_AT" \
+  --arg head "$PR_HEAD" --argjson pr "$PR" '
+    .id == $id and
+    .user.id == 876467 and .user.login == "bugabinga" and
+    .author_association == "OWNER" and .body == $body and
+    .body == ("Owner approval: quiet-window MJS production cutover and positive-only proof on exact head " + $head + ".") and
+    .created_at == $created and .updated_at == $created and
+    (.issue_url | endswith("/issues/" + ($pr | tostring)))
+  ' <<<"$OWNER_APPROVAL_COMMENT_JSON" >/dev/null
 test "$(sha256sum "$ROLLBACK_ROOT/cutover.patch" "$ROLLBACK_ROOT/rollback.patch")" = \
   "$(cat "$ROLLBACK_ROOT/SHA256SUMS")"
 test "$(gh api repos/bugabinga/smith/rulesets/19155559 --jq .current_user_can_bypass)" = always
@@ -1009,19 +1032,19 @@ test -f "$ROLLBACK_ROOT/legacy-active-runs.now"
 test ! -s "$ROLLBACK_ROOT/legacy-active-runs.now"
 ```
 
-Expected: exact reviewed head and main base, mergeable PR, green required checks, current-head owner approval, unchanged rollback patch hashes, confirmed owner bypass, all legacy workflows disabled, and an explicitly created empty final-drain file.
+Expected: exact owner-approved head and main base, mergeable PR, green required checks, immutable exact-head owner comment, unchanged rollback patch hashes, confirmed owner bypass, all legacy workflows disabled, and an explicitly created empty final-drain file.
 
 - [ ] **Step 2: Perform the one atomic squash merge**
 
 ```bash
 MERGE_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-gh pr merge "$PR" --repo bugabinga/smith --squash --delete-branch
+gh pr merge --admin --squash --delete-branch "$PR" --repo bugabinga/smith
 MERGE_SHA=$(gh pr view "$PR" --repo bugabinga/smith --json mergeCommit --jq .mergeCommit.oid)
 git fetch origin main
 test "$MERGE_SHA" = "$(git rev-parse origin/main)"
 ```
 
-Expected: one squash commit lands on main; no interval exists where both legacy and MJS writers are enabled.
+Expected: confirmed ruleset bypass permits one administrative squash commit on main only after every preceding safeguard passes; no interval exists where both legacy and MJS writers are enabled.
 
 - [ ] **Step 3: Verify GitHub signature and exact production inventory**
 
