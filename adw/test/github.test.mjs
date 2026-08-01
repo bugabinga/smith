@@ -480,7 +480,7 @@ test("maintenance snapshots enrich open pulls with merge state and current check
     if (endpoint === "/repos/bugabinga/smith") return reply({ id: 42, owner: { id: 7, login: "bugabinga" }, name: "smith", default_branch: "main", allow_auto_merge: true, allow_merge_commit: false, allow_rebase_merge: false, allow_squash_merge: true, delete_branch_on_merge: true });
     if (endpoint.includes("/contents/.github/labels.yml?ref=") || endpoint.includes("/contents/.github/rulesets/main.json?ref=")) return reply({ encoding: "base64", content: Buffer.from("[]").toString("base64"), sha: "c".repeat(40) });
     if (endpoint.startsWith("/repos/bugabinga/smith/pulls?")) return reply([pull]);
-    if (endpoint === "/repos/bugabinga/smith/pulls/2") return reply({ ...pull, mergeable_state: "blocked" });
+    if (endpoint === "/repos/bugabinga/smith/pulls/2") return reply({ ...pull, mergeable_state: "blocked", auto_merge: { merge_method: "squash" } });
     if (endpoint.startsWith("/repos/bugabinga/smith/pulls/2/files?")) return reply([]);
     if (endpoint.startsWith(`/repos/bugabinga/smith/commits/${headSha}/check-runs?`)) return reply({ check_runs: [{ id: 1, name: "check", head_sha: headSha, status: "completed", conclusion: "success" }, { id: 2, name: "merge-gate", head_sha: headSha, status: "completed", conclusion: "success" }] });
     if (endpoint.startsWith("/repos/bugabinga/smith/issues/2/comments?")) return reply([
@@ -506,6 +506,7 @@ test("maintenance snapshots enrich open pulls with merge state and current check
   const snapshot = await github.readDeterministicSnapshot(event, "jam-detector", { controlSha: "a".repeat(40), appId: appIdentity.appId });
   assert.equal(snapshot.state.resources.pulls[0].mergeState, "blocked");
   assert.equal(snapshot.state.resources.pulls[0].mergeSha, null);
+  assert.deepEqual(snapshot.state.resources.pulls[0].autoMergeRequest, { mergeMethod: "SQUASH" });
   assert.deepEqual(snapshot.state.resources.pulls[0].checks.map(value => value.name), ["check", "merge-gate"]);
   assert.deepEqual(snapshot.state.resources.pulls[0].evidence.map(value => value.kind), ["correctness", "security", "correctness", "security"]);
   const audit = await github.readControlSnapshot(event, "auditor", { controlSha: "a".repeat(40), appId: appIdentity.appId });

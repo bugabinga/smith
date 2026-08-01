@@ -356,6 +356,31 @@ test("injected E2E: GitHub blocked state does not circularly block the ADW gate"
   assert.equal(decision.operations.some(value => value.type === "arm_auto_merge"), true);
 });
 
+test("live-shaped already-armed pull publishes its gate without another merge arm", () => {
+  const authority = controlAuthority("auditor");
+  const liveHead = "146c5467cd6b87d1ae3ef10f116b075f5910a94e";
+  const expectedRuleset = { name: "main", target: "branch", enforcement: "active", conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } }, rules: [], bypass_actors: [] };
+  const liveEvidence = kind => ({ ...evidence(kind), headSha: liveHead });
+  const snapshot = {
+    ...snapshotFor("sweeper"), event: { kind: "schedule", action: "audit", entityId: "repository" },
+    routing: { role: authority.name, mode: "single", primary: null },
+    state: { entityId: "repository", trust, resources: {
+      "trusted:.github/rulesets/main.json": { data: JSON.stringify(expectedRuleset) }, "trusted:.github/labels.yml": { data: "" },
+      rulesets: [expectedRuleset], labels: [], settings: { allowAutoMerge: true, allowMergeCommit: false, allowRebaseMerge: false, allowSquashMerge: true, deleteBranchOnMerge: true },
+      pulls: [{ number: "150", state: "open", draft: false, merged: false, mergeState: "blocked", headSha: liveHead, base: "main", headRepository: "bugabinga/smith", labels: ["reviewed", "security-cleared"],
+        autoMergeRequest: { mergeMethod: "SQUASH", enabledAt: "2026-07-28T19:38:16Z", enabledBy: { is_bot: true, login: "app/agent-smith-bugabinga-adc" } },
+        checks: [{ name: "check", headSha: liveHead, status: "completed", conclusion: "success" }], evidence: [liveEvidence("correctness"), liveEvidence("security")], riskMarker: null, timeline: [] }],
+    } },
+  };
+  for (const [labels, conclusion] of [[["reviewed", "security-cleared"], "success"], [["reviewed"], "failure"]]) {
+    const candidate = structuredClone(snapshot);
+    candidate.state.resources.pulls[0].labels = labels;
+    const operations = planAudit(candidate).operations;
+    assert.equal(operations.find(value => value.type === "publish_check" && value.name === "merge-gate")?.conclusion, conclusion);
+    assert.equal(operations.some(value => value.type === "arm_auto_merge"), false);
+  }
+});
+
 test("injected E2E: merge arm follows current-head deterministic gate", () => {
   const authority = controlAuthority("auditor");
   const expectedRuleset = { name: "main", target: "branch", enforcement: "active", conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } }, rules: [], bypass_actors: [] };

@@ -1300,7 +1300,7 @@ jq -e '.authority.name == "auditor" and .status == "complete"' \
 jq -e '
   [.operations[] | select(
     .type == "arm_auto_merge" and
-    (.prId == "163" or .prId == "165" or .prId == "166"))] | length == 0
+    (.prId == "150" or .prId == "163" or .prId == "165" or .prId == "166"))] | length == 0
 ' "$AUDIT_DIR"/adw-decision/decision.json >/dev/null
 gh api repos/bugabinga/smith/labels/urgent \
   --jq '.color == "e03131" and .description == "Time-critical (regression, security-adjacent, or blocking others) — the planner ranks it ahead of same/lower-priority work when ordering the backlog"'
@@ -1326,7 +1326,7 @@ DRIFT_URL=$(gh api --paginate 'repos/bugabinga/smith/issues?state=all&per_page=1
 test -n "$DRIFT_URL"
 ```
 
-Expected: no assessment artifacts; complete auditor receipt; no auto-merge operation for explicit behind/dirty PRs; #150 is judged without circular `mergeable_state=blocked`; exact `urgent` repair; byte-equivalent live ruleset/settings snapshots; and an App-authored drift report URL.
+Expected: no assessment artifacts; complete auditor receipt; no auto-merge operation for already-armed #150 or explicit behind/dirty PRs; #150 is judged without circular `mergeable_state=blocked`; exact `urgent` repair; byte-equivalent live ruleset/settings snapshots; and an App-authored drift report URL.
 
 - [ ] **Step 4: Prove current-head App checks and independently fail-closed merge states**
 
@@ -1678,7 +1678,7 @@ for decision in "${decisions[@]}"; do
   jq -e '
     [.operations[] | select(
       .type == "arm_auto_merge" and
-      (.prId == "163" or .prId == "165" or .prId == "166"))]
+      (.prId == "150" or .prId == "163" or .prId == "165" or .prId == "166"))]
     | length == 0
   ' "$decision" >/dev/null
 done

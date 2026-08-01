@@ -718,7 +718,10 @@ export function planAudit(snapshot) {
       trust: trustedSnapshot.state.trust,
       autoMergeAllowed: resources.settings.allowAutoMerge && resources.settings.allowSquashMerge && !resources.settings.allowMergeCommit && !resources.settings.allowRebaseMerge,
     });
-    for (const operation of gate.operations) (operation.type === "arm_auto_merge" ? merges : checks).push(operation);
+    for (const operation of gate.operations) {
+      if (operation.type !== "arm_auto_merge") checks.push(operation);
+      else if (pull.autoMergeRequest === null || pull.autoMergeRequest === undefined) merges.push(operation);
+    }
   }
   const ordered = [drift, sync, jams, checks, merges].flat().map(operation => validateOperation(operation, authority));
   if (ordered.length === 0) ordered.push(validateOperation({ type: "noop", reason: "unchanged" }, authority));

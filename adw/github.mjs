@@ -548,9 +548,10 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     contract(rawMergeSha === null || /^[0-9a-f]{40}$/.test(rawMergeSha), "pull merge SHA is malformed");
     const merged = value.merged === true || typeof value.merged_at === "string";
     const mergeSha = merged ? rawMergeSha : null;
+    const autoMergeRequest = value.auto_merge === null || value.auto_merge === undefined ? null : Object.freeze({ mergeMethod: text(value.auto_merge?.merge_method, "pull auto-merge method").toUpperCase() });
     return Object.freeze({
       id: restId(value.id, "pull id"), number: String(value.number), state: text(value.state, "pull state"), draft: value.draft === true, merged,
-      mergeSha, mergeState: value.mergeable_state === undefined || value.mergeable_state === null ? null : text(value.mergeable_state, "pull merge state").toLowerCase(),
+      mergeSha, mergeState: value.mergeable_state === undefined || value.mergeable_state === null ? null : text(value.mergeable_state, "pull merge state").toLowerCase(), autoMergeRequest,
       updatedAt: text(value.updated_at, "pull updatedAt"), headSha, headBranch: value.head?.ref === undefined ? null : text(value.head.ref, "pull head branch"), base: text(value.base?.ref, "pull base"),
       actorId: value.user ? restId(value.user.id, "pull actor") : null, actorLogin: value.user?.login ?? null, actorType: value.user?.type ?? null,
       headRepository: text(value.head?.repo?.full_name, "pull head repository"),
