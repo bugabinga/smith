@@ -76,7 +76,7 @@ At execution, re-read every value. A changed SHA or merge state is not a reason 
 
 - `prototypes/p38-adw-disposable/wrappers/adw-issues.yml`: canonical issue/reusable/internal-dispatch wrapper; use `app-id`, gate label/comment events, and consume only the three closed issue `repository_dispatch` payloads.
 - `prototypes/p38-adw-disposable/wrappers/adw-pulls.yml`: canonical pull/reconcile wrapper; provider-route only intended events and consume only App `run_review` repository dispatches.
-- `prototypes/p38-adw-disposable/wrappers/adw-maintenance.yml`: canonical maintenance wrapper; expose owner-only manual audit/reconcile choices and consume only App `run_obligation` repository dispatches.
+- `prototypes/p38-adw-disposable/wrappers/adw-maintenance.yml`: canonical maintenance wrapper; expose owner-only manual audit/reconcile choices, consume only App `run_obligation` repository dispatches, and snapshot alerts only from the existing `57 2 * * *` schedule; GitHub Actions has no alert webhook trigger here.
 - `.github/workflows/adw-issues.yml`: byte-identical promoted issue wrapper.
 - `.github/workflows/adw-pulls.yml`: byte-identical promoted pull wrapper.
 - `.github/workflows/adw-maintenance.yml`: byte-identical promoted maintenance wrapper.
@@ -323,6 +323,7 @@ pull_request_review submitted        -> reviser
 pull_request_review_comment created  -> reconcile-only
 check_run/check_suite completed      -> reconcile-only
 manual maintenance audit/reconcile   -> provider-free owner control lane
+scheduled maintenance 57 2 * * *     -> alert-triager snapshot; no alert webhook
 internal run_review                  -> exact requested review role/current head
 internal run_obligation              -> exact requested role/merge SHA
 ```
@@ -434,7 +435,7 @@ Consume only the validated `repository_dispatch` `client_payload` fields from Ta
 
 - [x] **Step 3: Encode the event truth table**
 
-Add job-level conditions and input expressions matching Task 2 exactly. Add the exact global `ADW_CUTOVER_HOLD != 'true'` guard to natural callers and every `always()` shared-graph path so no downstream verify/apply/evidence job runs when prepare is held. Preserve one reusable execution graph, one provider credential per provider job, tokenless reduce/verify, operation-scoped apply token, `adw-write`, and `cancel-in-progress:false`.
+Add job-level conditions and input expressions matching Task 2 exactly. Add the exact global `ADW_CUTOVER_HOLD != 'true'` guard to natural callers and every `always()` shared-graph path so no downstream verify/apply/evidence job runs when prepare is held. Preserve one reusable execution graph, one provider credential per provider job, tokenless reduce/verify, operation-scoped apply token, `adw-write`, and `cancel-in-progress:false`. Alert triage is schedule-only at `57 2 * * *`; do not declare unsupported `dependabot_alert` or `code_scanning_alert` webhook keys or infer alert events with `endsWith(...)`.
 
 - [x] **Step 4: Prove internal dispatch delivery grammar**
 
@@ -733,6 +734,29 @@ test -z "$(git status --porcelain)"
 ```
 
 Expected: clean tree; no failing result or uncommitted fix is carried into review.
+
+### Task 7A: Correct unsupported maintenance alert triggers
+
+**Files:**
+
+- Modify: `adw/test/wrappers.test.mjs`
+- Modify: `prototypes/p38-adw-disposable/wrappers/adw-maintenance.yml`
+- Modify: `.github/workflows/adw-maintenance.yml`
+- Modify: `docs/super/plans/2026-08-01-adw-mjs-control-plane-phase-5-production-cutover-proof.md`
+
+Production run `30713498516` failed before job creation because GitHub Actions does not support `dependabot_alert` or `code_scanning_alert` as workflow `on` events. Alert snapshot collection remains a scheduled maintenance responsibility.
+
+- [x] **Step 1: Add and run the failing wrapper regression**
+
+Require maintenance triggers to reject both unsupported keys, reject `endsWith(github.event_name, '_alert')`, and select `alert-triager` only for `57 2 * * *`. The focused test failed on the first unsupported key with zero passes and one failure, recording RED before implementation.
+
+- [x] **Step 2: Remove only unsupported alert routing and promote exact bytes**
+
+Delete both unsupported trigger blocks and both `endsWith(..._alert)` branches from the canonical wrapper. Preserve the `57 2 * * *` schedule and its `alert-triager` role, then copy canonical bytes to production.
+
+- [x] **Step 3: Verify the correction and record lint scope honestly**
+
+The focused regression, all 18 wrapper tests, and all 224 Node tests pass. Exact actionlint v1.7.7 passes the four production ADW workflows and the known-clean `ci.yml` control; linting every production workflow no longer reports `adw-maintenance.yml` but still reports seven unrelated pre-existing findings in `ci-prototype.yml`, `devskim.yml`, `p35-adw-harness.yml`, `p37-codex-harness.yml`, and `prototypes.yml`. All production workflow YAML parses, all three promoted wrappers equal canonical bytes, canonical wrappers total 371 physical lines, and `git diff --check` passes.
 
 ### Task 8: Push the owner-authored protected PR and record owner approval on its exact head
 

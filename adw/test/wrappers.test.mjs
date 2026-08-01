@@ -303,7 +303,11 @@ test("wrappers expose only exact triggers and semantically named lanes", async (
   assert.doesNotMatch(pullOn, /^  pull_request:/m);
   assert.doesNotMatch(pullOn, /workflow_dispatch/);
   const maintenanceOn = indentedBlock(values["adw-maintenance.yml"], "on");
-  for (const trigger of ["push:", "schedule:", "dependabot_alert:", "code_scanning_alert:", "repository_dispatch:", "workflow_dispatch:"]) assert.match(maintenanceOn, new RegExp(`^  ${trigger.replace(":", "\\:")}`, "m"));
+  for (const trigger of ["push:", "schedule:", "repository_dispatch:", "workflow_dispatch:"]) assert.match(maintenanceOn, new RegExp(`^  ${trigger.replace(":", "\\:")}`, "m"));
+  assert.doesNotMatch(maintenanceOn, /^  (?:dependabot_alert|code_scanning_alert):/m);
+  assert.match(values["adw-maintenance.yml"], /github\.event\.schedule == '57 2 \* \* \*' && 'alert-triager'/);
+  assert.equal((values["adw-maintenance.yml"].match(/'alert-triager'/g) ?? []).length, 1);
+  assert.doesNotMatch(values["adw-maintenance.yml"], /endsWith\(github\.event_name, '_alert'\)/);
   assert.match(maintenanceOn, /repository_dispatch:\n    types:\s*\[run_obligation\]/);
   assert.match(maintenanceOn, /lane:\s*\{description:[^}]*type:\s*choice, options:\s*\[audit, reconcile\]\}/);
   assert.match(maintenanceOn, /branches:\s*\[main\]/);

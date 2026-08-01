@@ -10,10 +10,6 @@ on:
     - cron: '37 2 * * *'
     - cron: '47 2 * * 1'
     - cron: '57 2 * * *'
-  dependabot_alert:
-    types: [created, reintroduced, reopened]
-  code_scanning_alert:
-    types: [created, reopened]
   repository_dispatch:
     types: [run_obligation]
   workflow_dispatch:
@@ -28,8 +24,8 @@ jobs:
       contents: read
     uses: ./.github/workflows/adw-issues.yml
     with:
-      lane: ${{ github.event_name == 'repository_dispatch' && 'maintenance-obligation' || github.event_name == 'workflow_dispatch' && format('maintenance-{0}', inputs.lane) || github.event.schedule == '7 */6 * * *' && 'maintenance-reconcile' || github.event.schedule == '17 2 * * *' && 'maintenance-audit' || github.event.schedule == '27 2 * * 1' && 'maintenance-survey' || github.event.schedule == '37 2 * * *' && 'maintenance-sweep' || github.event.schedule == '47 2 * * 1' && 'maintenance-doctor' || endsWith(github.event_name, '_alert') && 'maintenance-alert' || 'maintenance-plan' }}
-      role: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.role || (github.event_name == 'workflow_dispatch' && inputs.lane == 'reconcile') && 'reconciler' || (github.event_name == 'workflow_dispatch' && inputs.lane == 'audit') && 'auditor' || github.event.schedule == '17 2 * * *' && 'auditor' || github.event.schedule == '7 */6 * * *' && 'reconciler' || github.event.schedule == '27 2 * * 1' && 'surveyor' || github.event.schedule == '37 2 * * *' && 'sweeper' || github.event.schedule == '47 2 * * 1' && 'adw-doctor' || (github.event.schedule == '57 2 * * *' || endsWith(github.event_name, '_alert')) && 'alert-triager' || 'planner' }}
+      lane: ${{ github.event_name == 'repository_dispatch' && 'maintenance-obligation' || github.event_name == 'workflow_dispatch' && format('maintenance-{0}', inputs.lane) || github.event.schedule == '7 */6 * * *' && 'maintenance-reconcile' || github.event.schedule == '17 2 * * *' && 'maintenance-audit' || github.event.schedule == '27 2 * * 1' && 'maintenance-survey' || github.event.schedule == '37 2 * * *' && 'maintenance-sweep' || github.event.schedule == '47 2 * * 1' && 'maintenance-doctor' || 'maintenance-plan' }}
+      role: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.role || (github.event_name == 'workflow_dispatch' && inputs.lane == 'reconcile') && 'reconciler' || (github.event_name == 'workflow_dispatch' && inputs.lane == 'audit') && 'auditor' || github.event.schedule == '17 2 * * *' && 'auditor' || github.event.schedule == '7 */6 * * *' && 'reconciler' || github.event.schedule == '27 2 * * 1' && 'surveyor' || github.event.schedule == '37 2 * * *' && 'sweeper' || github.event.schedule == '47 2 * * 1' && 'adw-doctor' || github.event.schedule == '57 2 * * *' && 'alert-triager' || 'planner' }}
       primary: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.provider || (github.event_name == 'workflow_dispatch' || github.event.schedule == '17 2 * * *' || github.event.schedule == '7 */6 * * *') && 'none' || (github.event.schedule == '37 2 * * *' || github.event.schedule == '47 2 * * 1') && 'codex' || 'claude' }}
       fallback: ${{ github.event_name == 'repository_dispatch' && 'none' || (github.event_name == 'workflow_dispatch' || github.event.schedule == '17 2 * * *' || github.event.schedule == '7 */6 * * *' || github.event.schedule == '37 2 * * *') && 'none' || github.event.schedule == '47 2 * * 1' && 'claude' || 'codex' }}
       decision: ${{ github.event_name == 'workflow_dispatch' && inputs.lane || github.event.schedule == '17 2 * * *' && 'audit' || github.event.schedule == '7 */6 * * *' && 'reconcile' || 'reduce' }}
