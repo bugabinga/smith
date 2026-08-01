@@ -475,7 +475,7 @@ git commit -S \
 - Modify: all assessment-only charter files listed in the file map
 - Modify: `adw/test/wrappers.test.mjs`
 
-- [ ] **Step 1: Write the failing charter-boundary test**
+- [x] **Step 1: Write the failing charter-boundary test**
 
 Derive unique charter paths from `listRoles()`. Exclude unused `.claude/agents/release-manager.md`. Require every active charter to contain this exact section:
 
@@ -487,7 +487,7 @@ When `adw/main.mjs` invokes this charter, analyze only the normalized snapshot a
 
 Require release-manager absent from `listRoles()` and all wrapper text.
 
-- [ ] **Step 2: Run the charter test to verify failure**
+- [x] **Step 2: Run the charter test to verify failure**
 
 ```bash
 node --test --test-name-pattern='assessment-only|release-manager' adw/test/wrappers.test.mjs
@@ -495,7 +495,7 @@ node --test --test-name-pattern='assessment-only|release-manager' adw/test/wrapp
 
 Expected: FAIL on active charters that still describe direct effects.
 
-- [ ] **Step 3: Add the exact boundary and reconcile artifact wording**
+- [x] **Step 3: Add the exact boundary and reconcile artifact wording**
 
 Add the exact section to all active charters. Change direct-effect artifact wording to proposed assessment wording:
 
@@ -516,7 +516,7 @@ builder/reviser     -> proposed patch manifest+bytes, summary, or blocked/noop
 
 Preserve domain policy; remove claims that the provider itself committed, pushed, opened, labeled, commented, dispatched, reran, or merged.
 
-- [ ] **Step 4: Run charter and provider tests**
+- [x] **Step 4: Run charter and provider tests**
 
 ```bash
 node --test adw/test/{providers,roles,wrappers}.test.mjs
@@ -524,7 +524,7 @@ node --test adw/test/{providers,roles,wrappers}.test.mjs
 
 Expected: PASS; schema names and role paths remain unchanged.
 
-- [ ] **Step 5: Commit assessment-only charters**
+- [x] **Step 5: Commit assessment-only charters**
 
 ```bash
 git add \

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { controlSnapshotPlan, roleSnapshotPlan } from "../github.mjs";
 import { ARTIFACT_LAYOUT } from "../main.mjs";
+import { listRoles, role } from "../roles.mjs";
 
 const wrapperDirectory = new URL("../../prototypes/p38-adw-disposable/wrappers/", import.meta.url);
 const names = ["adw-issues.yml", "adw-pulls.yml", "adw-maintenance.yml"];
@@ -14,6 +15,23 @@ const ACTIONS = Object.freeze({
   download: "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
   appToken: "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1",
 });
+const assessmentOnlyBoundary = `## MJS assessment-only boundary
+
+When \`adw/main.mjs\` invokes this charter, analyze only the normalized snapshot and return only JSON matching the supplied schema. Do not call GitHub, commit, push, open, close, label, comment on, dispatch, rerun, or merge forge objects, and do not claim those effects occurred. For patch roles, edits in the tokenless assessment checkout are proposed patch bytes only; tokenless verification and the serialized App-token apply job own all effects. Return \`noop\` when no canonical operation is warranted.`;
+const charterArtifacts = new Map([
+  [".claude/agents/adw-doctor.md", "proposed health finding/issue or noop"],
+  [".claude/agents/builder.md", "proposed patch manifest+bytes, summary, or blocked/noop"],
+  [".claude/agents/dependency-manager.md", "proposed verdict/comment/label operations or noop"],
+  [".claude/agents/docs-writer.md", "proposed docs patch or noop"],
+  [".claude/agents/planner.md", "proposed issue/milestone operations or noop"],
+  [".claude/agents/reviewer.md", "structured approve/reject findings only"],
+  [".claude/agents/security-reviewer.md", "structured risk/findings only"],
+  [".claude/agents/steerer.md", "bounded comment recommendation or noop"],
+  [".claude/agents/surveyor.md", "proposed next work-order or noop"],
+  [".claude/agents/sweeper.md", "proposed maintenance operations or noop"],
+  [".claude/agents/triager.md", "structured triage body/labels or noop"],
+  [".claude/skills/pioneer/SKILL.md", "proposed prototype patch and proof verdict or noop"],
+]);
 const commands = new Set([
   "node adw/main.mjs prepare",
   "node adw/main.mjs assess --provider claude",
@@ -200,6 +218,20 @@ test("permission contract has three exact, non-conflated layers and rejects supe
     const copy = structuredClone(value); mutate(copy);
     assert.throws(() => exactPermissionContract(copy));
   }
+});
+
+test("active charters enforce the assessment-only boundary and exclude release-manager", async () => {
+  const roleNames = listRoles();
+  assert.equal(roleNames.includes("release-manager"), false);
+  const charterPaths = [...new Set(roleNames.map(name => role(name).charter))].sort();
+  assert.equal(charterPaths.includes(".claude/agents/release-manager.md"), false);
+  assert.deepEqual(charterPaths, [...charterArtifacts.keys()].sort());
+  for (const charterPath of charterPaths) {
+    const charter = await readFile(new URL(`../../${charterPath}`, import.meta.url), "utf8");
+    assert.ok(charter.includes(assessmentOnlyBoundary), `${charterPath} lacks the exact assessment-only boundary`);
+    assert.ok(charter.includes(charterArtifacts.get(charterPath)), `${charterPath} lacks its exact proposed artifact semantics`);
+  }
+  assert.doesNotMatch(Object.values(await sources()).join("\n"), /release-manager/i);
 });
 
 test("candidate wrappers are inactive, complete, and physically below 400 lines", async () => {
