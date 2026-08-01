@@ -115,20 +115,30 @@
     },
     "apply-maintenance-reconcile": {
       "capabilities": [
-        "actions:write",
-        "checks:write",
-        "contents:read",
+        "actions:read",
+        "checks:read",
+        "contents:write",
         "issues:write",
         "pulls:read",
         "repository:read"
       ],
       "permissions": {
-        "actions": "write",
-        "checks": "write",
-        "contents": "read",
+        "actions": "read",
+        "checks": "read",
+        "contents": "write",
         "issues": "write",
         "metadata": "read",
         "pull_requests": "read"
+      }
+    },
+    "apply-maintenance-rerun": {
+      "capabilities": [
+        "actions:write",
+        "checks:write"
+      ],
+      "permissions": {
+        "actions": "write",
+        "checks": "write"
       }
     },
     "apply-pull-code": {

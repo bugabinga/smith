@@ -61,7 +61,7 @@ function verification(value, canonicalDecision) {
   };
 }
 
-function harness(handler, { permissions } = {}) {
+function harness(handler, { permissions, sleep, now } = {}) {
   const calls = [];
   const mints = [];
   const github = createGitHub({
@@ -83,6 +83,8 @@ function harness(handler, { permissions } = {}) {
       calls.push(request);
       return handler(request, calls);
     },
+    sleep,
+    now,
   });
   return { github, calls, mints };
 }
@@ -482,7 +484,7 @@ test("in-progress rerun recovery fails terminal on non-exact delivery evidence",
   assert.equal(calls.some(call => call.args[2] !== "GET"), false);
 });
 
-test("repository dispatch writer uses one fixed endpoint and proves exact App delivery", async () => {
+function dispatchFixture() {
   const issue = { id: 1, number: 1, state: "open", title: "Route", body: "", labels: [], milestone: null, updated_at: "2026-01-01T00:00:00.000Z" };
   const sourceRevision = issueSourceRevision(issue);
   const operation = {
@@ -492,26 +494,122 @@ test("repository dispatch writer uses one fixed endpoint and proves exact App de
   };
   const routing = { role: "reconciler", mode: "single", primary: null };
   const value = { ...snapshot(), routing, state: { currentRevisions: { "issue:1": sourceRevision }, reconciliation: { pulls: [] } } };
-  let markerBody = null;
-  let markerStatus = null;
+  const exactRun = {
+    id: 20,
+    path: ".github/workflows/adw-issues.yml",
+    head_branch: "main",
+    head_sha: controlSha,
+    event: "repository_dispatch",
+    display_title: digestJson(operation),
+    actor: bot,
+    created_at: "2026-01-01T00:00:00.000Z",
+    run_attempt: 1,
+  };
+  return { issue, operation, routing, value, exactRun };
+}
+
+test("repository dispatch uses contents write, then boundedly polls one exact first-attempt App run", async () => {
+  const { issue, operation, routing, value, exactRun } = dispatchFixture();
   let delivered = false;
-  const { github, calls } = harness(request => {
+  let deliveryReads = 0;
+  const waits = [];
+  const { github, calls, mints } = harness(request => {
     const path = endpoint(request);
-    const liveMarker = () => ({ id: 10, ...markerBody, external_id: markerBody.external_id, head_sha: markerBody.head_sha, status: markerStatus, conclusion: markerStatus === "completed" ? "success" : null, output: markerBody.output, app, created_at: "2026-01-01T00:00:00.000Z" });
     if (request.args[2] === "GET" && path === "/repos/bugabinga/smith/issues/1") return reply(issue);
     if (request.args[2] === "GET" && path === "/repos/bugabinga/smith/git/ref/heads/main") return reply({ object: { sha: controlSha } });
-    if (request.args[2] === "GET" && path.startsWith(`/repos/bugabinga/smith/commits/${controlSha}/check-runs?`)) return reply({ check_runs: markerBody === null ? [] : [liveMarker()] });
-    if (request.args[2] === "GET" && path.endsWith("/check-runs/10")) return reply(liveMarker());
-    if (request.args[2] === "POST" && path.endsWith("/check-runs")) { markerBody = body(request); markerStatus = "in_progress"; return reply({ id: 10 }); }
     if (request.args[2] === "POST" && path === "/repos/bugabinga/smith/dispatches") { delivered = true; return reply(null); }
-    if (request.args[2] === "GET" && path.startsWith("/repos/bugabinga/smith/actions/workflows/adw-issues.yml/runs?")) return reply({ workflow_runs: delivered ? [{ id: 20, path: ".github/workflows/adw-issues.yml", head_branch: "main", head_sha: controlSha, event: "repository_dispatch", display_title: digestJson(operation), triggering_actor: bot, created_at: "2026-01-01T00:00:01.000Z" }] : [] });
-    if (request.args[2] === "PATCH" && path.endsWith("/check-runs/10")) { markerStatus = "completed"; return reply(liveMarker()); }
+    if (request.args[2] === "GET" && path.startsWith("/repos/bugabinga/smith/actions/workflows/adw-issues.yml/runs?")) {
+      if (!delivered) return reply({ workflow_runs: [] });
+      deliveryReads++;
+      return reply({ workflow_runs: deliveryReads < 3 ? [] : [exactRun] });
+    }
     throw new Error(`unexpected ${request.args[2]} ${path}`);
+  }, {
+    now: () => "2026-01-01T00:00:00.999Z",
+    sleep: async milliseconds => { waits.push(milliseconds); },
   });
   assert.equal((await apply(github, operation, value, { routing })).status, "complete");
   const delivery = calls.find(call => endpoint(call) === "/repos/bugabinga/smith/dispatches");
   assert.deepEqual(body(delivery), { event_type: "retry_route", client_payload: { ...operation.clientPayload, smith_operation_digest: digestJson(operation) } });
+  assert.equal(calls.filter(call => endpoint(call) === "/repos/bugabinga/smith/dispatches").length, 1);
+  assert.deepEqual(mints.map(mint => mint.permissions), [["contents:write", "repository:read"]]);
+  assert.deepEqual(waits, [5000, 5000]);
+  const searches = calls.filter(call => endpoint(call).startsWith("/repos/bugabinga/smith/actions/workflows/adw-issues.yml/runs?"));
+  assert.equal(searches.length, 5);
+  assert.ok(searches.every(call => endpoint(call).includes("event=repository_dispatch&per_page=20&page=1")));
+  assert.equal(calls.some(call => endpoint(call).includes("check-runs")), false);
   assert.equal(calls.some(call => endpoint(call).includes("/actions/workflows/adw-issues.yml/dispatches")), false);
+});
+
+test("repository dispatch run proof binds every identity field and times out retryably", async () => {
+  const { issue, operation, routing, value, exactRun } = dispatchFixture();
+  const mismatches = [
+    { event: "workflow_dispatch" },
+    { path: ".github/workflows/adw-pulls.yml" },
+    { display_title: "f".repeat(64) },
+    { actor: { ...bot, id: 999 } },
+    { head_branch: "feature" },
+    { head_sha: headSha },
+    { created_at: "2025-12-31T23:59:59.999Z" },
+    { run_attempt: 2 },
+  ];
+  for (const mismatch of mismatches) {
+    let delivered = false;
+    let writes = 0;
+    const waits = [];
+    const { github } = harness(request => {
+      const path = endpoint(request);
+      if (path === "/repos/bugabinga/smith/issues/1") return reply(issue);
+      if (path === "/repos/bugabinga/smith/git/ref/heads/main") return reply({ object: { sha: controlSha } });
+      if (request.args[2] === "POST" && path === "/repos/bugabinga/smith/dispatches") { delivered = true; writes++; return reply(null); }
+      if (path.startsWith("/repos/bugabinga/smith/actions/workflows/adw-issues.yml/runs?")) return reply({ workflow_runs: delivered ? [{ ...exactRun, ...mismatch }] : [] });
+      throw new Error(`unexpected ${request.args[2]} ${path}`);
+    }, { now: () => "2026-01-01T00:00:00.000Z", sleep: async milliseconds => { waits.push(milliseconds); } });
+    await assert.rejects(
+      () => apply(github, operation, value, { routing }),
+      error => error?.code === "forge" && error.message === "repository dispatch delivery timed out",
+      JSON.stringify(mismatch),
+    );
+    assert.equal(writes, 1);
+    assert.equal(waits.length, 11);
+    assert.ok(waits.every(milliseconds => milliseconds === 5000));
+  }
+});
+
+test("repository dispatch timeout is recoverable without reposting, while duplicate exact runs fail closed", async () => {
+  const { issue, operation, routing, value, exactRun } = dispatchFixture();
+  let delivered = false;
+  let visible = false;
+  let writes = 0;
+  const { github, calls } = harness(request => {
+    const path = endpoint(request);
+    if (path === "/repos/bugabinga/smith/issues/1") return reply(issue);
+    if (path === "/repos/bugabinga/smith/git/ref/heads/main") return reply({ object: { sha: controlSha } });
+    if (request.args[2] === "POST" && path === "/repos/bugabinga/smith/dispatches") { delivered = true; writes++; return reply(null); }
+    if (path.startsWith("/repos/bugabinga/smith/actions/workflows/adw-issues.yml/runs?")) return reply({ workflow_runs: delivered && visible ? [exactRun] : [] });
+    throw new Error(`unexpected ${request.args[2]} ${path}`);
+  }, { now: () => "2026-01-01T00:00:00.000Z", sleep: async () => {} });
+  await assert.rejects(
+    () => apply(github, operation, value, { routing }),
+    error => error?.code === "forge" && error.message === "repository dispatch delivery timed out",
+  );
+  assert.equal(writes, 1);
+  visible = true;
+  assert.equal((await apply(github, operation, value, { routing })).status, "complete");
+  assert.equal(writes, 1);
+
+  const duplicate = harness(request => {
+    const path = endpoint(request);
+    if (path === "/repos/bugabinga/smith/issues/1") return reply(issue);
+    if (path === "/repos/bugabinga/smith/git/ref/heads/main") return reply({ object: { sha: controlSha } });
+    if (path.startsWith("/repos/bugabinga/smith/actions/workflows/adw-issues.yml/runs?")) return reply({ workflow_runs: [exactRun, { ...exactRun, id: 21 }] });
+    throw new Error(`unexpected ${request.args[2]} ${path}`);
+  }, { now: () => "2026-01-01T00:00:00.000Z", sleep: async () => {} });
+  await assert.rejects(
+    () => apply(duplicate.github, operation, value, { routing }),
+    error => error?.code === "stale" && error.message === "conflicting repository dispatch runs",
+  );
+  assert.equal(duplicate.calls.some(call => call.args[2] !== "GET"), false);
   assert.equal(calls.filter(call => endpoint(call) === "/repos/bugabinga/smith/dispatches").length, 1);
 });
 
@@ -557,7 +655,16 @@ test("operation capabilities are exact, operation-scoped, and exclude settings w
   assert.deepEqual(operationCapabilities({ type: "comment" }), ["issues:write"]);
   assert.deepEqual(operationCapabilities({ type: "publish_check" }), ["checks:write"]);
   assert.deepEqual(operationCapabilities({ type: "rerun_check" }), ["actions:write", "checks:write"]);
-  assert.deepEqual(operationCapabilities({ type: "dispatch_repository" }), ["actions:write", "checks:write"]);
+  assert.deepEqual(operationCapabilities({ type: "dispatch_repository" }), ["contents:write", "repository:read"]);
+  const reconciliationSnapshot = snapshot([
+    { resource: "issues", kind: "issues", token: "r" },
+    { resource: "pulls", kind: "pulls", token: "r" },
+    { resource: "runs", kind: "workflow_runs", token: "r" },
+    { resource: "trusted:.github/labels.yml", kind: "control", token: controlSha },
+    { resource: "repository", kind: "repository", token: "r" },
+  ]);
+  assert.deepEqual(operationCapabilities({ type: "dispatch_repository" }, reconciliationSnapshot), ["contents:write", "repository:read"]);
+  assert.deepEqual(operationCapabilities({ type: "add_label" }, reconciliationSnapshot), ["actions:read", "checks:read", "contents:read", "issues:write", "pulls:read", "repository:read"]);
   assert.deepEqual(operationCapabilities({ type: "create_pr" }), ["pulls:write"]);
   assert.deepEqual(operationCapabilities({ type: "arm_auto_merge" }), ["checks:read", "issues:read", "pulls:write"]);
   assert.deepEqual(operationCapabilities({ type: "sync_labels" }), ["contents:read", "issues:write"]);

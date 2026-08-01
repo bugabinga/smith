@@ -171,7 +171,7 @@ const DETERMINISTIC_ROLES = deepFreeze({
 // separate prevents reconciliation/audit writes from widening any model's role.
 const CONTROL_AUTHORITIES = deepFreeze({
   reconciler: {
-    name: "reconciler", kind: "control", mode: "single", primary: null, patch: null, capabilities: ["actions:write", "checks:write", "contents:read", "issues:write", "pulls:read", "repository:read"],
+    name: "reconciler", kind: "control", mode: "single", primary: null, patch: null, capabilities: ["actions:read", "checks:read", "contents:write", "issues:write", "pulls:read", "repository:read"],
     operations: ["add_label", "dispatch_repository", "noop", "sync_labels"],
     snapshot: { fields: ["issues", "labels", "pulls", "routes", "runs"], maxBytes: 262144 },
     trustedPaths: [".github/labels.yml"],

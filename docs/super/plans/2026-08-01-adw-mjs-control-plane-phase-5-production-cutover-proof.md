@@ -31,7 +31,7 @@ On 2026-08-01, the owner approved the first offered authorization route: current
 - Existing secrets `APP_ID`, `APP_PRIVATE_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, and `CODEX_AUTH_JSON` are presence-checked only. Their values are never read, printed, copied, replaced, or rotated.
 - `ADW_CUTOVER_HOLD=true` must be armed before the first branch push that exposes candidate operational workflow records. It remains armed through every corrective push and the cutover until the parent-correct signed rollback exists; only then may it be deleted before positive proof.
 - Seed exact non-secret variables `APP_BOT_USER_ID=306488075` and `APP_BOT_LOGIN=agent-smith-bugabinga-adc[bot]` before cutover.
-- Internal App intents use only `repository_dispatch` event types `retry_route`, `fallback_route`, `retry_pioneer`, `run_review`, and `run_obligation`; manual `workflow_dispatch` exposes only owner choices `audit` and `reconcile`.
+- Internal App intents use only `repository_dispatch` event types `retry_route`, `fallback_route`, `retry_pioneer`, `run_review`, and `run_obligation`; manual `workflow_dispatch` exposes only owner choices `audit` and `reconcile`. `dispatch_repository` mints only `contents:write` plus implicit `metadata:read`; it never requests Actions or Checks write.
 - Production proof is positive-only. Never inject malformed artifacts, stale revisions, cancelled jobs, partial writes, invalid credentials, changed permissions, malformed events, provider outages, ruleset damage, or secret rotation.
 - Existing organic `BLOCKED`/`BEHIND` state on PRs #150, #163, #165, and #166 is observed, never created or worsened for this proof.
 - Settings/rulesets remain read-only. Audit may report their existing drift but may not mutate it. Label sync may repair only checked-in label definitions through the closed `sync_labels` operation.
@@ -152,6 +152,7 @@ Every accepted production run records its run ID and URL, event, expected run he
 - Evidence job must succeed by downloading the same `adw-apply-result-1`.
 - Every JSON/patch sidecar digest must match exact bytes.
 - Every `result.json` must have `schemaVersion:1`, `status:"complete"`, `failure:null`, all operations `status:"complete"`, and only complete receipts.
+- Every `dispatch_repository` receipt must be backed by one exact first-attempt child run: `repository_dispatch` event, closed workflow path, operation digest as display title, exact App actor, trusted control head on `main`, and creation at or after the dispatch boundary. A duplicate is conflicting evidence, not success.
 - `snapshot.json.controlSha`, `decision.json.controlSha`, `verification.json.controlSha`, and `result.json.controlSha` must equal the run's trusted control SHA.
 - Decision/snapshot/verification/result digest links must match the corresponding canonical artifact bytes, as additionally enforced by the runtime and offline tests.
 
@@ -391,7 +392,7 @@ Expected: a stale `run_review.headSha`, stale `run_obligation.mergeSha`, mismatc
 
 - [x] **Step 4: Keep dispatch reads and writes bounded**
 
-Use only existing closed `github.mjs` methods. The only new writer permitted is fixed `POST /repos/bugabinga/smith/dispatches` with a closed event type and exact `client_payload`; it must add the operation digest, bind the App identity and current `main` head, validate entity/revision authority, and prove one matching workflow delivery before completing its receipt. Add no generic URL/method/GraphQL escape and no wrapper-side `gh`, `jq`, policy shell, or inline prompt.
+Use only existing closed `github.mjs` methods. The only new writer permitted is fixed `POST /repos/bugabinga/smith/dispatches` with a closed event type and exact `client_payload`; it must add the operation digest, bind the App identity and current `main` head, validate entity/revision authority, and prove one matching workflow delivery before completing its receipt. `dispatch_repository` uses only Contents write plus implicit Metadata read, never Actions or Checks write. After the 204 response, bounded polling binds event, workflow path, operation digest/display title, exact App actor, control head on `main`, created-after boundary, and run attempt 1. Delivery timeout is retryable; duplicate exact runs fail closed. Add no generic URL/method/GraphQL escape and no wrapper-side `gh`, `jq`, policy shell, or inline prompt.
 
 - [x] **Step 5: Run focused tests**
 
@@ -795,6 +796,28 @@ Record all five pre-hold run URLs and their zero-artifact/zero-write outcome, le
 - [x] **Step 4: Verify the corrected tree**
 
 Focused Node: 27/27 pass. Full Node: 233/233 pass. Exact actionlint v1.7.7 passes all four production ADW workflows. `yq` v4.53.3 parses all four, all three canonical/production wrapper pairs are byte-equal, canonical operational YAML totals 383 physical lines, and `git diff --check` passes.
+
+### Task 7C: Close production-data GitHub adapter blockers
+
+**Files:**
+
+- Modify: `adw/github.mjs`
+- Modify: `adw/permissions.json`
+- Modify: `adw/roles.mjs`
+- Modify: `adw/test/{apply,github,main,wrappers}.test.mjs`
+- Modify: `docs/super/plans/2026-08-01-adw-mjs-control-plane-phase-5-production-cutover-proof.md`
+
+- [x] **Step 1: Record RED from current production data**
+
+The initial focused run recorded 97 passes and 11 expected failures across 108 tests: dispatch still requested Actions/Checks write, performed one immediate run read, accepted incomplete run identity, rejected the 116550-byte `docs/SPEC.md`, and used unsafe 100-item pull/run pages. Read-only production probes measured 1,404,156-byte pull and 1,276,745-byte run pages, and current `createGitHub` snapshots failed for auditor, reconciler, and planner. Follow-up focused RED isolated malformed irrelevant timeline events, explicit collection maxima, and GitHub's second-resolution `created_at` boundary. No GitHub object was mutated.
+
+- [x] **Step 2: Implement the minimum closed correction**
+
+Give `dispatch_repository` only Contents write plus implicit Metadata read, keep rerun Actions/Checks write in a separate permission class, remove dispatch check markers, and poll twelve times at fixed five-second intervals. Match only one first-attempt run by event, closed workflow path, digest display title, App actor, `main` control head, and floored created-after boundary; make timeout retryable and duplicates stale. Keep only open issues, the newest 10 pulls, and newest 20 runs; use 10/20/20-item pull/run/comment pages, fail comments above 1000, and ignore irrelevant non-`unlabeled` timeline shapes. Raise only trusted UTF-8 text to the exact 262144-byte ceiling.
+
+- [x] **Step 3: Verify offline and read-only live behavior**
+
+Focused Node passed 109/109; full Node passed 238/238; `git diff --check` passed. Read-only `createGitHub` snapshots at control `491a42a3cc8848853e4ccd6cedc5695d9bd06e8c` succeeded for auditor (77,432 bytes, digest `a64aacc951e7fe303c7cc68c3dbd181d965c4eca39550e7852effc978a8ab926`), reconciler (220,840 bytes, digest `97159347d3648e7175a97f03d29f2f2ee166e79906c4e18dd2287f2ac8764cd6`), and planner (165,884 bytes, digest `72960ee37776fd9494bd41f50b659581d506f78610eb2073e8c0916b698e40b1`). No token value or GitHub mutation was emitted.
 
 ### Task 8: Push the owner-authored protected PR and record owner approval on its exact head
 
@@ -1308,9 +1331,9 @@ Expected: success; no provider job runs unless reconciliation positively dispatc
 
 - [ ] **Step 6: Capture reconciliation and any child runs**
 
-Run `capture_run "$RECONCILE_RUN" provider-free "$MERGE_SHA" "$MERGE_SHA"`. For each `dispatch_repository` receipt, find the exact `repository_dispatch` child run whose `display_title` is its operation digest, call `capture_run` with the intent's canonical provider lane, `"$MERGE_SHA"` as expected run head, and `"$MERGE_SHA"` as trusted control SHA, then require bot actor ID/login `306488075`/`agent-smith-bugabinga-adc[bot]`.
+Run `capture_run "$RECONCILE_RUN" provider-free "$MERGE_SHA" "$MERGE_SHA"`. For each `dispatch_repository` receipt, require exactly one child run with event `repository_dispatch`, the closed workflow path for its event type, operation digest as display title, actor ID/login `306488075`/`agent-smith-bugabinga-adc[bot]`, `main` at the trusted control head, creation at or after the parent receipt's created-after boundary, and run attempt 1. Call `capture_run` with the intent's canonical provider lane, `"$MERGE_SHA"` as expected run head, and `"$MERGE_SHA"` as trusted control SHA.
 
-Expected: parent receipt and every natural child receipt complete; no duplicate operation digest.
+Expected: parent receipt and every natural child receipt complete; duplicate exact runs fail closed and no duplicate operation digest is accepted.
 
 ### Task 13: Prove Codex triager and Claude owner steerer
 

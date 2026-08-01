@@ -84,8 +84,12 @@ const expectedPermissions = {
       permissions: { administration: "read", checks: "write", contents: "read", issues: "write", metadata: "read", pull_requests: "write" },
     },
     "apply-maintenance-reconcile": {
-      capabilities: ["actions:write", "checks:write", "contents:read", "issues:write", "pulls:read", "repository:read"],
-      permissions: { actions: "write", checks: "write", contents: "read", issues: "write", metadata: "read", pull_requests: "read" },
+      capabilities: ["actions:read", "checks:read", "contents:write", "issues:write", "pulls:read", "repository:read"],
+      permissions: { actions: "read", checks: "read", contents: "write", issues: "write", metadata: "read", pull_requests: "read" },
+    },
+    "apply-maintenance-rerun": {
+      capabilities: ["actions:write", "checks:write"],
+      permissions: { actions: "write", checks: "write" },
     },
     "apply-pull-code": {
       capabilities: ["contents:write", "issues:write", "pulls:write", "repository:read"],
@@ -464,6 +468,16 @@ test("Phase 5 plan records the pre-hold runs and keeps the first-push gate incom
   assert.match(plan, /zero artifacts and zero writes/i);
   assert.match(plan, /- \[ \] \*\*Step 2: Arm the hold before the first branch push\*\*/);
   assert.match(plan, /- \[x\] \*\*Step 3: Push the branch \(executed before the required hold\)\*\*/);
+});
+
+test("Phase 5 binds dispatch permission and child-run evidence to the corrected closed contract", async () => {
+  const plan = await readFile(phase5Plan, "utf8");
+  assert.match(plan, /`dispatch_repository` mints only `contents:write` plus implicit `metadata:read`/);
+  assert.match(plan, /bounded polling.*event.*workflow path.*operation digest.*App actor.*control head.*created-after.*run attempt 1/is);
+  assert.match(plan, /delivery timeout is retryable/i);
+  assert.match(plan, /duplicate exact runs fail closed/i);
+  const capture = plan.slice(plan.indexOf("- [ ] **Step 6: Capture reconciliation and any child runs**"), plan.indexOf("### Task 13:"));
+  for (const field of ["event", "workflow path", "display title", "actor", "control head", "created-after", "run attempt 1"]) assert.match(capture, new RegExp(field, "i"));
 });
 
 test("capture_run binds distinct expected run-head and control SHAs at every call", async () => {

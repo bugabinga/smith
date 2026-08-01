@@ -212,10 +212,12 @@ test("closed reads use exact gh argv and environment", async () => {
 
 test("paginated reads keep REST IDs stable across webhook and API payloads", async () => {
   let commentPage = 0;
+  const endpoints = [];
   const dualRepository = { ...repository, id: 42, node_id: "R_1", owner: { id: 7, node_id: "U_7", login: "bugabinga" } };
   const dualSender = { ...sender, node_id: "U_7" };
   const github = adapter(async request => {
     const endpoint = request.args.at(-1);
+    endpoints.push(endpoint);
     const reply = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
     assert.equal(request.args.includes("--paginate"), false);
     if (endpoint === "/repos/bugabinga/smith") return reply(dualRepository);
@@ -224,7 +226,7 @@ test("paginated reads keep REST IDs stable across webhook and API payloads", asy
     if (endpoint === "/repos/bugabinga/smith/issues/1") return reply({ id: 1, number: 1, state: "open", updated_at: "2026-07-28T00:00:00.000Z", user: { id: 7 }, title: "Issue", body: "Body", labels: [] });
     if (endpoint.startsWith("/repos/bugabinga/smith/issues/1/comments?")) {
       commentPage++;
-      return reply(commentPage === 1 ? Array.from({ length: 100 }, (_, id) => ({ id: id + 1, node_id: `IC_${id + 1}`, user: { id: 7, node_id: "U_7" }, created_at: "2026-07-28T00:00:00.000Z", body: id === 0 ? "please" : "c" })) : [{ id: 101, node_id: "IC_101", user: { id: 7, node_id: "U_7" }, created_at: "2026-07-28T00:00:00.000Z", body: "c" }]);
+      return reply(commentPage === 1 ? Array.from({ length: 20 }, (_, id) => ({ id: id + 1, node_id: `IC_${id + 1}`, user: { id: 7, node_id: "U_7" }, created_at: "2026-07-28T00:00:00.000Z", body: id === 0 ? "please" : "c" })) : [{ id: 21, node_id: "IC_21", user: { id: 7, node_id: "U_7" }, created_at: "2026-07-28T00:00:00.000Z", body: "c" }]);
     }
     if (endpoint.startsWith("/repos/bugabinga/smith/issues/1/timeline?")) return reply([]);
     if (endpoint === "/repos/bugabinga/smith/issues/1/parent") { const error = new AdwError("provider", "exit", { httpStatus: 404 }); throw error; }
@@ -233,26 +235,93 @@ test("paginated reads keep REST IDs stable across webhook and API payloads", asy
   });
   const event = normalizeEvent("issue_comment", { action: "created", repository: dualRepository, sender: dualSender, issue: { number: 1 }, comment: { id: 1, node_id: "IC_1", updated_at: "2026-07-28T00:00:00.000Z" } });
   const snapshot = await github.readRoleSnapshot(event, role("steerer"), { controlSha: "a".repeat(40), appId: appIdentity.appId });
-  assert.equal(snapshot.state.resources["issue:1:comments"].length, 101);
+  assert.equal(snapshot.state.resources["issue:1:comments"].length, 21);
   assert.equal(snapshot.state.ownerAuthenticated, true);
   assert.equal(commentPage, 2);
+  assert.deepEqual(endpoints.filter(value => value.includes("/issues/1/comments?")), [
+    "/repos/bugabinga/smith/issues/1/comments?per_page=20&page=1",
+    "/repos/bugabinga/smith/issues/1/comments?per_page=20&page=2",
+  ]);
 });
 
-test("workflow run pagination unwraps GitHub collection objects", async () => {
-  const sha = "b".repeat(40);
+test("comment pagination fails closed at the explicit 1000-item maximum", async () => {
+  let commentPage = 0;
   const github = adapter(async request => {
     const endpoint = request.args.at(-1);
+    const reply = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
+    if (endpoint === "/repos/bugabinga/smith") return reply(repository);
+    if (endpoint.includes("/contents/.claude/agents/steerer.md?ref=")) return reply({ encoding: "base64", content: Buffer.from("trusted charter").toString("base64"), sha: "c".repeat(40) });
+    if (endpoint.includes("/contents/adw/schemas/role-payloads/steering.schema.json?ref=")) return reply({ encoding: "base64", content: Buffer.from("{}").toString("base64"), sha: "d".repeat(40) });
+    if (endpoint === "/repos/bugabinga/smith/issues/1") return reply({ id: 1, number: 1, state: "open", updated_at: "2026-07-28T00:00:00.000Z", user: { id: 7 }, title: "Issue", body: "Body", labels: [] });
+    if (endpoint.startsWith("/repos/bugabinga/smith/issues/1/comments?")) {
+      commentPage++;
+      return reply(Array.from({ length: 20 }, (_, index) => ({ id: (commentPage - 1) * 20 + index + 1, user: { id: 7 }, created_at: "2026-07-28T00:00:00.000Z", body: "c" })));
+    }
+    throw new Error(`unexpected ${endpoint}`);
+  });
+  const event = normalizeEvent("issue_comment", { action: "created", repository, sender, issue: { number: 1 }, comment: { id: 1, updated_at: "2026-07-28T00:00:00.000Z" } });
+  await assert.rejects(
+    () => github.readRoleSnapshot(event, role("steerer"), { controlSha: "a".repeat(40), appId: appIdentity.appId }),
+    error => error?.code === "forge" && error.message === "overflow",
+  );
+  assert.equal(commentPage, 50);
+});
+
+test("workflow run pagination unwraps GitHub collection objects with production-safe pages", async () => {
+  const sha = "b".repeat(40);
+  const endpoints = [];
+  const github = adapter(async request => {
+    const endpoint = request.args.at(-1);
+    endpoints.push(endpoint);
     const reply = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
     if (endpoint === "/repos/bugabinga/smith") return reply({ id: 42, node_id: "R_1", owner: { id: 7, login: "bugabinga" }, name: "smith", default_branch: "main" });
     if (endpoint.includes("/contents/.claude/agents/adw-doctor.md?ref=")) return reply({ encoding: "base64", content: Buffer.from("trusted charter").toString("base64"), sha: "c".repeat(40) });
     if (endpoint.includes("/contents/adw/schemas/role-payloads/maintenance.schema.json?ref=")) return reply({ encoding: "base64", content: Buffer.from("{\"oneOf\":[]}").toString("base64"), sha: "d".repeat(40) });
-    if (endpoint.startsWith("/repos/bugabinga/smith/actions/runs?")) return reply({ workflow_runs: [{ id: 1, name: "ci", event: "push", status: "completed", conclusion: "success", head_sha: sha, run_attempt: 1 }] });
+    if (endpoint.startsWith("/repos/bugabinga/smith/actions/runs?")) return reply({ workflow_runs: Array.from({ length: 20 }, (_, index) => ({ id: index + 1, name: "ci", event: "push", status: "completed", conclusion: "success", head_sha: sha, run_attempt: 1 })) });
     if (endpoint.startsWith("/repos/bugabinga/smith/rulesets?")) return reply([]);
     throw new Error(`unexpected ${endpoint}`);
   });
   const event = normalizeEvent("schedule", { schedule: "0 * * * *", repository, sender });
   const snapshot = await github.readRoleSnapshot(event, role("adw-doctor"), { controlSha: "a".repeat(40), appId: appIdentity.appId });
+  assert.equal(snapshot.state.resources.runs.length, 20);
   assert.equal(snapshot.state.resources.runs[0].id, "1");
+  assert.deepEqual(endpoints.filter(value => value.includes("/actions/runs?")), [
+    "/repos/bugabinga/smith/actions/runs?per_page=20&page=1",
+  ]);
+});
+
+function plannerSnapshotAdapter(spec) {
+  return adapter(async request => {
+    const endpoint = request.args.at(-1);
+    const reply = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
+    if (endpoint === "/repos/bugabinga/smith") return reply(repository);
+    if (endpoint.includes("/contents/.claude/agents/planner.md?ref=")) return reply({ encoding: "base64", content: Buffer.from("planner charter").toString("base64"), sha: "c".repeat(40) });
+    if (endpoint.includes("/contents/adw/schemas/role-payloads/plan.schema.json?ref=")) return reply({ encoding: "base64", content: Buffer.from("{}").toString("base64"), sha: "d".repeat(40) });
+    if (endpoint.includes("/contents/docs/SPEC.md?ref=")) return reply({ encoding: "base64", content: Buffer.from(spec).toString("base64"), sha: "e".repeat(40) });
+    if (endpoint.startsWith("/repos/bugabinga/smith/issues?")) {
+      assert.equal(endpoint, "/repos/bugabinga/smith/issues?state=open&per_page=100&page=1");
+      return reply([]);
+    }
+    if (endpoint.startsWith("/repos/bugabinga/smith/milestones?state=all")) return reply([]);
+    throw new Error(`unexpected ${endpoint}`);
+  });
+}
+
+test("trusted text admits current SPEC and the exact 256 KiB boundary while rejecting one byte more", async () => {
+  const event = normalizeEvent("schedule", { schedule: "47 2 * * 1", repository, sender });
+  const currentSpec = await readFile(new URL("../../docs/SPEC.md", import.meta.url), "utf8");
+  assert.equal(Buffer.byteLength(currentSpec), 116550);
+  const snapshot = await plannerSnapshotAdapter(currentSpec).readRoleSnapshot(event, role("planner"), { controlSha: "a".repeat(40), appId: appIdentity.appId });
+  assert.equal(snapshot.state.resources["trusted:docs/SPEC.md"].data, currentSpec);
+
+  await assert.rejects(
+    () => plannerSnapshotAdapter("x".repeat(262144)).readRoleSnapshot(event, role("planner"), { controlSha: "a".repeat(40), appId: appIdentity.appId }),
+    error => error?.code === "forge" && error.message === "overflow",
+  );
+  await assert.rejects(
+    () => plannerSnapshotAdapter("x".repeat(262145)).readRoleSnapshot(event, role("planner"), { controlSha: "a".repeat(40), appId: appIdentity.appId }),
+    error => error?.code === "contract" && error.message === "trusted content is oversized",
+  );
 });
 
 test("live snapshot dispatches and normalizes the event entity", async () => {
@@ -383,13 +452,20 @@ test("list-derived merged pulls retain post-merge obligations", async () => {
     const reply = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
     if (request.args[1] === "graphql") return reply({ data: { repository: { pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false } } } } } });
     if (endpoint === "/repos/bugabinga/smith") return reply({ id: 42, owner: { id: 7, login: "bugabinga" }, name: "smith", default_branch: "main" });
-    if (endpoint.startsWith("/repos/bugabinga/smith/pulls?")) return reply([{ id: 2, number: 2, state: "closed", merged_at: "2026-07-28T00:00:00Z", merge_commit_sha: mergeSha, updated_at: "2026-07-28T00:00:00Z", head: { sha: headSha, repo: { full_name: "bugabinga/smith" } }, base: { ref: "main" }, title: "Merged", body: "", labels: [] }]);
-    if (endpoint.startsWith("/repos/bugabinga/smith/pulls/2/files?")) return reply([]);
-    if (endpoint.startsWith("/repos/bugabinga/smith/actions/runs?")) return reply({ workflow_runs: [] });
+    if (endpoint.startsWith("/repos/bugabinga/smith/pulls?")) {
+      assert.equal(endpoint, "/repos/bugabinga/smith/pulls?state=all&per_page=10&page=1");
+      return reply(Array.from({ length: 10 }, (_, index) => ({ id: index + 1, number: index + 1, state: "closed", merged_at: "2026-07-28T00:00:00Z", merge_commit_sha: mergeSha, updated_at: "2026-07-28T00:00:00Z", head: { sha: headSha, repo: { full_name: "bugabinga/smith" } }, base: { ref: "main" }, title: "Merged", body: "", labels: [] })));
+    }
+    if (/\/repos\/bugabinga\/smith\/pulls\/[1-9][0-9]*\/files\?/.test(endpoint)) return reply([]);
+    if (endpoint.startsWith("/repos/bugabinga/smith/actions/runs?")) {
+      assert.equal(endpoint, "/repos/bugabinga/smith/actions/runs?per_page=20&page=1");
+      return reply({ workflow_runs: [] });
+    }
     throw new Error(`unexpected ${endpoint}`);
   });
   const event = normalizeEvent("schedule", { schedule: "0 * * * *", repository, sender });
   const snapshot = await github.readDeterministicSnapshot(event, "jam-detector", { controlSha: "a".repeat(40), appId: appIdentity.appId });
+  assert.equal(snapshot.state.resources.pulls.length, 10);
   assert.equal(snapshot.state.resources.pulls[0].merged, true);
   assert.deepEqual(snapshot.state.resources.pulls[0].obligations.map(value => value.role), ["docs-writer"]);
 });
@@ -401,7 +477,8 @@ test("maintenance snapshots enrich open pulls with merge state and current check
     const endpoint = request.args.at(-1);
     const reply = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
     if (request.args[1] === "graphql") return reply({ data: { repository: { pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false } } } } } });
-    if (endpoint === "/repos/bugabinga/smith") return reply({ id: 42, owner: { id: 7, login: "bugabinga" }, name: "smith", default_branch: "main" });
+    if (endpoint === "/repos/bugabinga/smith") return reply({ id: 42, owner: { id: 7, login: "bugabinga" }, name: "smith", default_branch: "main", allow_auto_merge: true, allow_merge_commit: false, allow_rebase_merge: false, allow_squash_merge: true, delete_branch_on_merge: true });
+    if (endpoint.includes("/contents/.github/labels.yml?ref=") || endpoint.includes("/contents/.github/rulesets/main.json?ref=")) return reply({ encoding: "base64", content: Buffer.from("[]").toString("base64"), sha: "c".repeat(40) });
     if (endpoint.startsWith("/repos/bugabinga/smith/pulls?")) return reply([pull]);
     if (endpoint === "/repos/bugabinga/smith/pulls/2") return reply({ ...pull, mergeable_state: "blocked" });
     if (endpoint.startsWith("/repos/bugabinga/smith/pulls/2/files?")) return reply([]);
@@ -412,6 +489,13 @@ test("maintenance snapshots enrich open pulls with merge state and current check
       { id: 12, user: bot, created_at: "2026-07-28T00:00:02.000Z", body: `<!-- smith:review-evidence/v1 kind=security head=${headSha} conclusion=approve provider=claude authoritative=true artifact=${"3".repeat(64)} -->` },
       { id: 13, user: bot, created_at: "2026-07-28T00:00:03.000Z", body: reviewMarker("reviewer", "security", headSha, "4".repeat(64)) },
     ]);
+    if (endpoint.startsWith("/repos/bugabinga/smith/issues/2/timeline?")) return reply([
+      { node_id: "C_1", event: "committed" },
+      { event: "cross-referenced", actor: { id: 7 }, created_at: "2026-07-28T00:00:03.000Z" },
+      { id: 14, event: "unlabeled", actor: { id: 7 }, created_at: "2026-07-28T00:00:04.000Z", label: { name: "risk:high" } },
+    ]);
+    if (endpoint.startsWith("/repos/bugabinga/smith/labels?")) return reply([]);
+    if (endpoint.startsWith("/repos/bugabinga/smith/rulesets?")) return reply([]);
     if (endpoint.startsWith("/repos/bugabinga/smith/actions/runs?")) return reply({ workflow_runs: [] });
     throw new Error(`unexpected ${endpoint}`);
   });
@@ -420,6 +504,8 @@ test("maintenance snapshots enrich open pulls with merge state and current check
   assert.equal(snapshot.state.resources.pulls[0].mergeState, "blocked");
   assert.deepEqual(snapshot.state.resources.pulls[0].checks.map(value => value.name), ["check", "merge-gate"]);
   assert.deepEqual(snapshot.state.resources.pulls[0].evidence.map(value => value.kind), ["correctness", "security"]);
+  const audit = await github.readControlSnapshot(event, "auditor", { controlSha: "a".repeat(40), appId: appIdentity.appId });
+  assert.deepEqual(audit.state.resources.pulls[0].timeline, [{ id: "14", kind: "label_removed", actorId: "7", createdAt: "2026-07-28T00:00:04.000Z", label: "risk:high", headSha }]);
 });
 
 test("deterministic settings snapshot preserves full new rules and reports digest drift", async () => {
@@ -475,7 +561,7 @@ test("reconciliation derives reachable pioneer retry and hold states from bounde
     const reply = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
     if (endpoint === "/repos/bugabinga/smith") return reply({ id: 42, owner: { id: 7, login: "bugabinga" }, name: "smith", default_branch: "main" });
     if (endpoint.includes("/contents/.github/labels.yml?ref=")) return reply({ encoding: "base64", content: "", sha: "c".repeat(40) });
-    if (endpoint.startsWith("/repos/bugabinga/smith/issues?state=all")) return reply(issues);
+    if (endpoint.startsWith("/repos/bugabinga/smith/issues?state=open")) return reply(issues);
     if (endpoint.startsWith("/repos/bugabinga/smith/pulls?state=all")) return reply([]);
     if (endpoint.startsWith("/repos/bugabinga/smith/labels?")) return reply([]);
     if (endpoint.startsWith("/repos/bugabinga/smith/actions/runs?")) return reply({ workflow_runs: [] });

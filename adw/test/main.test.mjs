@@ -240,10 +240,13 @@ test("operational reconcile consumes only canonical snapshot/source and writes a
   assert.equal(decision.operations[0].clientPayload.role, "builder");
   assert.equal(decision.assessmentDigests.length, 0);
   const outputs = await readFile(githubOutput, "utf8");
-  assert.match(outputs, /^apply_class=actions:write\+checks:write$/m);
-  assert.match(outputs, /^apply_capabilities=\["actions:write","checks:write"\]$/m);
-  assert.match(outputs, /^apply_permissions=\{"actions":"write","checks":"write"\}$/m);
-  assert.match(outputs, /^permission_actions=write$/m);
+  assert.match(outputs, /^apply_class=contents:write\+repository:read$/m);
+  assert.match(outputs, /^apply_capabilities=\["contents:write","repository:read"\]$/m);
+  assert.match(outputs, /^apply_permissions=\{"contents":"write","metadata":"read"\}$/m);
+  assert.match(outputs, /^permission_actions=$/m);
+  assert.match(outputs, /^permission_checks=$/m);
+  assert.match(outputs, /^permission_contents=write$/m);
+  assert.match(outputs, /^permission_metadata=read$/m);
   assert.match(outputs, /^permission_issues=$/m);
 });
 
