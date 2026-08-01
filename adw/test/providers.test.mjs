@@ -41,10 +41,12 @@ test("process runner rejects unsafe requests", async () => {
 });
 
 test("process runner extracts HTTP status without retaining failure output", async () => {
-  await assert.rejects(
-    () => runProcess({ ...base, args: ["-e", "console.error('HTTP/2.0 404 Not Found');process.exit(1)"], input: "", captureHttpStatus: true }),
-    error => error?.details?.httpStatus === 404 && !JSON.stringify(error).includes("Not Found"),
-  );
+  for (const stderr of ["HTTP/2.0 404 Not Found", "gh: Not Found (HTTP 404)"]) {
+    await assert.rejects(
+      () => runProcess({ ...base, args: ["-e", `console.error(${JSON.stringify(stderr)});process.exit(1)`], input: "", captureHttpStatus: true }),
+      error => error?.details?.httpStatus === 404 && !JSON.stringify(error).includes("Not Found") && !JSON.stringify(error).includes("gh:"),
+    );
+  }
 });
 
 test("process runner classifies exit without leaking stderr", async () => {

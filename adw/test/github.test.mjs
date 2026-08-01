@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { AdwError, digestJson } from "../core.mjs";
+import { AdwError, digestJson, planReconciliation } from "../core.mjs";
 import { createDefaultGitHub, createGitHub, deterministicSnapshotPlan, normalizeEvent, roleSnapshotPlan } from "../github.mjs";
-import { role } from "../roles.mjs";
+import { deriveDeterministicArtifacts, role } from "../roles.mjs";
 
 const repository = {
   id: 42,
@@ -31,6 +31,7 @@ test("GitHub events normalize into forge-neutral records", async () => {
     assert.equal(value.entityId, item.entity, item.name);
     assert.deepEqual(value.repository, { id: "42", owner: "bugabinga", name: "smith", defaultBranch: "main" });
     assert.deepEqual(value.actor, { id: "7", login: "bugabinga", type: "User" });
+    if (item.name === "pull_request") assert.equal(value.revisionHints.headBranch, "feature/task-5");
   }
 });
 
@@ -222,6 +223,41 @@ test("role snapshots protect rename sources and instruction surfaces", async () 
   );
 });
 
+test("reviser snapshot binds the exact same-repository pull head branch ref", async () => {
+  const sha = "b".repeat(40);
+  let refSha = sha;
+  let headRepository = "bugabinga/smith";
+  const calls = [];
+  const github = adapter(async request => {
+    const endpoint = request.args.at(-1);
+    calls.push(endpoint);
+    const reply = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
+    if (request.args[1] === "graphql") return reply({ data: { repository: { pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false } } } } } });
+    if (endpoint === "/repos/bugabinga/smith") return reply({ id: 42, owner: { id: 7, login: "bugabinga" }, name: "smith", default_branch: "main" });
+    if (endpoint.includes("/contents/.claude/agents/builder.md?ref=")) return reply({ encoding: "base64", content: Buffer.from("charter").toString("base64"), sha: "c".repeat(40) });
+    if (endpoint.includes("/contents/adw/schemas/role-payloads/change.schema.json?ref=")) return reply({ encoding: "base64", content: Buffer.from("{\"oneOf\":[]}").toString("base64"), sha: "d".repeat(40) });
+    if (endpoint === "/repos/bugabinga/smith/pulls/2") return reply({ id: 2, number: 2, state: "open", updated_at: "2026-07-28T00:00:00.000Z", head: { sha, ref: "feature/task-5", repo: { full_name: headRepository } }, base: { ref: "main" }, title: "Revise", body: "", labels: [] });
+    if (endpoint.startsWith("/repos/bugabinga/smith/pulls/2/files?")) return reply([{ filename: "smith/src/lib.rs", status: "modified", additions: 1, deletions: 1, patch: "@@" }]);
+    if (endpoint.startsWith("/repos/bugabinga/smith/pulls/2/reviews?")) return reply([]);
+    if (endpoint.startsWith("/repos/bugabinga/smith/issues/2/comments?")) return reply([]);
+    if (endpoint.startsWith(`/repos/bugabinga/smith/commits/${sha}/check-runs?`)) return reply({ check_runs: [] });
+    if (endpoint === "/repos/bugabinga/smith/git/ref/heads/feature/task-5") return reply({ object: { sha: refSha } });
+    throw new Error(`unexpected ${endpoint}`);
+  });
+  const event = normalizeEvent("pull_request", { action: "synchronize", repository, sender, pull_request: { number: 2, head: { sha, ref: "feature/task-5", repo: { full_name: "bugabinga/smith" } }, base: { ref: "main" }, updated_at: "2026-07-28T00:00:00.000Z" } });
+  const snapshot = await github.readRoleSnapshot(event, role("reviser"), { controlSha: "a".repeat(40), appId: appIdentity.appId });
+  assert.equal(snapshot.state.headBranch, "feature/task-5");
+  assert.equal(snapshot.state.headRepository, "bugabinga/smith");
+  assert.deepEqual(snapshot.revisions.find(value => value.resource === "ref:feature/task-5"), { resource: "ref:feature/task-5", kind: "git_ref", token: sha });
+  refSha = "e".repeat(40);
+  await assert.rejects(() => github.readRoleSnapshot(event, role("reviser"), { controlSha: "a".repeat(40), appId: appIdentity.appId }), error => error?.code === "forge" && error.message === "stale");
+  refSha = sha;
+  headRepository = "fork/smith";
+  const readsBeforeFork = calls.filter(value => value.includes("/git/ref/heads/")).length;
+  await assert.rejects(() => github.readRoleSnapshot({ ...event, revisionHints: { ...event.revisionHints, headRepository: "fork/smith" } }, role("reviser"), { controlSha: "a".repeat(40), appId: appIdentity.appId }), error => error?.code === "forge" && error.message === "stale");
+  assert.equal(calls.filter(value => value.includes("/git/ref/heads/")).length, readsBeforeFork);
+});
+
 test("builder snapshot binds patch base and untrusted PR metadata", async () => {
   const baseSha = "e".repeat(40);
   let issueNumber = 1;
@@ -297,9 +333,10 @@ test("maintenance snapshots enrich open pulls with merge state and current check
   assert.deepEqual(snapshot.state.resources.pulls[0].evidence.map(value => value.kind), ["correctness", "security"]);
 });
 
-test("deterministic settings snapshot binds expected and full live rulesets", async () => {
-  const ruleset = { id: 1, name: "main", enforcement: "active", target: "branch", source_type: "Repository", conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } }, rules: [{ type: "required_status_checks", parameters: { strict_required_status_checks_policy: false, required_status_checks: [{ context: "check" }, { context: "merge-gate" }] } }], bypass_actors: [] };
-  const expected = Object.fromEntries(Object.entries(ruleset).filter(([key]) => !["id", "source_type"].includes(key)));
+test("deterministic settings snapshot preserves full new rules and reports digest drift", async () => {
+  const fixture = JSON.parse(await readFile(new URL("./fixtures/rulesets/full.json", import.meta.url)));
+  const ruleset = structuredClone(fixture.live);
+  const expected = fixture.expected;
   const github = adapter(async request => {
     const endpoint = request.args.at(-1);
     const reply = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
@@ -314,15 +351,56 @@ test("deterministic settings snapshot binds expected and full live rulesets", as
   assert.equal(snapshot.routing.role, "settings-auditor");
   assert.equal(snapshot.state.resources["trusted:.github/rulesets/main.json"].trust, "trusted");
   assert.equal(snapshot.state.resources.rulesets[0].enforcement, "active");
-  assert.equal(snapshot.state.resources.rulesets[0].rules[0].parameters.strict_required_status_checks_policy, false);
+  const normalized = snapshot.state.resources.rulesets[0];
+  assert.deepEqual(normalized, expected);
+  assert.equal(normalized.rules.some(rule => rule.type === "unknown_owner_policy" && rule.parameters.mode === "enforce"), true);
+  assert.deepEqual(normalized.rules.find(rule => rule.type === "required_status_checks").parameters.required_status_checks, [{ context: "check" }, { context: "merge-gate", integration_id: 15368 }]);
+  assert.deepEqual(deriveDeterministicArtifacts("settings-auditor", snapshot), [{ drifts: [] }]);
   const replay = await github.readDeterministicSnapshot(event, "settings-auditor", { controlSha: "a".repeat(40), appId: appIdentity.appId });
   assert.deepEqual(replay, snapshot);
   assert.equal(digestJson(replay), digestJson(snapshot));
   ruleset.id = 2;
   await assert.rejects(() => github.readDeterministicSnapshot(event, "settings-auditor", { controlSha: "a".repeat(40), appId: appIdentity.appId }), error => error?.code === "contract");
   ruleset.id = 1;
-  ruleset.rules = [{ type: "unknown_owner_policy" }];
-  await assert.rejects(() => github.readDeterministicSnapshot(event, "settings-auditor", { controlSha: "a".repeat(40), appId: appIdentity.appId }), error => error?.code === "contract");
+  ruleset.rules.find(rule => rule.type === "unknown_owner_policy").parameters.mode = "monitor";
+  const drifted = await github.readDeterministicSnapshot(event, "settings-auditor", { controlSha: "a".repeat(40), appId: appIdentity.appId });
+  const audit = deriveDeterministicArtifacts("settings-auditor", drifted)[0].drifts[0];
+  assert.match(audit.body, /Wanted digest: [0-9a-f]{64}/);
+  assert.match(audit.body, /Live digest: [0-9a-f]{64}/);
+});
+
+test("reconciliation derives reachable pioneer retry and hold states from bounded strict markers", async () => {
+  const firstRevision = "2026-07-28T00:00:00.000Z";
+  const secondRevision = "2026-07-28T00:00:01.000Z";
+  const artifactDigest = "f".repeat(64);
+  const issues = [
+    { id: 1, number: 1, state: "open", updated_at: firstRevision, user: { id: 7 }, title: "Needs proof", body: "Claim", labels: [{ name: "needs:prototype" }] },
+    { id: 2, number: 2, state: "open", updated_at: secondRevision, user: { id: 7 }, title: "Disproved", body: "Claim", labels: [] },
+  ];
+  const sourceRevision = issue => digestJson({ body: issue.body, labels: issue.labels.map(label => label.name).sort(), milestoneId: null, state: issue.state, title: issue.title });
+  const firstSource = sourceRevision(issues[0]);
+  const secondSource = sourceRevision(issues[1]);
+  const marker = `<!-- smith:pioneer/v1 issue=2 source=${secondSource} verdict=disproved artifact=${artifactDigest} -->`;
+  const github = adapter(async request => {
+    const endpoint = request.args.at(-1);
+    const reply = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
+    if (endpoint === "/repos/bugabinga/smith") return reply({ id: 42, owner: { id: 7, login: "bugabinga" }, name: "smith", default_branch: "main" });
+    if (endpoint.includes("/contents/.github/labels.yml?ref=")) return reply({ encoding: "base64", content: "", sha: "c".repeat(40) });
+    if (endpoint.startsWith("/repos/bugabinga/smith/issues?state=all")) return reply(issues);
+    if (endpoint.startsWith("/repos/bugabinga/smith/pulls?state=all")) return reply([]);
+    if (endpoint.startsWith("/repos/bugabinga/smith/labels?")) return reply([]);
+    if (endpoint.startsWith("/repos/bugabinga/smith/actions/runs?")) return reply({ workflow_runs: [] });
+    if (endpoint.startsWith("/repos/bugabinga/smith/issues/1/comments?")) return reply([]);
+    if (endpoint.startsWith("/repos/bugabinga/smith/issues/2/comments?")) return reply([{ id: 20, user: bot, created_at: secondRevision, body: marker }]);
+    throw new Error(`unexpected ${endpoint}`);
+  });
+  const event = normalizeEvent("schedule", { schedule: "0 * * * *", repository, sender });
+  const snapshot = await github.readControlSnapshot(event, "reconciler", { controlSha: "a".repeat(40), appId: appIdentity.appId });
+  assert.deepEqual(snapshot.state.reconciliation.pioneers, [
+    { issueId: "1", sourceRevision: firstSource, verdict: "missing", artifactDigest: null, closingPrId: null },
+    { issueId: "2", sourceRevision: secondSource, verdict: "disproved", artifactDigest, closingPrId: null },
+  ]);
+  assert.deepEqual(planReconciliation({ snapshot, ...snapshot.state.reconciliation }).map(intent => intent.kind).sort(), ["hold_spec", "retry_pioneer"]);
 });
 
 test("role snapshot rejects repository drift and untrusted App identity", async () => {

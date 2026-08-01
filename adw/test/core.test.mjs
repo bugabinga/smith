@@ -508,13 +508,18 @@ test("legacy markers import only exact App-authored authority", async () => {
   assert.equal(records.find(value => value.kind === "finalization").value.artifactDigest, null);
 });
 
-test("legacy marker ordering is deterministic and conflicts fail closed", () => {
+test("marker ordering uses canonical timestamps then numeric REST comment IDs", () => {
   const marker = "<!-- smith:jam/v1 entity=pr:9 head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb status=open artifact=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd -->";
   const base = markerComment({ body: marker });
   const newer = { ...base, id: "2", createdAt: "2026-07-28T10:01:00.000Z", body: marker.replace("status=open", "status=cleared") };
   assert.equal(parseLegacyMarkers({ comments: [base, newer], trust })[0].value.status, "cleared");
+
+  const riskOpen = `<!-- smith:risk/v1 head=${headSha} finding=${"e".repeat(64)} status=open created=2026-07-28T10:00:00.000Z cleared=- -->`;
+  const riskCleared = riskOpen.replace("status=open", "status=cleared").replace("cleared=-", "cleared=2026-07-28T10:00:01.000Z");
+  const tied = [markerComment({ id: "9", body: riskOpen }), markerComment({ id: "10", body: riskCleared })];
+  assert.equal(parseLegacyMarkers({ comments: tied, trust })[0].value.status, "cleared");
   assert.throws(
-    () => parseLegacyMarkers({ comments: [base, { ...newer, createdAt: base.createdAt }], trust }),
+    () => parseLegacyMarkers({ comments: [base, { ...base, body: marker.replace("status=open", "status=cleared") }], trust }),
     error => error?.code === "contract",
   );
 });
@@ -538,7 +543,7 @@ test("reconciliation emits only missing normalized obligations", () => {
 });
 
 test("reconciliation derives reviews, holds, pioneer retries, and imported finalization", () => {
-  const finalization = markerComment({ id: "m1", body: `<!-- smith:merge-finalized/v1 pr=2 merge=${"c".repeat(40)} role=docs-writer status=complete artifact=${"d".repeat(64)} -->` });
+  const finalization = markerComment({ id: "11", body: `<!-- smith:merge-finalized/v1 pr=2 merge=${"c".repeat(40)} role=docs-writer status=complete artifact=${"d".repeat(64)} -->` });
   const request = {
     snapshot: { ...snapshot, state: { currentRevisions: { "issue:1": "r2", "issue:3": "r3" } } },
     routes: [reconcileRoute()],

@@ -10,17 +10,19 @@ import {
   canonicalBytes,
   digestBytes,
   digestJson,
+  mapReconciliationIntents,
   planReconciliation,
   reduceAssessments,
   validateAssessment,
   validateAssessmentArtifact,
   validateDecision,
+  validateOperation,
   validateSnapshot,
   validateVerification,
 } from "./core.mjs";
-import { createDefaultGitHub, createDryRunGitHub, normalizeEvent } from "./github.mjs";
+import { createApplyReceipt, createDefaultGitHub, createDryRunGitHub, normalizeEvent, operationCapabilities } from "./github.mjs";
 import { installProvider, invokeProvider, PROVIDER_PINS } from "./providers.mjs";
-import { reduceRoleArtifact, role, validateRolePayload } from "./roles.mjs";
+import { controlAuthority, planAudit, reduceControlArtifact, reduceRoleArtifact, reduceStatusArtifact, resolveAuthority, role, validateRolePayload } from "./roles.mjs";
 import { createDefaultVcs, verifyPatch } from "./vcs.mjs";
 
 const MAX_INPUT = 262_144;
@@ -392,6 +394,12 @@ function validateManifest(value) {
   return value;
 }
 
+function authorityRequiredPaths(authority) {
+  if (Array.isArray(authority?.trustedPaths)) return [...authority.trustedPaths];
+  if (typeof authority?.charter === "string" && typeof authority?.payloadSchema === "string") return [authority.charter, authority.payloadSchema];
+  inputError("control authority is invalid");
+}
+
 function sourceTargetShas(snapshot, rolePolicy) {
   if (rolePolicy.patch === null) return [];
   if (rolePolicy.name === "reviser") {
@@ -408,9 +416,10 @@ function sourceTargetShas(snapshot, rolePolicy) {
 
 async function writeSourceArtifact({ directory, controlCheckout, targetCheckout, rolePolicy, controlSha, snapshot, controlAdapter, bundleAdapter }) {
   const allowedShas = sourceTargetShas(snapshot, rolePolicy);
+  const requiredPaths = authorityRequiredPaths(rolePolicy);
   const output = await outputDirectory(directory);
   if (typeof controlAdapter !== "function" || typeof bundleAdapter !== "function") inputError("source adapters are unavailable");
-  const controlResult = await controlAdapter({ repository: controlCheckout, controlSha, requiredPaths: [rolePolicy.charter, rolePolicy.payloadSchema], hardening: HARDENING });
+  const controlResult = await controlAdapter({ repository: controlCheckout, controlSha, requiredPaths, hardening: HARDENING });
   exactObject(controlResult, ["paths"], "control result");
   if (!Array.isArray(controlResult.paths) || controlResult.paths.length === 0) inputError("control result is invalid");
   const controlPaths = [];
@@ -420,8 +429,8 @@ async function writeSourceArtifact({ directory, controlCheckout, targetCheckout,
     await createArtifactFile(output, `control/${item.path}`, item.bytes, 0o400);
     controlPaths.push({ path: item.path, tree: item.tree, blob: item.blob, digest: digestBytes(item.bytes), size: item.bytes.length });
   }
-  if (!controlPaths.some(item => item.path === "adw/main.mjs") || !controlPaths.some(item => item.path === rolePolicy.charter) || !controlPaths.some(item => item.path === rolePolicy.payloadSchema)) inputError("control result is incomplete");
-  for (const path of [rolePolicy.charter, rolePolicy.payloadSchema]) {
+  if (!controlPaths.some(item => item.path === "adw/main.mjs") || requiredPaths.some(path => !controlPaths.some(item => item.path === path))) inputError("control result is incomplete");
+  for (const path of requiredPaths) {
     const item = controlResult.paths.find(candidate => candidate.path === path);
     const trusted = snapshot.state?.resources?.[`trusted:${path}`];
     const revision = snapshot.revisions.find(candidate => candidate.resource === `trusted:${path}` && candidate.kind === "control");
@@ -465,7 +474,7 @@ async function readSourceArtifact(directory, rolePolicy, snapshot) {
     const bytes = await readRegular(join(directory, "control", item.path), MAX_BUNDLE);
     if (bytes.length !== item.size || digestBytes(bytes) !== item.digest) inputError("source control digest does not match");
   }
-  if (!expectedPaths.includes("adw/main.mjs") || (rolePolicy && (!expectedPaths.includes(rolePolicy.charter) || !expectedPaths.includes(rolePolicy.payloadSchema)))) inputError("source control files are missing");
+  if (!expectedPaths.includes("adw/main.mjs") || (rolePolicy && authorityRequiredPaths(rolePolicy).some(path => !expectedPaths.includes(path)))) inputError("source control files are missing");
   await assertDirectoryIdentity(directoryClaim);
   return Object.freeze({ manifest, bundle, controlDirectory: join(directory, "control") });
 }
@@ -503,6 +512,248 @@ async function source(argv, stdin, readFixture) {
   }
 }
 
+function canonicalAuthority(snapshot) {
+  const authority = resolveAuthority(snapshot.routing.role);
+  const expected = authority.kind === "control" || !Object.hasOwn(authority, "mode")
+    ? { role: authority.name, mode: "single", primary: null }
+    : { role: authority.name, mode: authority.mode, primary: authority.primary };
+  if (digestJson(snapshot.routing) !== digestJson(expected)) inputError("snapshot role authority is not canonical");
+  return authority;
+}
+
+function sortedCapabilities(values, name = "capabilities") {
+  if (!Array.isArray(values) || values.some(value => typeof value !== "string" || !/^[a-z]+:[a-z]+$/.test(value))) inputError(`${name} are invalid`);
+  const result = [...new Set(values)].sort();
+  if (result.length !== values.length || result.some((value, index) => value !== values[index])) inputError(`${name} are not canonical`);
+  return Object.freeze(result);
+}
+
+function validateAuthorityCapabilities(authority, capabilities) {
+  if (authority.kind !== "control") return;
+  const declared = new Set(authority.capabilities);
+  for (const capability of capabilities) {
+    const writeEquivalent = capability.endsWith(":read") ? capability.replace(/:read$/, ":write") : null;
+    if (!declared.has(capability) && (writeEquivalent === null || !declared.has(writeEquivalent))) inputError("operation exceeds control authority capabilities");
+  }
+}
+
+function applyCapabilities(decision, snapshot) {
+  const github = new Set();
+  let vcs = false;
+  for (const operation of decision.operations) {
+    if (operation.type === "create_branch") { vcs = true; continue; }
+    for (const capability of operationCapabilities(operation, snapshot)) github.add(capability);
+  }
+  if (decision.kind === "patch") vcs = true;
+  const githubOperationCapabilities = Object.freeze([...github].sort());
+  const capabilities = Object.freeze([...new Set([...githubOperationCapabilities, ...(vcs ? ["contents:write"] : [])])].sort());
+  return Object.freeze({ github: capabilities, all: capabilities });
+}
+
+function applyReceipt(raw, projection, operationDigest) {
+  if (!raw || Array.isArray(raw) || Object.getPrototypeOf(raw) !== Object.prototype) inputError("apply subreceipt is invalid");
+  const vcs = projection === "vcs_head";
+  const allowed = vcs
+    ? ["operationDigest", "projection", "status", "beforeRevision", "preparedRevision", "afterRevision", "headSha"]
+    : ["operationDigest", "status", "beforeRevision", "preparedRevision", "afterRevision"];
+  exactObject(raw, allowed, "apply subreceipt");
+  if (raw.operationDigest !== operationDigest || raw.status !== "complete" || ![raw.beforeRevision, raw.preparedRevision, raw.afterRevision].every(value => typeof value === "string" && DIGEST.test(value))) inputError("apply subreceipt binding is invalid");
+  if (vcs && (raw.projection !== "vcs_head" || typeof raw.headSha !== "string" || !SHA.test(raw.headSha))) inputError("VCS subreceipt is invalid");
+  return vcs
+    ? Object.freeze({ operationDigest, projection, status: "complete", beforeRevision: raw.beforeRevision, preparedRevision: raw.preparedRevision, afterRevision: raw.afterRevision, headSha: raw.headSha })
+    : Object.freeze({ operationDigest, projection, status: "complete", beforeRevision: raw.beforeRevision, preparedRevision: raw.preparedRevision, afterRevision: raw.afterRevision });
+}
+
+function expectedProjections(decision, index) {
+  const operation = decision.operations[index];
+  if (decision.kind === "patch" && ["create_branch", "create_pr", "update_pr"].includes(operation.type)) {
+    return operation.type === "create_branch" ? ["vcs_head"] : ["vcs_head", "github_metadata"];
+  }
+  return ["github_state"];
+}
+
+const APPLY_FAILURE_MESSAGES = Object.freeze({
+  contract: "artifact contract failed", input: "artifact contract failed", role: "role authority failed",
+  stale: "precondition changed", provider: "provider unavailable", forge: "forge operation failed",
+  verification: "verification failed", terminal: "terminal operation failed",
+});
+
+export function validateApplyResult(value, { sourceDigest, snapshot, decision, verification, authority, capabilities } = {}) {
+  exactObject(value, ["schemaVersion", "controlSha", "sourceDigest", "snapshotDigest", "decisionDigest", "verificationDigest", "authority", "status", "operations", "failure"], "apply result");
+  if (value.schemaVersion !== 1 || !SHA.test(value.controlSha) || !DIGEST.test(value.sourceDigest) || !DIGEST.test(value.snapshotDigest) || !DIGEST.test(value.decisionDigest) || !DIGEST.test(value.verificationDigest) || !new Set(["complete", "partial", "failed"]).has(value.status)) inputError("apply result is invalid");
+  exactObject(value.authority, ["name", "digest", "capabilities"], "apply authority");
+  if (typeof value.authority.name !== "string" || !DIGEST.test(value.authority.digest)) inputError("apply authority is invalid");
+  sortedCapabilities(value.authority.capabilities, "apply capabilities");
+  if (!Array.isArray(value.operations) || value.operations.length > 100) inputError("apply result operations are invalid");
+  let failed = 0;
+  let pending = false;
+  for (const [index, entry] of value.operations.entries()) {
+    exactObject(entry, ["index", "operationDigest", "status", "receipts"], "apply result operation");
+    if (entry.index !== index || !DIGEST.test(entry.operationDigest) || !new Set(["complete", "failed", "pending"]).has(entry.status) || !Array.isArray(entry.receipts)) inputError("apply result operation is invalid");
+    const projections = new Set();
+    for (const receipt of entry.receipts) {
+      if (!receipt || typeof receipt.projection !== "string" || projections.has(receipt.projection)) inputError("apply result receipt order is invalid");
+      projections.add(receipt.projection);
+      const raw = receipt.projection === "vcs_head" ? receipt : Object.fromEntries(Object.entries(receipt).filter(([key]) => key !== "projection"));
+      applyReceipt(raw, receipt.projection, entry.operationDigest);
+    }
+    if (entry.status === "failed") failed++;
+    if (entry.status === "pending") pending = true;
+  }
+  if (value.failure === null) {
+    if (value.status !== "complete" || failed !== 0 || pending) inputError("apply result completion is invalid");
+  } else {
+    exactObject(value.failure, ["operationIndex", "projection", "code", "message"], "apply failure");
+    if (!Number.isSafeInteger(value.failure.operationIndex) || value.failure.operationIndex < 0 || value.failure.operationIndex >= value.operations.length || !new Set(["vcs_head", "github_metadata", "github_state"]).has(value.failure.projection) || !Object.hasOwn(APPLY_FAILURE_MESSAGES, value.failure.code) || value.failure.message !== APPLY_FAILURE_MESSAGES[value.failure.code] || failed !== 1 || value.operations[value.failure.operationIndex].status !== "failed" || value.status === "complete") inputError("apply failure is invalid");
+  }
+  if (snapshot !== undefined) {
+    const trustedSnapshot = validateSnapshot(snapshot);
+    const canonicalDecision = validateDecision(decision);
+    const proof = validateVerification(verification);
+    if (value.controlSha !== trustedSnapshot.controlSha || value.sourceDigest !== sourceDigest || value.snapshotDigest !== digestJson(trustedSnapshot) || value.decisionDigest !== digestJson(canonicalDecision) || value.verificationDigest !== digestJson(proof) || value.authority.name !== authority.name || value.authority.digest !== digestJson(authority) || digestJson(value.authority.capabilities) !== digestJson(capabilities) || value.operations.length !== canonicalDecision.operations.length) inputError("apply result authority does not match");
+    const githubReceipts = [];
+    let githubGap = false;
+    let statusGap = false;
+    for (const [index, entry] of value.operations.entries()) {
+      if (entry.operationDigest !== digestJson(canonicalDecision.operations[index])) inputError("apply result operation does not match");
+      const expected = expectedProjections(canonicalDecision, index);
+      if (entry.receipts.some((receipt, receiptIndex) => receipt.projection !== expected[receiptIndex]) || entry.receipts.length > expected.length || (entry.status === "complete" && entry.receipts.length !== expected.length) || (entry.status === "pending" && entry.receipts.length !== 0)) inputError("apply result projections do not match");
+      const vcsReceipt = entry.receipts.find(receipt => receipt.projection === "vcs_head");
+      if (vcsReceipt && (vcsReceipt.beforeRevision !== proof.preconditionDigest || vcsReceipt.preparedRevision !== vcsReceipt.afterRevision)) inputError("VCS apply receipt does not match");
+      const forgeReceipt = entry.receipts.find(receipt => receipt.projection === "github_metadata" || receipt.projection === "github_state");
+      if (forgeReceipt) {
+        if (githubGap) inputError("apply result GitHub receipts are not a prefix");
+        githubReceipts.push(githubReceipt(forgeReceipt));
+      } else if (canonicalDecision.operations[index].type !== "create_branch") githubGap = true;
+      if (entry.status === "complete") {
+        if (statusGap) inputError("apply result completion is not a prefix");
+      } else statusGap = true;
+    }
+    if (!canonicalDecision.operations.some(operation => operation.type === "create_branch")) createApplyReceipt({ decision: canonicalDecision, snapshot: trustedSnapshot, verification: proof, operations: githubReceipts });
+  }
+  return Object.freeze(structuredClone(value));
+}
+
+function githubReceipt(receipt) {
+  const { projection, ...raw } = receipt;
+  if (projection !== "github_metadata" && projection !== "github_state") inputError("GitHub subreceipt is invalid");
+  return raw;
+}
+
+function sanitizedFailure(error, operationIndex, projection) {
+  const code = error instanceof AdwError && new Set(["contract", "input", "role", "stale", "provider", "forge", "verification", "terminal"]).has(error.code) ? error.code : "forge";
+  const message = APPLY_FAILURE_MESSAGES[code];
+  return Object.freeze({ operationIndex, projection, code, message });
+}
+
+function applyResultBase({ sourceDigest, snapshot, decision, verification, authority, capabilities, previousReceipt }) {
+  const operations = decision.operations.map((operation, index) => ({ index, operationDigest: digestJson(operation), status: "pending", receipts: [] }));
+  if (previousReceipt !== null) {
+    const previous = validateApplyResult(previousReceipt, { sourceDigest, snapshot, decision, verification, authority, capabilities });
+    for (const [index, entry] of previous.operations.entries()) {
+      operations[index].receipts = [...entry.receipts];
+      operations[index].status = entry.status === "complete" ? "complete" : "pending";
+    }
+  }
+  return operations;
+}
+
+function finishApplyResult({ sourceDigest, snapshot, decision, verification, authority, capabilities, operations, failure = null }) {
+  if (failure === null) for (const entry of operations) entry.status = "complete";
+  else {
+    for (const entry of operations) {
+      const expected = expectedProjections(decision, entry.index);
+      if (entry.index < failure.operationIndex && entry.receipts.length === expected.length) entry.status = "complete";
+      else if (entry.index === failure.operationIndex) entry.status = "failed";
+      else entry.status = "pending";
+    }
+  }
+  const completedReceipts = operations.reduce((total, entry) => total + entry.receipts.length, 0);
+  return validateApplyResult({
+    schemaVersion: 1,
+    controlSha: snapshot.controlSha,
+    sourceDigest,
+    snapshotDigest: digestJson(snapshot),
+    decisionDigest: digestJson(decision),
+    verificationDigest: digestJson(verification),
+    authority: { name: authority.name, digest: digestJson(authority), capabilities },
+    status: failure === null ? "complete" : completedReceipts > 0 ? "partial" : "failed",
+    operations,
+    failure,
+  }, { sourceDigest, snapshot, decision, verification, authority, capabilities });
+}
+
+export async function composeApply({ sourceDigest, snapshot, decision, verification, patchBytes, previousReceipt = null, github, vcs = null, vcsRequest = null }) {
+  const trustedSnapshot = validateSnapshot(snapshot);
+  const canonicalDecision = validateDecision(decision);
+  const proof = validateVerification(verification);
+  const authority = canonicalAuthority(trustedSnapshot);
+  if (canonicalDecision.controlSha !== trustedSnapshot.controlSha || canonicalDecision.snapshotDigest !== digestJson(trustedSnapshot) || proof.controlSha !== trustedSnapshot.controlSha || proof.decisionDigest !== digestJson(canonicalDecision) || proof.preconditionDigest !== digestJson(trustedSnapshot.revisions) || proof.kind !== canonicalDecision.kind) inputError("apply artifact binding is invalid");
+  for (const operation of canonicalDecision.operations) validateOperation(operation, authority);
+  if ((canonicalDecision.patch === null) !== (patchBytes === undefined) || (proof.patch === null) !== (patchBytes === undefined) || (patchBytes !== undefined && (!Buffer.isBuffer(patchBytes) || canonicalDecision.patch.digest !== digestBytes(patchBytes) || digestJson(canonicalDecision.patch) !== digestJson(proof.patch)))) inputError("apply patch binding is invalid");
+  if (!DIGEST.test(sourceDigest)) inputError("apply source digest is invalid");
+  const boundCapabilities = applyCapabilities(canonicalDecision, trustedSnapshot);
+  validateAuthorityCapabilities(authority, boundCapabilities.all);
+  const operations = applyResultBase({ sourceDigest, snapshot: trustedSnapshot, decision: canonicalDecision, verification: proof, authority, capabilities: boundCapabilities.all, previousReceipt });
+  const patchEntries = canonicalDecision.operations.map((operation, index) => ({ operation, index })).filter(({ operation }) => ["create_branch", "create_pr", "update_pr"].includes(operation.type));
+  if (canonicalDecision.kind === "patch" && patchEntries.length !== 1) inputError("patch decision projection is invalid");
+  if (canonicalDecision.kind === "state" && patchEntries.some(({ operation }) => operation.type === "create_branch")) inputError("state decision has a VCS projection");
+
+  let vcsProjection = null;
+  if (canonicalDecision.kind === "patch") {
+    const carrier = patchEntries[0];
+    try {
+      if (!vcs || typeof vcs.applyVerifiedPatch !== "function" || !vcsRequest) inputError("VCS writer is unavailable");
+      const raw = await vcs.applyVerifiedPatch({ ...vcsRequest, snapshot: trustedSnapshot, decision: canonicalDecision, verification: proof, patchBytes, operation: carrier.operation, operationIndex: carrier.index });
+      const receipt = applyReceipt(raw, "vcs_head", digestJson(carrier.operation));
+      vcsProjection = Object.freeze({ operationDigest: receipt.operationDigest, headSha: receipt.headSha });
+      operations[carrier.index].receipts = [receipt, ...operations[carrier.index].receipts.filter(value => value.projection !== "vcs_head")];
+    } catch (error) {
+      const failure = sanitizedFailure(error, carrier.index, "vcs_head");
+      return finishApplyResult({ sourceDigest, snapshot: trustedSnapshot, decision: canonicalDecision, verification: proof, authority, capabilities: boundCapabilities.all, operations, failure });
+    }
+  }
+
+  const githubIndexes = canonicalDecision.operations.map((operation, index) => ({ operation, index })).filter(({ operation }) => operation.type !== "create_branch");
+  if (githubIndexes.length !== canonicalDecision.operations.length) {
+    if (githubIndexes.length !== 0) inputError("mixed VCS-only decisions are unsupported");
+    return finishApplyResult({ sourceDigest, snapshot: trustedSnapshot, decision: canonicalDecision, verification: proof, authority, capabilities: boundCapabilities.all, operations });
+  }
+  if (!github || typeof github.apply !== "function") inputError("GitHub writer is unavailable");
+  const prior = [];
+  for (let index = 0; index < operations.length; index++) {
+    const receipt = operations[index].receipts.find(value => value.projection === "github_metadata" || value.projection === "github_state");
+    if (!receipt) break;
+    prior.push(githubReceipt(receipt));
+  }
+  const previous = prior.length === 0 ? null : { decisionDigest: proof.decisionDigest, verificationDigest: digestJson(proof), operations: prior };
+  try {
+    const vcsProjections = vcsProjection === null || canonicalDecision.operations[patchEntries[0].index].type === "create_branch" ? [] : [vcsProjection];
+    const receipt = await github.apply({ decision: canonicalDecision, snapshot: trustedSnapshot, verification: proof, previousReceipt: previous, capabilities: boundCapabilities.github, vcsProjections });
+    if (!receipt || receipt.decisionDigest !== proof.decisionDigest || receipt.verificationDigest !== digestJson(proof) || !Array.isArray(receipt.operations) || receipt.operations.length !== canonicalDecision.operations.length) inputError("GitHub receipt binding is invalid");
+    for (const [index, raw] of receipt.operations.entries()) {
+      const projection = canonicalDecision.kind === "patch" && patchEntries[0].index === index ? "github_metadata" : "github_state";
+      const normalized = applyReceipt(raw, projection, digestJson(canonicalDecision.operations[index]));
+      operations[index].receipts = [...operations[index].receipts.filter(value => value.projection === "vcs_head"), normalized];
+    }
+    return finishApplyResult({ sourceDigest, snapshot: trustedSnapshot, decision: canonicalDecision, verification: proof, authority, capabilities: boundCapabilities.all, operations });
+  } catch (error) {
+    const partial = error?.details?.partialReceipt;
+    if (partial && partial.decisionDigest === proof.decisionDigest && partial.verificationDigest === digestJson(proof) && Array.isArray(partial.operations)) {
+      for (const [index, raw] of partial.operations.entries()) {
+        if (index >= canonicalDecision.operations.length) break;
+        const projection = canonicalDecision.kind === "patch" && patchEntries[0].index === index ? "github_metadata" : "github_state";
+        const normalized = applyReceipt(raw, projection, digestJson(canonicalDecision.operations[index]));
+        operations[index].receipts = [...operations[index].receipts.filter(value => value.projection === "vcs_head"), normalized];
+      }
+    }
+    const index = Math.min(partial?.operations?.length ?? prior.length, canonicalDecision.operations.length - 1);
+    const projection = canonicalDecision.kind === "patch" && patchEntries[0]?.index === index ? "github_metadata" : "github_state";
+    const failure = sanitizedFailure(error, Math.max(0, index), projection);
+    return finishApplyResult({ sourceDigest, snapshot: trustedSnapshot, decision: canonicalDecision, verification: proof, authority, capabilities: boundCapabilities.all, operations, failure });
+  }
+}
+
 async function prepareCommand(env, adapters) {
   const controlCheckout = environmentPath(env, "ADW_CONTROL_CHECKOUT");
   const targetCheckout = environmentPath(env, "ADW_TARGET_CHECKOUT");
@@ -515,7 +766,7 @@ async function prepareCommand(env, adapters) {
   const controlSha = environmentId(env, "ADW_CONTROL_SHA", SHA);
   const appId = environmentId(env, "ADW_APP_ID");
   await separated([sourceDirectory, snapshotDirectory, eventPath, controlCheckout, targetCheckout]);
-  const rolePolicy = role(roleName);
+  const rolePolicy = resolveAuthority(roleName);
   const active = adapters ?? {};
   const vcs = active.vcs ?? createDefaultVcs(environmentPath(env, "ADW_GIT_PATH"));
   if (typeof vcs.head !== "function" || typeof vcs.readControl !== "function" || typeof vcs.createBundle !== "function") inputError("prepare adapters are unavailable");
@@ -528,7 +779,10 @@ async function prepareCommand(env, adapters) {
   const githubFactory = active.githubFactory ?? createDefaultGitHub;
   const github = githubFactory(repository);
   if (!github || typeof github.readRoleSnapshot !== "function") inputError("snapshot adapter is unavailable");
-  const snapshot = validateSnapshot(await github.readRoleSnapshot(event, rolePolicy, { controlSha, appId }));
+  const reader = rolePolicy.kind === "control" && typeof github.readControlSnapshot === "function"
+    ? (normalizedEvent, policy, options) => github.readControlSnapshot(normalizedEvent, policy.name, options)
+    : (normalizedEvent, policy, options) => github.readRoleSnapshot(normalizedEvent, policy, options);
+  const snapshot = validateSnapshot(await reader(event, rolePolicy, { controlSha, appId }));
   if (snapshot.controlSha !== controlSha || snapshot.routing.role !== roleName || snapshot.routing.mode !== rolePolicy.mode || snapshot.routing.primary !== rolePolicy.primary) inputError("snapshot policy binding is invalid");
   if (`${snapshot.repository.owner}/${snapshot.repository.name}` !== repository || snapshot.repository.id !== event.repository.id) inputError("snapshot repository binding is invalid");
   await writeTransportArtifact("snapshot", snapshotDirectory, snapshot);
@@ -688,7 +942,13 @@ async function reduceCommand(env, executablePath) {
   }
   const assessments = records.map(record => record.patchBytes === undefined ? record.value : { assessment: record.value, patchBytes: record.patchBytes });
   const reduction = reduceAssessments({ snapshot, rolePolicy, assessments });
-  if (reduction.status !== "artifact") return reduction;
+  if (reduction.status !== "artifact") {
+    if (reduction.status === "terminal") {
+      const decision = reduceStatusArtifact({ snapshot, rolePolicy, reduction, assessments });
+      await writeTransportArtifact("decision", decisionDirectory, decision);
+    }
+    return reduction;
+  }
   const decision = reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessments });
   let patchBytes;
   if (decision.patch) {
@@ -697,6 +957,37 @@ async function reduceCommand(env, executablePath) {
     if (!Buffer.isBuffer(patchBytes)) inputError("selected patch sidecar is missing");
   }
   await writeTransportArtifact("decision", decisionDirectory, decision, patchBytes);
+  return decision;
+}
+
+function reconciliationRequest(snapshot) {
+  const value = snapshot.state?.reconciliation;
+  if (!value || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype) inputError("reconciliation snapshot state is missing");
+  exactObject(value, ["routes", "pulls", "labelSync", "comments", "trust", "reviews", "pioneers", "holds"], "reconciliation snapshot state");
+  return { snapshot, ...value };
+}
+
+async function controlDecisionCommand(name, env, executablePath) {
+  const sourceDirectory = environmentPath(env, "ADW_SOURCE_ARTIFACT");
+  await requireTransportExecutable(executablePath, sourceDirectory);
+  const snapshotDirectory = environmentPath(env, "ADW_SNAPSHOT_ARTIFACT");
+  const decisionDirectory = environmentPath(env, "ADW_DECISION_ARTIFACT");
+  const controlSha = environmentId(env, "ADW_CONTROL_SHA", SHA);
+  await separated([sourceDirectory, snapshotDirectory, decisionDirectory]);
+  const snapshot = (await readTransportArtifact("snapshot", snapshotDirectory)).value;
+  const authority = controlAuthority(name);
+  if (snapshot.routing.role !== authority.name || snapshot.routing.mode !== "single" || snapshot.routing.primary !== null || snapshot.controlSha !== controlSha) inputError(`${name} authority binding is invalid`);
+  const source = await readSourceArtifact(sourceDirectory, authority, snapshot);
+  if (source.manifest.controlSha !== controlSha || !canonicalBytes(source.manifest.repository).equals(canonicalBytes(snapshot.repository))) inputError("control or repository binding is invalid");
+  let decision;
+  if (name === "reconciler") {
+    const intents = planReconciliation(reconciliationRequest(snapshot));
+    const operations = mapReconciliationIntents({ snapshot, intents });
+    decision = reduceControlArtifact({ name, snapshot, operations });
+  } else if (name === "auditor") {
+    decision = planAudit(snapshot);
+  } else inputError("control decision command is unsupported");
+  await writeTransportArtifact("decision", decisionDirectory, decision);
   return decision;
 }
 
@@ -712,7 +1003,7 @@ async function verifyCommand(env, adapters, executablePath) {
   const controlSha = environmentId(env, "ADW_CONTROL_SHA", SHA);
   await separated([sourceDirectory, snapshotDirectory, decisionDirectory, verificationDirectory, targetDirectory, temporaryDirectory, gitPath]);
   const snapshot = (await readTransportArtifact("snapshot", snapshotDirectory)).value;
-  const rolePolicy = role(snapshot.routing.role);
+  const rolePolicy = resolveAuthority(snapshot.routing.role);
   const source = await readSourceArtifact(sourceDirectory, rolePolicy, snapshot);
   const decisionRecord = await readTransportArtifact("decision", decisionDirectory);
   const decision = decisionRecord.value;
@@ -750,13 +1041,142 @@ async function verifyCommand(env, adapters, executablePath) {
   return verification;
 }
 
+async function dryRunCommand(env, adapters, executablePath) {
+  const sourceDirectory = environmentPath(env, "ADW_SOURCE_ARTIFACT");
+  await requireTransportExecutable(executablePath, sourceDirectory);
+  const snapshotDirectory = environmentPath(env, "ADW_SNAPSHOT_ARTIFACT");
+  const decisionDirectory = environmentPath(env, "ADW_DECISION_ARTIFACT");
+  const verificationDirectory = environmentPath(env, "ADW_VERIFICATION_ARTIFACT");
+  const output = environmentPath(env, "ADW_DRY_RUN_ARTIFACT");
+  const repositoryName = environmentId(env, "ADW_REPOSITORY", /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
+  const controlSha = environmentId(env, "ADW_CONTROL_SHA", SHA);
+  await separated([sourceDirectory, snapshotDirectory, decisionDirectory, verificationDirectory, output]);
+  const snapshot = (await readTransportArtifact("snapshot", snapshotDirectory)).value;
+  const authority = canonicalAuthority(snapshot);
+  const source = await readSourceArtifact(sourceDirectory, authority, snapshot);
+  const decisionRecord = await readTransportArtifact("decision", decisionDirectory);
+  const verificationRecord = await readTransportArtifact("verification", verificationDirectory);
+  const decision = decisionRecord.value;
+  const verification = verificationRecord.value;
+  if (snapshot.controlSha !== controlSha || source.manifest.controlSha !== controlSha || decision.controlSha !== controlSha || verification.controlSha !== controlSha || `${snapshot.repository.owner}/${snapshot.repository.name}` !== repositoryName || !canonicalBytes(source.manifest.repository).equals(canonicalBytes(snapshot.repository)) || decision.snapshotDigest !== digestJson(snapshot) || verification.decisionDigest !== digestJson(decision) || verification.preconditionDigest !== digestJson(snapshot.revisions)) inputError("dry-run artifact binding is invalid");
+  if ((decisionRecord.patchBytes === undefined) !== (verificationRecord.patchBytes === undefined) || (decisionRecord.patchBytes && !decisionRecord.patchBytes.equals(verificationRecord.patchBytes))) inputError("dry-run patch artifacts do not match");
+  for (const operation of decision.operations) validateOperation(operation, authority);
+  const githubFactory = adapters?.githubFactory ?? createDefaultGitHub;
+  const github = adapters?.github ?? githubFactory(repositoryName);
+  if (!github || typeof github.recordApply !== "function") inputError("dry-run record writer is unavailable");
+  const patchCarrier = decision.kind === "patch" ? decision.operations.findIndex(operation => ["create_branch", "create_pr", "update_pr"].includes(operation.type)) : -1;
+  if (decision.kind === "patch" && patchCarrier < 0) inputError("dry-run patch projection is invalid");
+  let vcsReceipt = null;
+  if (patchCarrier >= 0) {
+    const targetDirectory = environmentPath(env, "ADW_TARGET_DIRECTORY");
+    const temporaryDirectory = environmentPath(env, "ADW_TEMPORARY_DIRECTORY");
+    const gitPath = environmentPath(env, "ADW_GIT_PATH");
+    await separated([sourceDirectory, snapshotDirectory, decisionDirectory, verificationDirectory, output, targetDirectory, temporaryDirectory, gitPath]);
+    const vcs = adapters?.vcs ?? createDefaultVcs(gitPath);
+    await materializeTarget(vcs, source, targetDirectory);
+    if (typeof vcs?.projectVerifiedPatch !== "function") inputError("VCS read-only projection is unavailable");
+    const projectionAuthority = adapters?.vcsAuthority ?? (typeof github.vcsProjectionAuthority === "function" ? github.vcsProjectionAuthority({ capabilities: applyCapabilities(decision, snapshot).all }) : null);
+    if (!projectionAuthority || typeof projectionAuthority.expectedRemote !== "string") inputError("VCS projection authority is unavailable");
+    const raw = await vcs.projectVerifiedPatch({
+      repository: targetDirectory, temporaryDirectory, expectedRemote: projectionAuthority.expectedRemote,
+      signing: adapters?.signing ?? { mode: "unsigned" }, snapshot, decision, verification,
+      patchBytes: decisionRecord.patchBytes, operation: decision.operations[patchCarrier], operationIndex: patchCarrier,
+    });
+    vcsReceipt = applyReceipt(raw, "vcs_head", digestJson(decision.operations[patchCarrier]));
+  }
+  const vcsProjections = vcsReceipt === null || decision.operations[patchCarrier].type === "create_branch" ? [] : [{ operationDigest: vcsReceipt.operationDigest, headSha: vcsReceipt.headSha }];
+  const recorded = await github.recordApply({ decision, snapshot, verification, previousReceipt: null, vcsProjections });
+  if (!recorded || !Array.isArray(recorded.intents) || recorded.receipt?.decisionDigest !== verification.decisionDigest || recorded.receipt?.verificationDigest !== digestJson(verification)) inputError("dry-run record result is invalid");
+  const githubIntents = new Set(recorded.intents.map(digestJson));
+  const intents = [];
+  if (patchCarrier >= 0) intents.push({ projection: "vcs_head", operationIndex: patchCarrier, operationDigest: digestJson(decision.operations[patchCarrier]), operation: decision.operations[patchCarrier], vcsReceipt });
+  for (const [operationIndex, operation] of decision.operations.entries()) {
+    if (operation.type === "create_branch" || !githubIntents.has(digestJson(operation))) continue;
+    intents.push({ projection: operationIndex === patchCarrier ? "github_metadata" : "github_state", operationIndex, operationDigest: digestJson(operation), operation });
+  }
+  const capabilities = applyCapabilities(decision, snapshot);
+  validateAuthorityCapabilities(authority, capabilities.all);
+  const result = Object.freeze({
+    schemaVersion: 1, controlSha, sourceDigest: digestJson(source.manifest), snapshotDigest: digestJson(snapshot),
+    decisionDigest: digestJson(decision), verificationDigest: digestJson(verification), preconditionDigest: verification.preconditionDigest,
+    authority: Object.freeze({ name: authority.name, digest: digestJson(authority), capabilities: capabilities.all }),
+    operations: Object.freeze(decision.operations.map((operation, index) => Object.freeze({ index, operationDigest: digestJson(operation), operation }))),
+    intents: Object.freeze(intents),
+  });
+  const bytes = canonicalBytes(result);
+  await writeDryRunArtifact(output, bytes, digestBytes(bytes), sourceDirectory);
+  return result;
+}
+
+async function applyCommand(env, adapters, executablePath) {
+  const sourceDirectory = environmentPath(env, "ADW_SOURCE_ARTIFACT");
+  await requireTransportExecutable(executablePath, sourceDirectory);
+  const snapshotDirectory = environmentPath(env, "ADW_SNAPSHOT_ARTIFACT");
+  const decisionDirectory = environmentPath(env, "ADW_DECISION_ARTIFACT");
+  const verificationDirectory = environmentPath(env, "ADW_VERIFICATION_ARTIFACT");
+  const resultDirectory = environmentPath(env, "ADW_APPLY_RESULT_ARTIFACT");
+  const previousDirectory = env.ADW_PREVIOUS_APPLY_RESULT_ARTIFACT === undefined ? null : environmentPath(env, "ADW_PREVIOUS_APPLY_RESULT_ARTIFACT");
+  const repositoryName = environmentId(env, "ADW_REPOSITORY", /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
+  const controlSha = environmentId(env, "ADW_CONTROL_SHA", SHA);
+  const paths = [sourceDirectory, snapshotDirectory, decisionDirectory, verificationDirectory, resultDirectory, ...(previousDirectory ? [previousDirectory] : [])];
+  await separated(paths);
+
+  const snapshot = (await readTransportArtifact("snapshot", snapshotDirectory)).value;
+  const authority = canonicalAuthority(snapshot);
+  const source = await readSourceArtifact(sourceDirectory, authority, snapshot);
+  const decisionRecord = await readTransportArtifact("decision", decisionDirectory);
+  const verificationRecord = await readTransportArtifact("verification", verificationDirectory);
+  const decision = decisionRecord.value;
+  const verification = verificationRecord.value;
+  if (snapshot.controlSha !== controlSha || decision.controlSha !== controlSha || verification.controlSha !== controlSha || source.manifest.controlSha !== controlSha || `${snapshot.repository.owner}/${snapshot.repository.name}` !== repositoryName || !canonicalBytes(source.manifest.repository).equals(canonicalBytes(snapshot.repository))) inputError("apply control or repository binding is invalid");
+  if (decision.snapshotDigest !== digestJson(snapshot) || verification.decisionDigest !== digestJson(decision) || verification.preconditionDigest !== digestJson(snapshot.revisions)) inputError("apply digest binding is invalid");
+  const patchBytes = decisionRecord.patchBytes;
+  if ((patchBytes === undefined) !== (verificationRecord.patchBytes === undefined) || (patchBytes && !patchBytes.equals(verificationRecord.patchBytes))) inputError("apply patch artifacts do not match");
+  const capabilities = applyCapabilities(decision, snapshot);
+  const previousReceipt = previousDirectory === null ? null : (await readTransportArtifact("applyResult", previousDirectory)).value;
+  const githubFactory = adapters?.githubFactory ?? createDefaultGitHub;
+  const github = adapters?.github ?? githubFactory(repositoryName);
+  if (!github || typeof github.apply !== "function") inputError("GitHub writer is unavailable");
+  const declared = github.operationTokenCapabilities?.() ?? adapters?.githubCapabilities ?? null;
+  if (declared !== null && digestJson(sortedCapabilities(declared, "declared GitHub capabilities")) !== digestJson(capabilities.github)) inputError("operation-scoped GitHub capabilities do not match decision");
+  if (declared === null && !adapters) inputError("operation-scoped GitHub capabilities are missing");
+
+  let vcs = null;
+  let vcsRequest = null;
+  if (decision.kind === "patch") {
+    const targetDirectory = environmentPath(env, "ADW_TARGET_DIRECTORY");
+    const temporaryDirectory = environmentPath(env, "ADW_TEMPORARY_DIRECTORY");
+    const gitPath = environmentPath(env, "ADW_GIT_PATH");
+    await separated([...paths, targetDirectory, temporaryDirectory, gitPath]);
+    vcs = adapters?.vcs ?? createDefaultVcs(gitPath);
+    await materializeTarget(vcs, source, targetDirectory);
+    const projectionAuthority = adapters?.vcsAuthority ?? (typeof github.vcsProjectionAuthority === "function" ? github.vcsProjectionAuthority({ capabilities: capabilities.all }) : null);
+    if (!projectionAuthority || typeof projectionAuthority.expectedRemote !== "string" || typeof projectionAuthority.credential !== "function") inputError("VCS projection authority is unavailable");
+    vcsRequest = {
+      repository: targetDirectory,
+      temporaryDirectory,
+      expectedRemote: projectionAuthority.expectedRemote,
+      credential: adapters?.vcsCredential ?? projectionAuthority.credential,
+      signing: adapters?.signing ?? { mode: "unsigned" },
+    };
+  }
+  const sourceDigest = digestJson(source.manifest);
+  const result = await composeApply({ sourceDigest, snapshot, decision, verification, patchBytes, previousReceipt, github, vcs, vcsRequest });
+  await writeTransportArtifact("applyResult", resultDirectory, result);
+  if (result.failure !== null) throw new AdwError(result.failure.code, result.failure.message, { partialReceipt: result });
+  return result;
+}
+
 const REDUCE_ENV = new Set(["ADW_SOURCE_ARTIFACT", "ADW_SNAPSHOT_ARTIFACT", "ADW_PRIMARY_ASSESSMENT_ARTIFACT", "ADW_FALLBACK_ASSESSMENT_ARTIFACT", "ADW_DECISION_ARTIFACT", "ADW_CONTROL_SHA"]);
 
 function operationalCommand(argv, env) {
   if (argv[0] === "prepare") return argv.length === 1 ? "prepare" : "invalid";
   if (argv[0] === "assess") return argv.length === 3 && argv[1] === "--provider" ? "assess" : "invalid";
   if (argv[0] === "verify") return argv.length === 1 ? "verify" : "invalid";
+  if (argv[0] === "apply") return argv.length === 1 ? "apply" : "invalid";
+  if (argv[0] === "dry-run" && Object.hasOwn(env ?? {}, "ADW_SOURCE_ARTIFACT")) return argv.length === 1 ? "dry-run" : "invalid";
   if (argv[0] === "reduce" && Object.keys(env ?? {}).some(name => REDUCE_ENV.has(name))) return argv.length === 1 ? "reduce" : "invalid";
+  if ((argv[0] === "reconcile" || argv[0] === "audit") && Object.hasOwn(env ?? {}, "ADW_SOURCE_ARTIFACT")) return argv.length === 1 ? argv[0] : "invalid";
   return null;
 }
 
@@ -772,6 +1192,10 @@ export async function run({ argv, env = {}, stdin, stdout, stderr, readFixture, 
       if (operation === "prepare") operationalResult = await prepareCommand(env, adapters);
       else if (operation === "assess") operationalResult = await assessCommand(argv[2], env, adapters, executablePath);
       else if (operation === "reduce") operationalResult = await reduceCommand(env, executablePath);
+      else if (operation === "reconcile") operationalResult = await controlDecisionCommand("reconciler", env, executablePath);
+      else if (operation === "audit") operationalResult = await controlDecisionCommand("auditor", env, executablePath);
+      else if (operation === "apply") operationalResult = await applyCommand(env, adapters, executablePath);
+      else if (operation === "dry-run") operationalResult = await dryRunCommand(env, adapters, executablePath);
       else operationalResult = await verifyCommand(env, adapters, executablePath);
       stdout.write(`${canonicalBytes(operationalResult).toString()}\n`);
       if (operationalResult?.status === "fallback") return 4;

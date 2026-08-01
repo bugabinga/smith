@@ -100,7 +100,7 @@ export async function runProcess(request, spawnImpl = spawn) {
       request.signal?.removeEventListener("abort", abort);
       const details = { code, signal };
       if (request.captureHttpStatus) {
-        const matches = `${Buffer.concat(stdout)}\n${Buffer.concat(stderr)}`.matchAll(/HTTP\/\S+\s+(\d{3})/g);
+        const matches = `${Buffer.concat(stdout)}\n${Buffer.concat(stderr)}`.matchAll(/HTTP(?:\/\S+)?\s+(\d{3})(?=\D|$)/g);
         for (const match of matches) details.httpStatus = Number(match[1]);
       }
       if (failure) {

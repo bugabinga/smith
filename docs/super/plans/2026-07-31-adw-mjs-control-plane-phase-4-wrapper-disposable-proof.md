@@ -143,15 +143,15 @@ adw-source/{control/**,target.bundle,manifest.json,manifest.sha256}
 - Modify: `adw/test/scenarios.test.mjs`
 - Modify: `adw/test/apply.test.mjs`
 
-- [ ] Write failing end-to-end injected scenarios for `apply`, `reconcile`, and `audit`: issue route, patch PR, review/security evidence, product-check rerun, merge arm, post-merge obligation, settings drift, labels, green-but-blocked jam, stale retry, and partial retry.
-- [ ] `apply` requires exact decision+verification+optional patch artifacts, canonical role policy, matching control SHA/digests, and an operation-scoped GitHub capability set. Canonical order is VCS-owned verified branch/update first, GitHub PR metadata second, then remaining state operations; it emits `adw-apply-result` receipts.
-- [ ] `reconcile` is credentialed for bounded reads only: it imports legacy markers, derives and emits a canonical decision artifact through `planReconciliation`. A dedicated tokenless `verify` job always emits the required state verification; a separate `apply` job with the minted operation-scoped token performs writes under `adw-write`. Reconciliation itself never verifies or writes.
-- [ ] Review-comment and check jobs run prepare → reconcile → verify → serialized apply. They cannot invoke `assess` or emit a provider routing artifact.
-- [ ] Replace caller-supplied dry-run intents with the real final pipeline: fixture assessments may drive reduce/verify, while live provider-free mode runs prepare plus deterministic reconcile/audit and records the exact apply intents. Add tests that dry-run uses identical snapshot, decision, verification, precondition, operation-order, and stale checks as write mode, with the writer replaced only by `record`.
-- [ ] `audit` performs full-fidelity settings/label/ruleset comparison and emits only no-op or drift-report operations.
-- [ ] Terminal/fallback states publish sanitized checks/comments through canonical operations; malformed transport never reaches apply.
-- [ ] Run `node --test adw/test/{main,apply,scenarios}.test.mjs`; expect PASS.
-- [ ] Commit: `Compose the complete ADW write path`.
+- [x] Write failing end-to-end injected scenarios for `apply`, `reconcile`, and `audit`: issue route, patch PR, review/security evidence, product-check rerun, merge arm, post-merge obligation, settings drift, labels, green-but-blocked jam, stale retry, and partial retry.
+- [x] `apply` requires exact decision+verification+optional patch artifacts, canonical role policy, matching control SHA/digests, and an operation-scoped GitHub capability set. Canonical order is VCS-owned verified branch/update first, GitHub PR metadata second, then remaining state operations; it emits `adw-apply-result` receipts.
+- [x] `reconcile` is credentialed for bounded reads only: it imports legacy markers, derives and emits a canonical decision artifact through `planReconciliation`. A dedicated tokenless `verify` job always emits the required state verification; a separate `apply` job with the minted operation-scoped token performs writes under `adw-write`. Reconciliation itself never verifies or writes.
+- [x] Review-comment and check jobs run prepare → reconcile → verify → serialized apply. They cannot invoke `assess` or emit a provider routing artifact.
+- [x] Replace caller-supplied dry-run intents with the real final pipeline: fixture assessments may drive reduce/verify, while live provider-free mode runs prepare plus deterministic reconcile/audit and records the exact apply intents. Add tests that dry-run uses identical snapshot, decision, verification, precondition, operation-order, and stale checks as write mode, with the writer replaced only by `record`.
+- [x] `audit` performs full-fidelity settings/label/ruleset comparison plus deterministic jam/merge-gate reduction and emits only canonical no-op, drift-report, label-sync, jam-comment, check, or merge-arm operations.
+- [x] Terminal/fallback states publish sanitized checks/comments through canonical operations; malformed transport never reaches apply.
+- [x] Run `node --test adw/test/{main,apply,scenarios}.test.mjs`; expect PASS.
+- [x] Commit: `Compose the complete ADW write path`.
 
 ### Task 6: Inactive exact wrapper candidates
 

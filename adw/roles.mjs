@@ -1,5 +1,5 @@
 import {
-  AdwError, canonicalBytes, digestJson, holdReasons, reduceAssessments, validateAssessment,
+  AdwError, canonicalBytes, digestJson, holdReasons, planMergeGate, reduceAssessments, validateAssessment,
   validateDecision, validateOperation, validatePatchManifest, validateSnapshot,
 } from "./core.mjs";
 
@@ -165,6 +165,25 @@ const DETERMINISTIC_ROLES = deepFreeze({
   "jam-detector": { name: "jam-detector", payloadFamily: "jam", capabilities: ["actions:read", "issues:write", "pulls:read"], operations: ["comment", "noop", "terminal"] },
   "label-sync": { name: "label-sync", payloadFamily: "labels", capabilities: ["issues:write"], operations: ["noop", "sync_labels", "terminal"] },
   "settings-auditor": { name: "settings-auditor", payloadFamily: "drift", capabilities: ["settings:read"], operations: ["noop", "report_drift", "terminal"] },
+});
+
+// These authorities are control-plane reducers, not provider roles. Keeping them
+// separate prevents reconciliation/audit writes from widening any model's role.
+const CONTROL_AUTHORITIES = deepFreeze({
+  reconciler: {
+    name: "reconciler", kind: "control", mode: "single", primary: null, patch: null, capabilities: ["actions:write", "checks:write", "contents:read", "issues:write", "pulls:read", "repository:read"],
+    operations: ["add_label", "dispatch_workflow", "noop", "sync_labels"],
+    snapshot: { fields: ["issues", "labels", "pulls", "routes", "runs"], maxBytes: 262144 },
+    trustedPaths: [".github/labels.yml"],
+    eventKinds: ["check", "pull_request_review_comment", "push", "schedule", "workflow"],
+  },
+  auditor: {
+    name: "auditor", kind: "control", mode: "single", primary: null, patch: null, capabilities: ["checks:read", "checks:write", "contents:read", "issues:read", "issues:write", "pulls:read", "pulls:write", "repository:read", "settings:read"],
+    operations: ["arm_auto_merge", "comment", "noop", "publish_check", "report_drift", "sync_labels"],
+    snapshot: { fields: ["config", "labels", "pulls", "settings"], maxBytes: 262144 },
+    trustedPaths: [".github/labels.yml", ".github/rulesets/main.json"],
+    eventKinds: ["dispatch", "push", "schedule"],
+  },
 });
 
 function payloadFail(message) {
@@ -335,7 +354,14 @@ export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessment
   const state = reductionState(snapshot);
   if (rolePolicy.name === "reviser" && assessment.patch && (!Array.isArray(state.changedPaths) || assessment.patch.files.some(file => !state.changedPaths.includes(file.path)))) payloadFail("revision patch escapes current pull paths");
   if (state.entityId !== snapshot.event.entityId) payloadFail("snapshot entity does not match event");
-  const marker = operationMarker(reduction.selected[0]);
+  const pioneerRevision = (snapshot.revisions.find(revision => revision.resource === `issue:${state.entityId}`) ?? (snapshot.revisions.length === 1 ? snapshot.revisions[0] : null))?.token;
+  const marker = rolePolicy.payloadFamily === "pioneer"
+    ? (() => {
+        if (typeof pioneerRevision !== "string" || pioneerRevision.length === 0 || /[\s\0]/.test(pioneerRevision)) payloadFail("pioneer source revision is invalid");
+        const artifact = payload.verdict === "inconclusive" ? "-" : reduction.selected[0];
+        return `<!-- smith:pioneer/v1 issue=${state.entityId} source=${pioneerRevision} verdict=${payload.verdict} artifact=${artifact} -->`;
+      })()
+    : operationMarker(reduction.selected[0]);
   if (assessment.patch && !snapshot.revisions.some(revision => revision.token === assessment.patch.baseSha)) payloadFail("patch base is not a snapshot revision");
   let kind = assessment.patch ? "patch" : "state";
   let operations = [];
@@ -426,6 +452,74 @@ export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessment
   });
 }
 
+const EXPECTED_REPOSITORY_SETTINGS = deepFreeze({
+  allowAutoMerge: true,
+  allowMergeCommit: false,
+  allowRebaseMerge: false,
+  allowSquashMerge: true,
+  deleteBranchOnMerge: true,
+});
+
+function labelDefinitions(source) {
+  if (typeof source !== "string") payloadFail("trusted label definitions are invalid");
+  const definitions = [];
+  let current = null;
+  const decode = value => {
+    const text = value.trim();
+    if (text.startsWith('"') && text.endsWith('"')) {
+      try { return JSON.parse(text); } catch { payloadFail("trusted label definitions are invalid"); }
+    }
+    return text;
+  };
+  for (const sourceLine of source.split(/\r?\n/)) {
+    const line = sourceLine.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    let match = /^- name:\s*(.+)$/.exec(line);
+    if (match) { current = { name: decode(match[1]) }; definitions.push(current); continue; }
+    match = /^(color|description):\s*(.*)$/.exec(line);
+    if (!match || current === null) payloadFail("trusted label definitions are invalid");
+    current[match[1]] = decode(match[2]);
+  }
+  if (definitions.length > 100) payloadFail("trusted label definitions are invalid");
+  const names = new Set();
+  for (const definition of definitions) {
+    payloadObject(definition, ["name", "color", "description"], "label definition");
+    if (typeof definition.name !== "string" || definition.name.length === 0 || definition.name.length > 50 || typeof definition.color !== "string" || !/^[0-9a-fA-F]{6}$/.test(definition.color) || typeof definition.description !== "string" || definition.description.length > 4096 || names.has(definition.name)) payloadFail("trusted label definitions are invalid");
+    names.add(definition.name);
+    definition.color = definition.color.toLowerCase();
+  }
+  return definitions;
+}
+
+function envelopeData(value, name) {
+  if (typeof value === "string") return value;
+  if (value && typeof value.data === "string") return value.data;
+  payloadFail(`${name} is invalid`);
+}
+
+function canonicalRulesetComparison(value) {
+  if (!value || Array.isArray(value) || typeof value !== "object") return value;
+  const result = structuredClone(value);
+  const canonicalOrder = (left, right) => canonicalBytes(left).compare(canonicalBytes(right));
+  for (const key of ["include", "exclude"]) if (Array.isArray(result.conditions?.ref_name?.[key])) result.conditions.ref_name[key].sort();
+  if (Array.isArray(result.rules)) {
+    for (const rule of result.rules) {
+      if (rule?.type === "required_status_checks" && Array.isArray(rule.parameters?.required_status_checks)) {
+        rule.parameters.required_status_checks = rule.parameters.required_status_checks.map(check => {
+          if (!check || Array.isArray(check) || typeof check !== "object") return check;
+          const normalized = { ...check };
+          if (normalized.integration_id === null) delete normalized.integration_id;
+          return normalized;
+        }).sort((left, right) => String(left?.context ?? "").localeCompare(String(right?.context ?? "")) || Number(left?.integration_id ?? 0) - Number(right?.integration_id ?? 0) || canonicalOrder(left, right));
+      }
+      if (rule?.type === "pull_request") for (const key of ["allowed_merge_methods", "required_reviewers"]) if (Array.isArray(rule.parameters?.[key])) rule.parameters[key].sort(canonicalOrder);
+    }
+    result.rules.sort((left, right) => String(left?.type ?? "").localeCompare(String(right?.type ?? "")) || canonicalOrder(left, right));
+  }
+  if (Array.isArray(result.bypass_actors)) result.bypass_actors.sort(canonicalOrder);
+  return result;
+}
+
 function changedPaths(expected, live, path = "$", found = []) {
   if (found.length >= 20) return found;
   if (digestJson(expected) === digestJson(live)) return found;
@@ -455,9 +549,31 @@ export function deriveDeterministicArtifacts(name, snapshot) {
     const live = resources.rulesets;
     if (!Array.isArray(live)) payloadFail("live rulesets are invalid");
     const actual = live.find(value => value?.name === expected?.name) ?? null;
-    const paths = changedPaths(expected, actual);
-    const drifts = paths.length === 0 ? [] : [{ title: `Ruleset drift: ${expected.name}`, body: `Changed fields: ${paths.join(", ")}` }];
+    const wanted = canonicalRulesetComparison(expected);
+    const observed = canonicalRulesetComparison(actual);
+    const rulePaths = changedPaths(wanted, observed);
+    const drifts = rulePaths.length === 0 ? [] : [{ title: `Ruleset drift: ${expected.name}`, body: `Wanted digest: ${digestJson(wanted)}\nLive digest: ${digestJson(observed)}\nChanged fields: ${rulePaths.join(", ")}` }];
+    if (resources.settings !== undefined) {
+      const settingPaths = changedPaths(EXPECTED_REPOSITORY_SETTINGS, resources.settings);
+      if (settingPaths.length > 0) drifts.push({ title: "Repository settings drift", body: `Changed fields: ${settingPaths.join(", ")}` });
+    }
     return deepFreeze([{ drifts }]);
+  }
+  if (name === "label-sync") {
+    const wanted = labelDefinitions(resources["trusted:.github/labels.yml"]?.data);
+    if (!Array.isArray(resources.labels)) payloadFail("live labels are invalid");
+    const byName = new Map();
+    for (const label of resources.labels) {
+      const value = {
+        name: envelopeData(label?.name, "label name"),
+        color: envelopeData(label?.color, "label color").toLowerCase(),
+        description: envelopeData(label?.description, "label description"),
+      };
+      if (byName.has(value.name)) payloadFail("live labels contain duplicates");
+      byName.set(value.name, value);
+    }
+    const live = wanted.map(definition => byName.get(definition.name) ?? null);
+    return deepFreeze([{ wantedDigest: digestJson(wanted), liveDigest: digestJson(live) }]);
   }
   if (name === "jam-detector") {
     if (!Array.isArray(resources.pulls)) payloadFail("live pulls are invalid");
@@ -503,6 +619,61 @@ export function reduceDeterministicArtifact(name, payload) {
   return deepFreeze(operations.map(operation => validateOperation(operation, policy)));
 }
 
+export function planAudit(snapshot) {
+  const trustedSnapshot = validateSnapshot(snapshot);
+  const authority = controlAuthority("auditor");
+  if (trustedSnapshot.routing.role !== authority.name || trustedSnapshot.routing.mode !== "single" || trustedSnapshot.routing.primary !== null) payloadFail("snapshot audit authority is not canonical");
+  const resources = trustedSnapshot.state?.resources;
+  if (!resources || Array.isArray(resources) || typeof resources !== "object" || !Array.isArray(resources.rulesets) || !Array.isArray(resources.labels) || !Array.isArray(resources.pulls)) payloadFail("audit snapshot is incomplete");
+  payloadObject(resources.settings, Object.keys(EXPECTED_REPOSITORY_SETTINGS), "repository settings");
+  for (const value of Object.values(resources.settings)) if (typeof value !== "boolean") payloadFail("repository settings are invalid");
+
+  const drift = [];
+  for (const payload of deriveDeterministicArtifacts("settings-auditor", trustedSnapshot)) {
+    for (const operation of reduceDeterministicArtifact("settings-auditor", payload)) if (operation.type !== "noop") drift.push(operation);
+  }
+  const sync = [];
+  for (const payload of deriveDeterministicArtifacts("label-sync", trustedSnapshot)) {
+    for (const operation of reduceDeterministicArtifact("label-sync", payload)) if (operation.type !== "noop") sync.push(operation);
+  }
+  const jams = [];
+  for (const payload of deriveDeterministicArtifacts("jam-detector", trustedSnapshot)) {
+    for (const operation of reduceDeterministicArtifact("jam-detector", payload)) if (operation.type !== "noop") jams.push(operation);
+  }
+
+  const checks = [];
+  const merges = [];
+  const repositoryName = `${trustedSnapshot.repository.owner}/${trustedSnapshot.repository.name}`;
+  const pulls = [...resources.pulls].sort((left, right) => String(left?.number ?? left?.prId ?? "").localeCompare(String(right?.number ?? right?.prId ?? "")));
+  for (const pull of pulls) {
+    const prId = String(pull?.prId ?? pull?.number ?? "");
+    if (!prId || pull?.state !== "open" || pull.merged !== false || pull.base !== trustedSnapshot.repository.defaultBranch || pull.headRepository !== repositoryName) continue;
+    if (pull.draft !== false || pull.mergeState !== "clean") {
+      const mergeState = pull.draft === true ? "draft" : pull.mergeState ?? "unknown";
+      const finding = { prId, headSha: pull.headSha, mergeState };
+      checks.push({ type: "publish_check", headSha: pull.headSha, name: "merge-gate", conclusion: "failure", summary: `merge_state_${mergeState}`, externalId: `merge-gate:${prId}:${pull.headSha}:${digestJson(finding)}` });
+      continue;
+    }
+    const currentChecks = Array.isArray(pull.checks) ? pull.checks.filter(check => check?.headSha === pull.headSha && check.status === "completed" && ["success", "failure", "neutral"].includes(check.conclusion)).map(check => ({ name: check.name, headSha: check.headSha, conclusion: check.conclusion })) : [];
+    const currentEvidence = Array.isArray(pull.evidence) ? pull.evidence.filter(item => item?.headSha === pull.headSha && typeof item.actorId === "string" && typeof item.provider === "string" && typeof item.authoritative === "boolean" && typeof item.artifactDigest === "string") : [];
+    const gate = planMergeGate({
+      prId,
+      headSha: pull.headSha,
+      labels: Array.isArray(pull.labels) ? pull.labels : [],
+      checks: currentChecks,
+      reviews: currentEvidence,
+      riskMarker: pull.riskMarker ?? null,
+      timeline: pull.timeline ?? [],
+      trust: trustedSnapshot.state.trust,
+      autoMergeAllowed: resources.settings.allowAutoMerge && resources.settings.allowSquashMerge && !resources.settings.allowMergeCommit && !resources.settings.allowRebaseMerge,
+    });
+    for (const operation of gate.operations) (operation.type === "arm_auto_merge" ? merges : checks).push(operation);
+  }
+  const ordered = [drift, sync, jams, checks, merges].flat().map(operation => validateOperation(operation, authority));
+  if (ordered.length === 0) ordered.push(validateOperation({ type: "noop", reason: "unchanged" }, authority));
+  return reduceControlArtifact({ name: authority.name, snapshot: trustedSnapshot, operations: ordered });
+}
+
 export function role(name) {
   const value = ROLES[name];
   if (!value) throw new AdwError("role", `unknown role: ${name}`);
@@ -510,6 +681,75 @@ export function role(name) {
 }
 
 export const listRoles = () => Object.freeze(Object.keys(ROLES).sort());
+
+export function controlAuthority(name) {
+  const value = CONTROL_AUTHORITIES[name];
+  if (!value) throw new AdwError("role", `unknown control authority: ${name}`);
+  return value;
+}
+
+export function resolveAuthority(name) {
+  try { return role(name); } catch {}
+  try { return deterministicRole(name); } catch {}
+  return controlAuthority(name);
+}
+
+export function reduceStatusArtifact({ snapshot, rolePolicy, reduction, assessments = [] }) {
+  const trustedSnapshot = validateSnapshot(snapshot);
+  const authority = role(rolePolicy?.name);
+  if (digestJson(authority) !== digestJson(rolePolicy) || trustedSnapshot.routing.role !== authority.name || trustedSnapshot.routing.mode !== authority.mode || trustedSnapshot.routing.primary !== authority.primary || !reduction || !new Set(["fallback", "terminal"]).has(reduction.status) || typeof reduction.reason !== "string") payloadFail("status reduction authority is invalid");
+  const status = reduction.status;
+  const reason = new Set(["contract", "fallback_forbidden", "provider_unavailable", "providers_unavailable", "quorum_incomplete", "advisory_unavailable", "patch_conflict"]).has(reduction.reason) ? reduction.reason : status === "fallback" ? "provider_unavailable" : "providers_unavailable";
+  const semantic = { role: authority.name, status, reason, snapshotDigest: digestJson(trustedSnapshot) };
+  const marker = `smith:adw-status/v1:${digestJson(semantic)}`;
+  const body = `ADW ${authority.name} ${status}: ${reason.replaceAll("_", " ")}.`;
+  let operation;
+  if (authority.operations.includes("publish_check") && /^[0-9a-f]{40}$/.test(trustedSnapshot.state?.headSha ?? "")) {
+    operation = { type: "publish_check", headSha: trustedSnapshot.state.headSha, name: authority.name, conclusion: status === "fallback" ? "neutral" : "failure", summary: body, externalId: marker };
+  } else if (authority.operations.includes("comment") && typeof trustedSnapshot.state?.entityId === "string") {
+    operation = { type: "comment", entityId: trustedSnapshot.state.entityId, body, marker };
+  } else if (authority.operations.includes("create_issue")) {
+    operation = { type: "create_issue", title: `ADW ${authority.name} ${status}`, body, labels: [], marker };
+  } else {
+    operation = { type: "terminal", reason };
+  }
+  const digests = [];
+  for (const raw of assessments) {
+    const value = validateAssessment(raw?.assessment ?? raw);
+    if (value.controlSha !== trustedSnapshot.controlSha || value.snapshotDigest !== digestJson(trustedSnapshot) || value.role !== authority.name) payloadFail("status assessment binding is invalid");
+    const digest = digestJson(value);
+    if (!digests.includes(digest)) digests.push(digest);
+  }
+  if (digests.length > 2) payloadFail("status assessments are invalid");
+  return validateDecision({
+    schemaVersion: 1, controlSha: trustedSnapshot.controlSha, snapshotDigest: digestJson(trustedSnapshot),
+    assessmentDigests: digests.sort(), kind: "state", operations: [validateOperation(operation, authority)], patch: null,
+  });
+}
+
+export function reduceControlArtifact({ name, snapshot, operations }) {
+  const authority = controlAuthority(name);
+  const trustedSnapshot = validateSnapshot(snapshot);
+  if (trustedSnapshot.routing.role !== authority.name || trustedSnapshot.routing.mode !== "single" || trustedSnapshot.routing.primary !== null) payloadFail("snapshot control authority is not canonical");
+  if (!Array.isArray(operations) || operations.length === 0 || operations.length > 100) payloadFail("control operations are invalid");
+  const seen = new Set();
+  const validated = operations.map(operation => {
+    const value = validateOperation(operation, authority);
+    const key = digestJson(value);
+    if (seen.has(key)) payloadFail("control operations contain duplicates");
+    seen.add(key);
+    return value;
+  });
+  return validateDecision({
+    schemaVersion: 1,
+    controlSha: trustedSnapshot.controlSha,
+    snapshotDigest: digestJson(trustedSnapshot),
+    assessmentDigests: [],
+    kind: "state",
+    operations: validated,
+    patch: null,
+  });
+}
 
 export function deterministicRole(name) {
   const value = DETERMINISTIC_ROLES[name];

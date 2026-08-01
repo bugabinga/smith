@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
-import { canonicalBytes, digestBytes, digestJson } from "../core.mjs";
-import { execute, readBounded, run } from "../main.mjs";
+import { AdwError, canonicalBytes, digestBytes, digestJson } from "../core.mjs";
+import { execute, readBounded, run, writeTransportArtifact } from "../main.mjs";
 
 const controlSha = "a".repeat(40);
 const headSha = "b".repeat(40);
@@ -34,7 +37,7 @@ const assessment = {
   completedAt: "2026-07-28T10:00:01.000Z",
 };
 
-async function invoke(argv, input, fixtures = {}, env = {}) {
+async function invoke(argv, input, fixtures = {}, env = {}, extra = {}) {
   let out = "";
   let err = "";
   const code = await run({
@@ -47,8 +50,41 @@ async function invoke(argv, input, fixtures = {}, env = {}) {
       if (!Object.hasOwn(fixtures, name)) throw new Error("fixture not found");
       return fixtures[name];
     },
+    ...extra,
   });
   return { code, out, err };
+}
+
+async function operationalFixture(t, value, trustedFiles = {}) {
+  const root = await mkdtemp(join(tmpdir(), "smith-adw-main-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = join(root, "adw-source");
+  const control = join(source, "control");
+  await mkdir(join(control, "adw"), { recursive: true });
+  const files = { "adw/main.mjs": "export {};\n", ...trustedFiles };
+  const controlPaths = [];
+  let index = 1;
+  for (const path of Object.keys(files).sort()) {
+    const bytes = Buffer.from(files[path]);
+    await mkdir(join(control, ...path.split("/").slice(0, -1)), { recursive: true });
+    await writeFile(join(control, path), bytes);
+    controlPaths.push({ path, tree: "e".repeat(40), blob: String(index++).repeat(40), digest: digestBytes(bytes), size: bytes.length });
+  }
+  const bundle = Buffer.from("# v2 git bundle\n\n");
+  const manifest = {
+    schemaVersion: 1, controlSha, repository: value.repository,
+    control: { paths: controlPaths },
+    target: { bundle: { digest: digestBytes(bundle), size: bundle.length }, refs: [], shas: [], paths: [] },
+  };
+  await writeFile(join(source, "target.bundle"), bundle);
+  const manifestBytes = canonicalBytes(manifest);
+  await writeFile(join(source, "manifest.json"), manifestBytes);
+  await writeFile(join(source, "manifest.sha256"), `${digestBytes(manifestBytes)}\n`);
+  return {
+    root, source, executablePath: join(control, "adw", "main.mjs"),
+    snapshotArtifact: join(root, "adw-snapshot"), decisionArtifact: join(root, "adw-decision"),
+    verificationArtifact: join(root, "adw-verification"), resultArtifact: join(root, "adw-apply-result"),
+  };
 }
 
 test("validate emits canonical JSON", async () => {
@@ -97,6 +133,192 @@ test("reconcile accepts normalized state", async () => {
     reviews: [], pioneers: [], holds: [],
   }));
   assert.deepEqual(JSON.parse(result.out), []);
+});
+
+test("operational reconcile consumes only canonical snapshot/source and writes a decision", async t => {
+  const authoritySnapshot = {
+    schemaVersion: 1, controlSha,
+    event: { kind: "schedule", action: "reconcile", entityId: "R_1" },
+    repository: snapshot.repository,
+    revisions: [], routing: { role: "reconciler", mode: "single", primary: null },
+    state: { entityId: "R_1", currentRevisions: { "issue:7": "r2" }, reconciliation: {
+      routes: [{ issueId: "7", sourceRevision: "r1", status: "primary", primary: "claude", fallback: "codex", primaryOutcome: null, fallbackOutcome: null, artifactDigest: null, prId: null }],
+      pulls: [], labelSync: { wantedDigest: "1".repeat(64), liveDigest: "1".repeat(64) }, comments: [],
+      trust: { ownerIds: ["7"], appId: "9" }, reviews: [], pioneers: [], holds: [],
+    } },
+  };
+  const fixture = await operationalFixture(t, authoritySnapshot, { ".github/labels.yml": "" });
+  await writeTransportArtifact("snapshot", fixture.snapshotArtifact, authoritySnapshot);
+  const env = { ADW_SOURCE_ARTIFACT: fixture.source, ADW_SNAPSHOT_ARTIFACT: fixture.snapshotArtifact, ADW_DECISION_ARTIFACT: fixture.decisionArtifact, ADW_CONTROL_SHA: controlSha };
+  const result = await invoke(["reconcile"], "", {}, env, { executablePath: fixture.executablePath });
+  assert.equal(result.code, 0, result.err);
+  const decision = JSON.parse(await readFile(join(fixture.decisionArtifact, "decision.json")));
+  assert.equal(decision.operations[0].type, "dispatch_workflow");
+  assert.equal(decision.operations[0].inputs.kind, "retry_route");
+  assert.equal(decision.assessmentDigests.length, 0);
+});
+
+test("operational audit consumes full settings/labels/rulesets state and writes only a decision", async t => {
+  const ruleset = { name: "main", target: "branch", enforcement: "active", conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } }, rules: [], bypass_actors: [] };
+  const auditSnapshot = {
+    schemaVersion: 1, controlSha,
+    event: { kind: "schedule", action: "audit", entityId: "R_1" }, repository: snapshot.repository,
+    revisions: [], routing: { role: "auditor", mode: "single", primary: null },
+    state: { entityId: "R_1", trust: { ownerIds: ["7"], appId: "9" }, resources: {
+      "trusted:.github/rulesets/main.json": { data: JSON.stringify(ruleset) }, "trusted:.github/labels.yml": { data: "" },
+      rulesets: [ruleset], labels: [], pulls: [], settings: { allowAutoMerge: true, allowMergeCommit: false, allowRebaseMerge: false, allowSquashMerge: true, deleteBranchOnMerge: true },
+    } },
+  };
+  const fixture = await operationalFixture(t, auditSnapshot, { ".github/labels.yml": "", ".github/rulesets/main.json": JSON.stringify(ruleset) });
+  await writeTransportArtifact("snapshot", fixture.snapshotArtifact, auditSnapshot);
+  const env = { ADW_SOURCE_ARTIFACT: fixture.source, ADW_SNAPSHOT_ARTIFACT: fixture.snapshotArtifact, ADW_DECISION_ARTIFACT: fixture.decisionArtifact, ADW_CONTROL_SHA: controlSha };
+  const result = await invoke(["audit"], "", {}, env, { executablePath: fixture.executablePath });
+  assert.equal(result.code, 0, result.err);
+  assert.deepEqual(JSON.parse(result.out).operations, [{ type: "noop", reason: "unchanged" }]);
+});
+
+test("operational apply consumes exact artifacts and emits canonical apply result", async t => {
+  const value = {
+    ...snapshot,
+    event: { kind: "issue", action: "opened", entityId: "1" }, revisions: [],
+    routing: { role: "triager", mode: "single", primary: "codex" }, state: { entityId: "1", labels: [] },
+  };
+  const operation = { type: "add_label", entityId: "1", label: "ready" };
+  const canonicalDecision = { schemaVersion: 1, controlSha, snapshotDigest: digestJson(value), assessmentDigests: [], kind: "state", operations: [operation], patch: null };
+  const proof = { schemaVersion: 1, controlSha, decisionDigest: digestJson(canonicalDecision), kind: "state", preconditionDigest: digestJson(value.revisions), patch: null, resultTree: null };
+  const fixture = await operationalFixture(t, value, { ".claude/agents/triager.md": "Triage.\n", "adw/schemas/role-payloads/triage.schema.json": "{}\n" });
+  await writeTransportArtifact("snapshot", fixture.snapshotArtifact, value);
+  await writeTransportArtifact("decision", fixture.decisionArtifact, canonicalDecision);
+  await writeTransportArtifact("verification", fixture.verificationArtifact, proof);
+  const raw = { operationDigest: digestJson(operation), status: "complete", beforeRevision: proof.preconditionDigest, preparedRevision: "1".repeat(64), afterRevision: "1".repeat(64) };
+  const github = { apply: async request => ({ decisionDigest: request.verification.decisionDigest, verificationDigest: digestJson(request.verification), operations: [raw] }) };
+  const env = {
+    ADW_SOURCE_ARTIFACT: fixture.source, ADW_SNAPSHOT_ARTIFACT: fixture.snapshotArtifact, ADW_DECISION_ARTIFACT: fixture.decisionArtifact,
+    ADW_VERIFICATION_ARTIFACT: fixture.verificationArtifact, ADW_APPLY_RESULT_ARTIFACT: fixture.resultArtifact,
+    ADW_REPOSITORY: "bugabinga/smith", ADW_CONTROL_SHA: controlSha,
+  };
+  const result = await invoke(["apply"], "", {}, env, { executablePath: fixture.executablePath, adapters: { github } });
+  assert.equal(result.code, 0, result.err);
+  const receipt = JSON.parse(await readFile(join(fixture.resultArtifact, "result.json")));
+  assert.equal(receipt.status, "complete");
+  assert.equal(receipt.operations[0].receipts[0].projection, "github_state");
+  assert.equal(await readFile(join(fixture.resultArtifact, "result.sha256"), "utf8"), `${digestBytes(canonicalBytes(receipt))}\n`);
+});
+
+test("operational apply always emits a sanitized partial-failure artifact", async t => {
+  const value = {
+    ...snapshot, event: { kind: "issue", action: "opened", entityId: "1" }, revisions: [],
+    routing: { role: "triager", mode: "single", primary: "codex" }, state: { entityId: "1", labels: [] },
+  };
+  const operations = [{ type: "add_label", entityId: "1", label: "ready" }, { type: "add_label", entityId: "1", label: "blocked" }];
+  const canonicalDecision = { schemaVersion: 1, controlSha, snapshotDigest: digestJson(value), assessmentDigests: [], kind: "state", operations, patch: null };
+  const proof = { schemaVersion: 1, controlSha, decisionDigest: digestJson(canonicalDecision), kind: "state", preconditionDigest: digestJson(value.revisions), patch: null, resultTree: null };
+  const fixture = await operationalFixture(t, value, { ".claude/agents/triager.md": "Triage.\n", "adw/schemas/role-payloads/triage.schema.json": "{}\n" });
+  await writeTransportArtifact("snapshot", fixture.snapshotArtifact, value);
+  await writeTransportArtifact("decision", fixture.decisionArtifact, canonicalDecision);
+  await writeTransportArtifact("verification", fixture.verificationArtifact, proof);
+  const first = { operationDigest: digestJson(operations[0]), status: "complete", beforeRevision: proof.preconditionDigest, preparedRevision: "1".repeat(64), afterRevision: "1".repeat(64) };
+  const github = { apply: async () => { throw new AdwError("forge", "secret-token API body", { partialReceipt: { decisionDigest: proof.decisionDigest, verificationDigest: digestJson(proof), operations: [first] } }); } };
+  const env = {
+    ADW_SOURCE_ARTIFACT: fixture.source, ADW_SNAPSHOT_ARTIFACT: fixture.snapshotArtifact, ADW_DECISION_ARTIFACT: fixture.decisionArtifact,
+    ADW_VERIFICATION_ARTIFACT: fixture.verificationArtifact, ADW_APPLY_RESULT_ARTIFACT: fixture.resultArtifact,
+    ADW_REPOSITORY: "bugabinga/smith", ADW_CONTROL_SHA: controlSha,
+  };
+  const result = await invoke(["apply"], "", {}, env, { executablePath: fixture.executablePath, adapters: { github } });
+  assert.equal(result.code, 5);
+  const receipt = JSON.parse(await readFile(join(fixture.resultArtifact, "result.json")));
+  assert.equal(receipt.status, "partial");
+  assert.equal(receipt.failure.message, "forge operation failed");
+  assert.equal(JSON.stringify(receipt).includes("secret-token"), false);
+  assert.equal(result.err.includes("secret-token"), false);
+});
+
+test("operational dry-run runs exact artifacts with only writer replaced and ignores caller intents", async t => {
+  const value = {
+    ...snapshot, event: { kind: "issue", action: "opened", entityId: "1" }, revisions: [],
+    routing: { role: "triager", mode: "single", primary: "codex" }, state: { entityId: "1", labels: [] },
+  };
+  const operation = { type: "add_label", entityId: "1", label: "ready" };
+  const canonicalDecision = { schemaVersion: 1, controlSha, snapshotDigest: digestJson(value), assessmentDigests: [], kind: "state", operations: [operation], patch: null };
+  const proof = { schemaVersion: 1, controlSha, decisionDigest: digestJson(canonicalDecision), kind: "state", preconditionDigest: digestJson(value.revisions), patch: null, resultTree: null };
+  const fixture = await operationalFixture(t, value, { ".claude/agents/triager.md": "Triage.\n", "adw/schemas/role-payloads/triage.schema.json": "{}\n" });
+  await writeTransportArtifact("snapshot", fixture.snapshotArtifact, value);
+  await writeTransportArtifact("decision", fixture.decisionArtifact, canonicalDecision);
+  await writeTransportArtifact("verification", fixture.verificationArtifact, proof);
+  const dryRunArtifact = join(fixture.root, "adw-dry-run");
+  let request;
+  const github = { recordApply: async value => {
+    request = value;
+    const raw = { operationDigest: digestJson(operation), status: "complete", beforeRevision: proof.preconditionDigest, preparedRevision: proof.preconditionDigest, afterRevision: proof.preconditionDigest };
+    return { receipt: { decisionDigest: proof.decisionDigest, verificationDigest: digestJson(proof), operations: [raw] }, intents: [operation] };
+  } };
+  const env = {
+    ADW_SOURCE_ARTIFACT: fixture.source, ADW_SNAPSHOT_ARTIFACT: fixture.snapshotArtifact, ADW_DECISION_ARTIFACT: fixture.decisionArtifact,
+    ADW_VERIFICATION_ARTIFACT: fixture.verificationArtifact, ADW_DRY_RUN_ARTIFACT: dryRunArtifact,
+    ADW_REPOSITORY: "bugabinga/smith", ADW_CONTROL_SHA: controlSha,
+  };
+  const caller = { operations: [{ type: "comment", entityId: "1", body: "forged", marker: "forged" }] };
+  const result = await invoke(["dry-run"], JSON.stringify(caller), {}, env, { executablePath: fixture.executablePath, adapters: { github } });
+  assert.equal(result.code, 0, result.err);
+  assert.deepEqual(request.decision.operations, [operation]);
+  const artifact = JSON.parse(await readFile(join(dryRunArtifact, "dry-run.json")));
+  assert.deepEqual(artifact.intents.map(value => value.operation), [operation]);
+  assert.equal(JSON.stringify(artifact).includes("forged"), false);
+});
+
+test("final patch dry-run performs and records the read-only VCS projection without credentials", async t => {
+  const bytes = Buffer.from("patch");
+  const manifest = { baseSha: headSha, digest: digestBytes(bytes), size: bytes.length, files: [{ path: "smith/src/lib.rs", kind: "regular", oldMode: "100644", newMode: "100644" }] };
+  const operation = { type: "create_pr", head: "claude/issue-1", base: "main", title: "Patch", body: "Body", marker: "patch" };
+  const value = {
+    ...snapshot, event: { kind: "issue", action: "opened", entityId: "1" },
+    revisions: [{ resource: "patch-base:main", kind: "git_ref", token: headSha }],
+    routing: { role: "builder", mode: "single", primary: "claude" }, state: { entityId: "1", labels: [] },
+  };
+  const canonicalDecision = { schemaVersion: 1, controlSha, snapshotDigest: digestJson(value), assessmentDigests: [], kind: "patch", operations: [operation], patch: manifest };
+  const proof = { schemaVersion: 1, controlSha, decisionDigest: digestJson(canonicalDecision), kind: "patch", preconditionDigest: digestJson(value.revisions), patch: manifest, resultTree: "c".repeat(40) };
+  const fixture = await operationalFixture(t, value, { ".claude/agents/builder.md": "Build.\n", "adw/schemas/role-payloads/change.schema.json": "{}\n" });
+  const sourceManifestPath = join(fixture.source, "manifest.json");
+  const sourceManifest = JSON.parse(await readFile(sourceManifestPath));
+  sourceManifest.target.shas = [headSha];
+  const sourceManifestBytes = canonicalBytes(sourceManifest);
+  await writeFile(sourceManifestPath, sourceManifestBytes);
+  await writeFile(join(fixture.source, "manifest.sha256"), `${digestBytes(sourceManifestBytes)}\n`);
+  await writeTransportArtifact("snapshot", fixture.snapshotArtifact, value);
+  await writeTransportArtifact("decision", fixture.decisionArtifact, canonicalDecision, bytes);
+  await writeTransportArtifact("verification", fixture.verificationArtifact, proof, bytes);
+  const targetDirectory = join(fixture.root, "target");
+  const temporaryDirectory = join(fixture.root, "temporary");
+  await mkdir(temporaryDirectory);
+  const dryRunArtifact = join(fixture.root, "adw-dry-run");
+  const projectedHead = "d".repeat(40);
+  let projectionRequest;
+  let recordRequest;
+  const vcs = {
+    materializeBundle: async () => ({ refs: [], shas: [headSha], paths: [] }),
+    projectVerifiedPatch: async request => {
+      projectionRequest = request;
+      assert.equal(Object.hasOwn(request, "credential"), false);
+      return { operationDigest: digestJson(operation), projection: "vcs_head", status: "complete", beforeRevision: proof.preconditionDigest, preparedRevision: "1".repeat(64), afterRevision: "1".repeat(64), headSha: projectedHead };
+    },
+  };
+  const github = { recordApply: async request => {
+    recordRequest = request;
+    const raw = { operationDigest: digestJson(operation), status: "complete", beforeRevision: proof.preconditionDigest, preparedRevision: proof.preconditionDigest, afterRevision: proof.preconditionDigest };
+    return { receipt: { decisionDigest: proof.decisionDigest, verificationDigest: digestJson(proof), operations: [raw] }, intents: [operation] };
+  } };
+  const env = {
+    ADW_SOURCE_ARTIFACT: fixture.source, ADW_SNAPSHOT_ARTIFACT: fixture.snapshotArtifact, ADW_DECISION_ARTIFACT: fixture.decisionArtifact,
+    ADW_VERIFICATION_ARTIFACT: fixture.verificationArtifact, ADW_DRY_RUN_ARTIFACT: dryRunArtifact,
+    ADW_REPOSITORY: "bugabinga/smith", ADW_CONTROL_SHA: controlSha, ADW_TARGET_DIRECTORY: targetDirectory,
+    ADW_TEMPORARY_DIRECTORY: temporaryDirectory, ADW_GIT_PATH: process.execPath,
+  };
+  const result = await invoke(["dry-run"], "", {}, env, { executablePath: fixture.executablePath, adapters: { github, vcs, vcsAuthority: { expectedRemote: "https://github.com/bugabinga/smith.git" } } });
+  assert.equal(result.code, 0, result.err);
+  assert.equal(projectionRequest.expectedRemote, "https://github.com/bugabinga/smith.git");
+  assert.deepEqual(recordRequest.vcsProjections, [{ operationDigest: digestJson(operation), headSha: projectedHead }]);
+  const artifact = JSON.parse(await readFile(join(dryRunArtifact, "dry-run.json")));
+  assert.equal(artifact.intents[0].vcsReceipt.headSha, projectedHead);
 });
 
 test("stdin fixture commands ignore operational and unknown environment", async () => {

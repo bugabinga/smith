@@ -1,6 +1,6 @@
 import { isAbsolute } from "node:path";
 import { AdwError, canonicalBytes, digestJson, holdReasons, validateDecision, validateOperation, validateSnapshot, validateVerification } from "./core.mjs";
-import { OPERATIONS, deterministicRole, role } from "./roles.mjs";
+import { OPERATIONS, controlAuthority, deterministicRole, role } from "./roles.mjs";
 import { runProcess } from "./providers.mjs";
 
 const EVENTS = new Set([
@@ -41,7 +41,7 @@ export function operationCapabilities(operation, snapshot = null) {
     if (resource === "pulls" || resource.startsWith("pull:")) return resource.endsWith(":checks") ? ["checks:read", "pulls:read"] : "pulls:read";
     if (resource === "runs") return "actions:read";
     if (resource === "alerts") return "alerts:read";
-    if (resource === "rulesets") return "settings:read";
+    if (resource === "rulesets" || resource === "settings") return "settings:read";
     return null;
   };
   if (snapshot !== null) contract(Array.isArray(snapshot?.revisions), "snapshot revisions are invalid");
@@ -105,6 +105,12 @@ export function deterministicSnapshotPlan(roleName, eventKind) {
   return Object.freeze({ role: value.name, eventKind, fields: Object.freeze(fields) });
 }
 
+export function controlSnapshotPlan(authorityName, eventKind) {
+  const authority = controlAuthority(authorityName);
+  contract(authority.eventKinds.includes(eventKind), "control authority event is unsupported");
+  return Object.freeze({ role: authority.name, eventKind, fields: Object.freeze([...authority.snapshot.fields]) });
+}
+
 export function roleSnapshotPlan(roleName, eventKind) {
   const events = ROLE_EVENTS[roleName];
   contract(events?.includes(eventKind), "role event is unsupported");
@@ -138,6 +144,8 @@ function githubIdentity(value) {
 const APPLY_PAIR = /^<!-- smith:apply\/v1 role=([a-z][a-z0-9-]*) decision=([0-9a-f]{64}) operation=(0|[1-9][0-9]*) digest=([0-9a-f]{64}) phase=complete -->$/;
 const REVIEW_MARKER = /^<!-- smith:review-evidence\/v1 kind=(correctness|security) head=([0-9a-f]{40}) conclusion=(approve|reject) provider=(claude|codex) authoritative=true artifact=([0-9a-f]{64}) -->$/;
 const RISK_MARKER = /^<!-- smith:risk\/v1 head=([0-9a-f]{40}) finding=([0-9a-f]{64}) status=(open|cleared) created=([^ ]+) cleared=([^ ]+) -->$/;
+const PIONEER_MARKER = /^<!-- smith:pioneer\/v1 issue=([1-9][0-9]*) source=([^\s\0]+) verdict=(proved|disproved|inconclusive) artifact=([0-9a-f]{64}|-) -->$/;
+const GITHUB_ACTIONS_APP_ID = "15368";
 
 function pairedSemanticMarker(comment, entityId) {
   if (typeof comment?.body !== "string") return null;
@@ -226,7 +234,7 @@ export function normalizeEvent(name, payload) {
   } else if (name === "issue_comment") {
     kind = "issue_comment"; entityId = restId(payload.issue?.number, "issue number"); revisionHints = { commentId: restId(payload.comment?.id, "comment id"), updatedAt: payload.comment.updated_at };
   } else if (name === "pull_request") {
-    kind = "pull_request"; entityId = restId(payload.pull_request?.number, "pull number"); revisionHints = { headSha: payload.pull_request.head?.sha, baseRef: payload.pull_request.base?.ref, headRepository: payload.pull_request.head?.repo?.full_name, updatedAt: payload.pull_request.updated_at };
+    kind = "pull_request"; entityId = restId(payload.pull_request?.number, "pull number"); revisionHints = { headSha: payload.pull_request.head?.sha, ...(payload.pull_request.head?.ref === undefined ? {} : { headBranch: payload.pull_request.head.ref }), baseRef: payload.pull_request.base?.ref, headRepository: payload.pull_request.head?.repo?.full_name, updatedAt: payload.pull_request.updated_at };
   } else if (name === "pull_request_review") {
     kind = "pull_request_review"; entityId = restId(payload.pull_request?.number, "pull number"); revisionHints = { reviewId: restId(payload.review?.id, "review id"), headSha: payload.review?.commit_id ?? payload.pull_request.head?.sha };
   } else if (name === "pull_request_review_comment") {
@@ -279,6 +287,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
   const env = {};
   for (const key of ["PATH", "HOME", "LANG", "TMPDIR"]) if (typeof baseEnv?.[key] === "string") env[key] = baseEnv[key];
   if (typeof token === "string") env.GH_TOKEN = token;
+  else if (typeof token === "function" && typeof token.readValue === "string") env.GH_TOKEN = token.readValue;
   env.GH_HOST = "github.com";
   env.NO_COLOR = "1";
   let activeApplyToken = null;
@@ -418,23 +427,53 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     if (value.state) resource.state = value.state;
     return Object.freeze(resource);
   };
+  const normalizeSettings = value => {
+    const fields = ["allow_auto_merge", "allow_merge_commit", "allow_rebase_merge", "allow_squash_merge", "delete_branch_on_merge"];
+    contract(value && fields.every(field => typeof value[field] === "boolean"), "repository settings are malformed");
+    return Object.freeze({
+      allowAutoMerge: value.allow_auto_merge,
+      allowMergeCommit: value.allow_merge_commit,
+      allowRebaseMerge: value.allow_rebase_merge,
+      allowSquashMerge: value.allow_squash_merge,
+      deleteBranchOnMerge: value.delete_branch_on_merge,
+    });
+  };
   const normalizedContent = (value, source) => contentEnvelope(value ?? "", "untrusted", source);
   const normalizeLabels = value => {
     contract(Array.isArray(value), "labels are malformed");
     return value.map(label => text(typeof label === "string" ? label : label?.name, "label")).sort();
   };
+  const issueSourceRevision = value => {
+    contract(value && typeof value === "object" && !Array.isArray(value), "issue is malformed");
+    const milestoneId = value.milestone === null || value.milestone === undefined ? null : restId(value.milestone.id, "milestone id");
+    return digestJson({
+      body: typeof value.body === "string" ? value.body : "",
+      labels: normalizeLabels(value.labels ?? []),
+      milestoneId,
+      state: text(value.state, "issue state"),
+      title: text(value.title, "issue title"),
+    });
+  };
   const normalizeIssue = value => {
     contract(value && Number.isSafeInteger(value.number) && value.number > 0, "issue is malformed");
+    const labels = normalizeLabels(value.labels ?? []);
+    const milestoneId = value.milestone ? restId(value.milestone.id, "milestone id") : null;
     return Object.freeze({
       id: restId(value.id, "issue id"), number: String(value.number), state: text(value.state, "issue state"),
-      updatedAt: text(value.updated_at, "issue updatedAt"), actorId: restId(value.user?.id, "issue actor"),
+      updatedAt: text(value.updated_at, "issue updatedAt"), sourceRevision: issueSourceRevision(value), actorId: restId(value.user?.id, "issue actor"),
       title: normalizedContent(value.title, `issue:${value.number}:title`), body: normalizedContent(value.body ?? "", `issue:${value.number}:body`),
-      labels: Object.freeze(normalizeLabels(value.labels ?? [])), milestoneId: value.milestone ? restId(value.milestone.id, "milestone id") : null,
+      labels: Object.freeze(labels), milestoneId,
     });
+  };
+  const canonicalInstant = (value, name) => {
+    text(value, name);
+    const instant = new Date(value);
+    contract(Number.isFinite(instant.getTime()), `${name} is malformed`);
+    return instant.toISOString();
   };
   const normalizeComment = (value, entityId, repositoryId) => Object.freeze({
     id: restId(value.id, "comment id"), actorId: restId(value.user?.id, "comment actor"),
-    createdAt: text(value.created_at, "comment createdAt"), updatedAt: text(value.updated_at ?? value.created_at, "comment updatedAt"),
+    createdAt: canonicalInstant(value.created_at, "comment createdAt"), updatedAt: canonicalInstant(value.updated_at ?? value.created_at, "comment updatedAt"),
     entityId: String(entityId), repositoryId,
     body: normalizedContent(value.body ?? "", `comment:${value.id}:body`),
   });
@@ -445,9 +484,10 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     const mergeSha = value.merge_commit_sha === null || value.merge_commit_sha === undefined ? null : text(value.merge_commit_sha, "pull merge SHA");
     contract(mergeSha === null || /^[0-9a-f]{40}$/.test(mergeSha), "pull merge SHA is malformed");
     return Object.freeze({
-      id: restId(value.id, "pull id"), number: String(value.number), state: text(value.state, "pull state"), merged: value.merged === true || typeof value.merged_at === "string",
+      id: restId(value.id, "pull id"), number: String(value.number), state: text(value.state, "pull state"), draft: value.draft === true, merged: value.merged === true || typeof value.merged_at === "string",
       mergeSha, mergeState: value.mergeable_state === undefined || value.mergeable_state === null ? null : text(value.mergeable_state, "pull merge state").toLowerCase(),
-      updatedAt: text(value.updated_at, "pull updatedAt"), headSha, base: text(value.base?.ref, "pull base"),
+      updatedAt: text(value.updated_at, "pull updatedAt"), headSha, headBranch: value.head?.ref === undefined ? null : text(value.head.ref, "pull head branch"), base: text(value.base?.ref, "pull base"),
+      actorId: value.user ? restId(value.user.id, "pull actor") : null, actorLogin: value.user?.login ?? null, actorType: value.user?.type ?? null,
       headRepository: text(value.head?.repo?.full_name, "pull head repository"),
       title: normalizedContent(value.title, `pull:${value.number}:title`), body: normalizedContent(value.body ?? "", `pull:${value.number}:body`),
       labels: Object.freeze(normalizeLabels(value.labels ?? [])),
@@ -472,46 +512,77 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     const expected = [...keys].sort();
     contract(actual.length === expected.length && actual.every((key, index) => key === expected[index]), `${name} is malformed`);
   };
-  const normalizeRule = rule => {
-    contract(rule && typeof rule.type === "string", "ruleset rule is malformed");
-    const simple = new Set(["deletion", "non_fast_forward", "required_linear_history", "required_signatures"]);
-    contract(simple.has(rule.type) || new Set(["pull_request", "copilot_code_review", "required_status_checks"]).has(rule.type), "ruleset rule type is unsupported");
-    if (simple.has(rule.type)) exactObject(rule, ["type"], "ruleset rule");
-    else {
-      exactObject(rule, ["type", "parameters"], "ruleset rule");
-      exactObject(rule.parameters, {
-        pull_request: ["required_approving_review_count", "require_code_owner_review", "dismiss_stale_reviews_on_push", "require_last_push_approval", "required_review_thread_resolution", "required_reviewers", "allowed_merge_methods"],
-        copilot_code_review: ["review_on_push", "review_draft_pull_requests"],
-        required_status_checks: ["strict_required_status_checks_policy", "required_status_checks"],
-      }[rule.type] ?? Object.keys(rule.parameters), "ruleset rule parameters");
-      if (rule.type === "pull_request") {
-        contract(Number.isSafeInteger(rule.parameters.required_approving_review_count) && ["require_code_owner_review", "dismiss_stale_reviews_on_push", "require_last_push_approval", "required_review_thread_resolution"].every(key => typeof rule.parameters[key] === "boolean") && Array.isArray(rule.parameters.required_reviewers) && Array.isArray(rule.parameters.allowed_merge_methods), "ruleset pull request parameters are malformed");
-      } else if (rule.type === "copilot_code_review") {
-        contract(typeof rule.parameters.review_on_push === "boolean" && typeof rule.parameters.review_draft_pull_requests === "boolean", "ruleset Copilot parameters are malformed");
-      } else if (rule.type === "required_status_checks") {
-        contract(typeof rule.parameters.strict_required_status_checks_policy === "boolean" && Array.isArray(rule.parameters.required_status_checks), "ruleset check parameters are malformed");
-        for (const check of rule.parameters.required_status_checks) { exactObject(check, ["context"], "ruleset required check"); text(check.context, "ruleset check context"); }
+  const plainObject = (value, name) => {
+    contract(value && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype, `${name} is malformed`);
+    return value;
+  };
+  const compareCanonical = (left, right) => canonicalBytes(left).compare(canonicalBytes(right));
+  const boundedCanonical = (value, name, maxBytes = 65_536) => {
+    const normalized = canonicalValue(value, name);
+    contract(canonicalBytes(normalized).length <= maxBytes, `${name} is oversized`);
+    return normalized;
+  };
+  const sortedCanonicalArray = (value, name, max = 100) => {
+    contract(Array.isArray(value) && value.length <= max, `${name} is malformed`);
+    return value.map(item => boundedCanonical(item, name)).sort(compareCanonical);
+  };
+  const normalizeRule = input => {
+    const rule = boundedCanonical(plainObject(input, "ruleset rule"), "ruleset rule");
+    text(rule.type, "ruleset rule type");
+    if (Object.hasOwn(rule, "parameters")) plainObject(rule.parameters, "ruleset rule parameters");
+    const parameters = rule.parameters === undefined ? undefined : { ...rule.parameters };
+    if (rule.type === "required_status_checks" && parameters !== undefined) {
+      if (Object.hasOwn(parameters, "strict_required_status_checks_policy")) contract(typeof parameters.strict_required_status_checks_policy === "boolean", "ruleset check parameters are malformed");
+      if (Object.hasOwn(parameters, "do_not_enforce_on_create")) contract(typeof parameters.do_not_enforce_on_create === "boolean", "ruleset check parameters are malformed");
+      if (Object.hasOwn(parameters, "required_status_checks")) {
+        contract(Array.isArray(parameters.required_status_checks) && parameters.required_status_checks.length <= 100, "ruleset check parameters are malformed");
+        const checks = parameters.required_status_checks.map(inputCheck => {
+          const check = { ...plainObject(inputCheck, "ruleset required check") };
+          text(check.context, "ruleset check context");
+          contract(check.integration_id === undefined || check.integration_id === null || (Number.isSafeInteger(check.integration_id) && check.integration_id > 0), "ruleset check integration is malformed");
+          if (check.integration_id === null) delete check.integration_id;
+          return boundedCanonical(check, "ruleset required check", 4096);
+        }).sort((left, right) => left.context.localeCompare(right.context) || (left.integration_id ?? 0) - (right.integration_id ?? 0) || compareCanonical(left, right));
+        contract(new Set(checks.map(check => `${check.context}\0${check.integration_id ?? ""}`)).size === checks.length, "ruleset required checks contain duplicates");
+        parameters.required_status_checks = checks;
       }
     }
-    return canonicalValue(rule, "ruleset rule");
+    if (rule.type === "pull_request" && parameters !== undefined) {
+      if (Object.hasOwn(parameters, "required_approving_review_count")) contract(Number.isSafeInteger(parameters.required_approving_review_count) && parameters.required_approving_review_count >= 0, "ruleset pull request parameters are malformed");
+      for (const key of ["require_code_owner_review", "dismiss_stale_reviews_on_push", "require_last_push_approval", "required_review_thread_resolution", "automatic_copilot_code_review_enabled"]) if (Object.hasOwn(parameters, key)) contract(typeof parameters[key] === "boolean", "ruleset pull request parameters are malformed");
+      for (const key of ["allowed_merge_methods", "required_reviewers"]) if (Object.hasOwn(parameters, key)) parameters[key] = sortedCanonicalArray(parameters[key], `ruleset ${key}`);
+    }
+    if (rule.type === "copilot_code_review" && parameters !== undefined) for (const key of ["review_on_push", "review_draft_pull_requests"]) if (Object.hasOwn(parameters, key)) contract(typeof parameters[key] === "boolean", "ruleset Copilot parameters are malformed");
+    return boundedCanonical(parameters === undefined ? rule : { ...rule, parameters }, "ruleset rule");
   };
   const normalizeRuleset = (value, expectedId) => {
     contract(value && restId(value.id, "ruleset id") === expectedId, "ruleset is malformed");
-    exactObject(value.conditions, ["ref_name"], "ruleset conditions");
-    exactObject(value.conditions.ref_name, ["include", "exclude"], "ruleset ref conditions");
-    contract(Array.isArray(value.conditions.ref_name.include) && Array.isArray(value.conditions.ref_name.exclude) && Array.isArray(value.rules) && Array.isArray(value.bypass_actors), "ruleset is malformed");
-    const rules = value.rules.map(normalizeRule);
-    const bypass = value.bypass_actors.map(actor => { exactObject(actor, ["actor_id", "actor_type", "bypass_mode"], "ruleset bypass actor"); return canonicalValue(actor, "ruleset bypass actor"); });
-    return Object.freeze({
+    const conditions = { ...plainObject(value.conditions, "ruleset conditions") };
+    const refName = { ...plainObject(conditions.ref_name, "ruleset ref conditions") };
+    for (const key of ["include", "exclude"]) {
+      contract(Array.isArray(refName[key]) && refName[key].length <= 1000, "ruleset ref conditions are malformed");
+      refName[key] = refName[key].map(pattern => text(pattern, "ruleset ref pattern")).sort();
+    }
+    conditions.ref_name = refName;
+    contract(Array.isArray(value.rules) && value.rules.length <= 100 && Array.isArray(value.bypass_actors) && value.bypass_actors.length <= 100, "ruleset is malformed");
+    const rules = value.rules.map(normalizeRule).sort((left, right) => left.type.localeCompare(right.type) || compareCanonical(left, right));
+    const bypass = value.bypass_actors.map(inputActor => {
+      const actor = plainObject(inputActor, "ruleset bypass actor");
+      contract(actor.actor_id === null || (Number.isSafeInteger(actor.actor_id) && actor.actor_id > 0), "ruleset bypass actor is malformed");
+      text(actor.actor_type, "ruleset bypass actor type");
+      text(actor.bypass_mode, "ruleset bypass mode");
+      return boundedCanonical(actor, "ruleset bypass actor", 4096);
+    }).sort(compareCanonical);
+    return Object.freeze(boundedCanonical({
       name: text(value.name, "ruleset name"), target: text(value.target, "ruleset target"), enforcement: text(value.enforcement, "ruleset enforcement"),
-      conditions: canonicalValue(value.conditions, "ruleset conditions"), rules, bypass_actors: bypass,
-    });
+      conditions, rules, bypass_actors: bypass,
+    }, "ruleset"));
   };
   const normalizeRun = value => Object.freeze({ id: restId(value.id, "run id"), name: text(value.name, "run name"), event: text(value.event, "run event"), status: text(value.status, "run status"), conclusion: value.conclusion === null ? null : text(value.conclusion, "run conclusion"), headSha: text(value.head_sha, "run head"), attempt: Number(value.run_attempt ?? 1) });
   const reviewEvidence = (comments, headSha, prId) => comments
     .map(comment => parsedReviewMarker(comment, headSha, prId, appIdentity))
     .filter(Boolean)
-    .map(marker => Object.freeze({ kind: marker.kind, headSha: marker.headSha, conclusion: marker.conclusion }));
+    .map(marker => Object.freeze({ kind: marker.kind, headSha: marker.headSha, conclusion: marker.conclusion, actorId: appIdentity.botUserId, provider: marker.provider, authoritative: true, artifactDigest: marker.artifactDigest }));
   const numericId = (value, name) => {
     contract(typeof value === "string" && /^[1-9][0-9]*$/.test(value), `${name} is invalid`);
     const number = Number(value);
@@ -566,7 +637,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     }
     return definitions.map(value => Object.freeze({ name: value.name, color: value.color.toLowerCase(), description: value.description }));
   };
-  const enrichPull = async (raw, files = null, maintenance = false) => {
+  const enrichPull = async (raw, files = null, maintenance = false, fullAudit = false) => {
     const initial = normalizePull(raw);
     const pull = maintenance && !initial.merged ? normalizePull(await methods.pull(Number(initial.number))) : initial;
     const rawFiles = files ?? await methods.pullFiles(Number(pull.number));
@@ -577,7 +648,35 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     const checks = maintenance && !pull.merged ? (await methods.commitChecks(pull.headSha)).map(normalizeCheck) : [];
     const comments = maintenance && !pull.merged ? await methods.comments("issues", Number(pull.number)) : [];
     const evidence = reviewEvidence(comments, pull.headSha, pull.number);
-    return Object.freeze({ ...pull, changedPaths: Object.freeze(changedPaths), closingIssues: Object.freeze(closing), obligations: Object.freeze(obligations), checks: Object.freeze(checks), evidence: Object.freeze(evidence) });
+    let riskMarker = null;
+    let timeline = [];
+    if (fullAudit && !pull.merged) {
+      const risks = [];
+      for (const comment of comments) {
+        const pair = pairedSemanticMarker(comment, pull.number);
+        const marker = pair === null ? null : RISK_MARKER.exec(pair.semantic);
+        const authored = String(comment?.user?.id ?? "") === appIdentity.botUserId && comment?.user?.login === appIdentity.login && comment?.user?.type === "Bot";
+        if (!marker || marker[1] !== pull.headSha || pair.role !== "security-reviewer" || !authored) continue;
+        try {
+          risks.push({
+            commentId: restId(comment.id, "risk comment id"), observedAt: canonicalInstant(comment.created_at, "risk comment createdAt"),
+            headSha: marker[1], findingDigest: marker[2], status: marker[3], createdAt: canonicalInstant(marker[4], "risk createdAt"),
+            clearedAt: marker[5] === "-" ? null : canonicalInstant(marker[5], "risk clearedAt"),
+          });
+        } catch { continue; }
+      }
+      risks.sort((left, right) => left.observedAt.localeCompare(right.observedAt) || numericId(left.commentId, "risk comment id") - numericId(right.commentId, "risk comment id"));
+      if (risks.length > 0) {
+        const { commentId, observedAt, ...latest } = risks.at(-1);
+        riskMarker = Object.freeze(latest);
+      }
+      timeline = (await methods.issueTimeline(Number(pull.number))).map(value => Object.freeze({
+        id: restId(value.id, "timeline id"), kind: value.event === "unlabeled" ? "label_removed" : text(value.event, "timeline event"),
+        actorId: value.actor ? restId(value.actor.id, "timeline actor") : "unknown", createdAt: text(value.created_at, "timeline createdAt"),
+        label: text(value.label?.name ?? "none", "timeline label"), headSha: pull.headSha,
+      }));
+    }
+    return Object.freeze({ ...pull, changedPaths: Object.freeze(changedPaths), closingIssues: Object.freeze(closing), obligations: Object.freeze(obligations), checks: Object.freeze(checks), evidence: Object.freeze(evidence), riskMarker, timeline: Object.freeze(timeline) });
   };
   const api = {
     async readSnapshot(event) {
@@ -601,9 +700,14 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     },
     async readRoleSnapshot(event, rolePolicy, { controlSha, appId } = {}) {
       const deterministic = rolePolicy?.kind === "deterministic";
+      const control = rolePolicy?.kind === "control";
       if (deterministic) {
         const plan = deterministicSnapshotPlan(rolePolicy.name, event.kind);
         contract(digestJson(rolePolicy) === digestJson({ kind: "deterministic", name: rolePolicy.name, mode: "single", primary: null, patch: null, snapshot: { fields: plan.fields, maxBytes: 262144 } }), "deterministic role policy is not canonical");
+      } else if (control) {
+        const canonicalPolicy = controlAuthority(rolePolicy?.name);
+        controlSnapshotPlan(rolePolicy.name, event.kind);
+        contract(digestJson(rolePolicy) === digestJson(canonicalPolicy), "control authority policy is not canonical");
       } else {
         const canonicalPolicy = role(rolePolicy?.name);
         roleSnapshotPlan(rolePolicy.name, event.kind);
@@ -633,7 +737,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       put("repository", "repository", Object.freeze(normalizedRepository), digestJson(normalizedRepository));
       const trustedPaths = deterministic
         ? ({ "settings-auditor": [".github/rulesets/main.json"], "label-sync": [".github/labels.yml"], "jam-detector": [] }[rolePolicy.name])
-        : [rolePolicy.charter, rolePolicy.payloadSchema];
+        : control ? [...rolePolicy.trustedPaths] : [rolePolicy.charter, rolePolicy.payloadSchema];
       if (rolePolicy.snapshot.fields.includes("spec") || rolePolicy.snapshot.fields.includes("spec_change")) trustedPaths.push("docs/SPEC.md");
       for (const path of [...new Set(trustedPaths)]) {
         const input = await methods.trustedFile(path, controlSha);
@@ -656,7 +760,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       let fileValues = [];
       if (issueRelated && ["issue", "issues", "claim", "spec", "labels", "milestones", "comment", "entity", "owner"].some(field => fields.has(field))) {
         issueValue = normalizeIssue(await methods.issue(Number(event.entityId)));
-        put(`issue:${event.entityId}`, "issue", issueValue, issueValue.updatedAt);
+        put(`issue:${event.entityId}`, "issue", issueValue, issueValue.sourceRevision);
         const comments = (await methods.comments("issues", Number(event.entityId))).map(value => normalizeComment(value, event.entityId, normalizedRepository.id));
         put(`issue:${event.entityId}:comments`, "comments", Object.freeze(comments), digestJson(comments));
         const timeline = (await methods.issueTimeline(Number(event.entityId))).map(value => Object.freeze({ id: restId(value.id, "timeline id"), event: text(value.event, "timeline event"), actorId: value.actor ? restId(value.actor.id, "timeline actor") : null, createdAt: text(value.created_at, "timeline createdAt"), label: value.label?.name ?? null, commitSha: value.commit_id ?? null }));
@@ -669,7 +773,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         for (const field of ["issue", "claim", "spec", "labels", "comment", "entity", "owner", "route"]) if (fields.has(field)) satisfied.add(field);
         if (event.kind === "issue" && event.revisionHints.updatedAt && issueValue.updatedAt !== event.revisionHints.updatedAt) throw new AdwError("forge", "stale");
         if (event.revisionHints.commentId) {
-          sourceComment = comments.find(comment => comment.id === event.revisionHints.commentId && comment.updatedAt === event.revisionHints.updatedAt) ?? null;
+          sourceComment = comments.find(comment => comment.id === event.revisionHints.commentId && comment.updatedAt === canonicalInstant(event.revisionHints.updatedAt, "event comment updatedAt")) ?? null;
           if (sourceComment === null) throw new AdwError("forge", "stale");
         }
       }
@@ -692,11 +796,11 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         const rawPulls = await methods.pulls();
         if (rawPulls.length > 100) throw new AdwError("forge", "overflow");
         const pulls = [];
-        for (const rawPull of rawPulls) pulls.push(await enrichPull(rawPull, null, true));
+        for (const rawPull of rawPulls) pulls.push(await enrichPull(rawPull, null, true, control && rolePolicy.name === "auditor"));
         put("pulls", "pulls", Object.freeze(pulls), digestJson(pulls));
         satisfied.add("pulls");
       }
-      if (deterministic && rolePolicy.name === "label-sync") {
+      if ((deterministic || control) && fields.has("labels")) {
         const labels = (await methods.labels()).map(value => Object.freeze({ id: restId(value.id, "label id"), name: normalizedContent(value.name, `label:${value.id}:name`), color: normalizedContent(value.color, `label:${value.id}:color`), description: normalizedContent(value.description ?? "", `label:${value.id}:description`) }));
         put("labels", "labels", Object.freeze(labels), digestJson(labels));
         satisfied.add("labels");
@@ -721,9 +825,17 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         put(`pull:${event.entityId}:checks`, "checks", Object.freeze(checks), digestJson(checks));
         for (const field of ["pull", "diff", "files", "reviews", "security", "changed_paths", "findings", "docs", "dependency"]) if (fields.has(field)) satisfied.add(field);
         if (event.revisionHints.headSha && pullValue.headSha !== event.revisionHints.headSha) throw new AdwError("forge", "stale");
+        if (event.revisionHints.headBranch && pullValue.headBranch !== event.revisionHints.headBranch) throw new AdwError("forge", "stale");
         if (event.revisionHints.baseRef && pullValue.base !== event.revisionHints.baseRef) throw new AdwError("forge", "stale");
         if (event.revisionHints.headRepository && pullValue.headRepository !== event.revisionHints.headRepository) throw new AdwError("forge", "stale");
         if (event.revisionHints.reviewId && !reviews.some(review => review.id === event.revisionHints.reviewId && review.headSha === event.revisionHints.headSha)) throw new AdwError("forge", "stale");
+        if (rolePolicy.name === "reviser") {
+          if (pullValue.headRepository !== `${owner}/${name}` || pullValue.headBranch === null) throw new AdwError("forge", "stale");
+          const ref = await methods.branchRef(pullValue.headBranch);
+          const refHead = text(ref.object?.sha, "pull head ref");
+          if (!/^[0-9a-f]{40}$/.test(refHead) || refHead !== pullValue.headSha) throw new AdwError("forge", "stale");
+          put(`ref:${pullValue.headBranch}`, "git_ref", Object.freeze({ headSha: refHead }), refHead);
+        }
       }
       if (fields.has("runs") || fields.has("routes")) {
         const runs = (await methods.runs()).map(normalizeRun);
@@ -741,6 +853,10 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         if (event.kind === "alert" && !alerts.some(alert => alert.updatedAt === event.revisionHints.updatedAt)) throw new AdwError("forge", "stale");
       }
       if (fields.has("settings") || fields.has("config")) {
+        if (control && rolePolicy.name === "auditor") {
+          const settings = normalizeSettings(repositoryValue);
+          put("settings", "settings", settings, digestJson(settings));
+        }
         const summaries = await methods.rulesets();
         if (summaries.length > 100) throw new AdwError("forge", "overflow");
         const ids = summaries.map(summary => restId(summary.id, "ruleset id"));
@@ -779,14 +895,114 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         binary: missingPatches.length > 0,
         oversized: false,
       };
+      let reconciliation = null;
+      if (control && rolePolicy.name === "reconciler") {
+        const markerComments = [];
+        const issueComments = new Map();
+        for (const issue of resources.issues ?? []) {
+          const values = (await methods.comments("issues", Number(issue.number))).map(value => normalizeComment(value, issue.number, normalizedRepository.id));
+          issueComments.set(issue.number, values);
+          markerComments.push(...values);
+        }
+        for (const pull of resources.pulls ?? []) {
+          const values = (await methods.comments("issues", Number(pull.number))).map(value => normalizeComment(value, pull.number, normalizedRepository.id));
+          markerComments.push(...values);
+        }
+        if (markerComments.length > 1000) throw new AdwError("forge", "overflow");
+        markerComments.sort((left, right) => left.createdAt.localeCompare(right.createdAt) || numericId(left.id, "comment id") - numericId(right.id, "comment id"));
+        const routes = [];
+        for (const issue of resources.issues ?? []) {
+          const byAuthorityOrder = (left, right) => left.comment.createdAt.localeCompare(right.comment.createdAt) || numericId(left.comment.id, "comment id") - numericId(right.comment.id, "comment id");
+          const attempts = (issueComments.get(issue.number) ?? []).map(comment => {
+            if (comment.actorId !== appIdentity.botUserId) return null;
+            const match = new RegExp(`^<!-- smith:claude-attempt/v1 issue=${issue.number} branch=claude/issue-${issue.number} head=([0-9a-f]{40}) outcome=(success|failure|cancelled|skipped) -->$`).exec(comment.body.data);
+            return match ? { comment, outcome: match[2] } : null;
+          }).filter(Boolean).sort(byAuthorityOrder);
+          if (attempts.length === 0 || attempts.at(-1).outcome === "success") continue;
+          const routeMarkers = (issueComments.get(issue.number) ?? []).map(comment => {
+            if (comment.actorId !== appIdentity.botUserId) return null;
+            const match = new RegExp(`^<!-- smith:builder-route/v1 issue=${issue.number} id=[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12} source=claude/issue-${issue.number} target=codex/issue-${issue.number} phase=(prepared|armed|completed|cancelled) -->$`).exec(comment.body.data);
+            return match ? { comment, phase: match[1] } : null;
+          }).filter(Boolean).sort(byAuthorityOrder);
+          const phase = routeMarkers.at(-1)?.phase ?? null;
+          if (phase === "completed") continue;
+          routes.push(Object.freeze({
+            issueId: issue.number, sourceRevision: issue.sourceRevision,
+            status: phase === "armed" ? "fallback" : phase === "cancelled" ? "blocked" : "primary",
+            primary: "claude", fallback: "codex", primaryOutcome: "provider_failure",
+            fallbackOutcome: phase === "cancelled" ? "provider_failure" : null, artifactDigest: null, prId: null,
+          }));
+        }
+        const trustedPulls = (resources.pulls ?? []).filter(pull => pull.headRepository === `${owner}/${name}` && pull.base === normalizedRepository.defaultBranch).map(pull => Object.freeze({
+          prId: pull.number, repositoryId: normalizedRepository.id, headRepositoryId: normalizedRepository.id, base: pull.base,
+          closingIssues: pull.closingIssues, headSha: pull.headSha, merged: pull.merged, mergeSha: pull.mergeSha, obligations: pull.obligations,
+        }));
+        const pioneerEvidence = body => String(body ?? "").split(/\r?\n/).map(line => PIONEER_MARKER.exec(line)).filter(Boolean).map(match => ({ issueId: match[1], sourceRevision: match[2], verdict: match[3], artifactDigest: match[4] === "-" ? null : match[4] }));
+        const pioneers = [];
+        for (const issue of resources.issues ?? []) {
+          const evidence = [];
+          for (const comment of issueComments.get(issue.number) ?? []) {
+            if (comment.actorId !== appIdentity.botUserId) continue;
+            for (const marker of pioneerEvidence(comment.body.data)) if (marker.issueId === issue.number) evidence.push({ ...marker, observedAt: comment.createdAt, closingPrId: null });
+          }
+          for (const pull of resources.pulls ?? []) {
+            if (pull.headRepository !== `${owner}/${name}` || pull.base !== normalizedRepository.defaultBranch || pull.actorId !== appIdentity.botUserId || pull.actorLogin !== appIdentity.login || pull.actorType !== "Bot") continue;
+            for (const marker of pioneerEvidence(pull.body?.data)) {
+              if (marker.issueId !== issue.number) continue;
+              const closes = pull.closingIssues.some(candidate => candidate.repositoryId === normalizedRepository.id && candidate.issueId === issue.number);
+              evidence.push({ ...marker, observedAt: pull.updatedAt, closingPrId: marker.verdict === "proved" && closes ? pull.number : null });
+            }
+          }
+          evidence.sort((left, right) => left.observedAt.localeCompare(right.observedAt) || digestJson(left).localeCompare(digestJson(right)));
+          const latest = evidence.at(-1) ?? null;
+          if (latest === null && !issue.labels.includes("needs:prototype")) continue;
+          let verdict = latest?.verdict ?? "missing";
+          let artifactDigest = latest?.artifactDigest ?? null;
+          let closingPrId = latest?.closingPrId ?? null;
+          if (verdict === "proved" && closingPrId === null) { verdict = "missing"; artifactDigest = null; }
+          if (verdict === "inconclusive") artifactDigest = null;
+          pioneers.push(Object.freeze({ issueId: issue.number, sourceRevision: latest?.sourceRevision ?? issue.sourceRevision, verdict, artifactDigest, closingPrId }));
+        }
+        pioneers.sort((left, right) => left.issueId.localeCompare(right.issueId));
+        const pioneerIds = new Set(pioneers.map(pioneer => pioneer.issueId));
+        const reviews = (resources.pulls ?? []).filter(pull => !pull.merged && pull.headRepository === `${owner}/${name}` && pull.base === normalizedRepository.defaultBranch).map(pull => Object.freeze({ prId: pull.number, headSha: pull.headSha, evidence: pull.evidence, protectedInput: pull.changedPaths.some(path => path.startsWith("adw/") || path.startsWith(".github/") || path === "docs/SPEC.md") }));
+        const holds = [];
+        for (const issue of resources.issues ?? []) {
+          const reasons = holdReasons(issue.labels).filter(reason => !(reason === "needs:prototype" && pioneerIds.has(issue.number)));
+          if (reasons.length > 0) holds.push(Object.freeze({ entityId: `issue:${issue.number}`, reasons }));
+        }
+        for (const pull of resources.pulls ?? []) {
+          const reasons = holdReasons(pull.labels);
+          if (reasons.length > 0) holds.push(Object.freeze({ entityId: `pr:${pull.number}`, reasons }));
+        }
+        const definitionSource = resources["trusted:.github/labels.yml"]?.data;
+        const definitions = parseLabelDefinitions(definitionSource);
+        const liveByName = new Map((resources.labels ?? []).map(label => [label.name.data, { name: label.name.data, color: label.color.data.toLowerCase(), description: label.description.data }]));
+        const projectedLabels = definitions.map(definition => liveByName.get(definition.name) ?? null);
+        reconciliation = Object.freeze({
+          routes: Object.freeze(routes), pulls: Object.freeze(trustedPulls),
+          labelSync: Object.freeze({ wantedDigest: digestJson(definitions), liveDigest: digestJson(projectedLabels) }),
+          comments: Object.freeze(markerComments), trust: Object.freeze({ ownerIds: [repositoryOwnerId], appId: appIdentity.botUserId }),
+          reviews: Object.freeze(reviews), pioneers: Object.freeze(pioneers), holds: Object.freeze(holds),
+        });
+      }
       const state = {
         entityId: event.entityId, labels, input: Object.freeze(input), resources: Object.freeze(resources),
         actionTargets: Object.freeze(resources.runs?.map(run => run.id) ?? []),
         ownerAuthenticated: event.kind === "issue_comment" && sourceComment !== null && /(^|\s)@smith\b/.test(sourceComment.body.data) && event.actor.type === "User" && event.actor.login === normalizedRepository.owner && event.actor.id === repositoryOwnerId,
         closingArtifactQualifies: qualifyingPioneerPulls.length > 0,
-        trust: Object.freeze({ ownerIds: [repositoryOwnerId], appId }),
+        trust: Object.freeze({ ownerIds: [repositoryOwnerId], appId: appIdentity.botUserId }),
       };
-      if (pullValue) { state.headSha = pullValue.headSha; state.changedPaths = pullValue.changedPaths; }
+      if (reconciliation !== null) {
+        state.currentRevisions = Object.freeze(Object.fromEntries((resources.issues ?? []).map(issue => [`issue:${issue.number}`, issue.sourceRevision])));
+        state.reconciliation = reconciliation;
+      }
+      if (pullValue) {
+        state.headSha = pullValue.headSha;
+        state.headBranch = pullValue.headBranch;
+        state.headRepository = pullValue.headRepository;
+        state.changedPaths = pullValue.changedPaths;
+      }
       if (patchBase !== null) {
         const source = issueValue ?? pullValue;
         contract(source !== null, "patch role lacks source entity");
@@ -818,7 +1034,11 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       const plan = deterministicSnapshotPlan(name, event.kind);
       return api.readRoleSnapshot(event, Object.freeze({ kind: "deterministic", name, mode: "single", primary: null, patch: null, snapshot: { fields: plan.fields, maxBytes: 262144 } }), options);
     },
-    async applyOperation({ operation, snapshot, verification, verifyOnly = false, binding = null }) {
+    readControlSnapshot(event, name, options) {
+      controlSnapshotPlan(name, event.kind);
+      return api.readRoleSnapshot(event, controlAuthority(name), options);
+    },
+    async applyOperation({ operation, snapshot, verification, verifyOnly = false, recordOnly = false, binding = null }) {
       const value = validateOperation(operation, policy);
       operationCapabilities(value);
       if (value.type === "create_branch") throw new AdwError("contract", "operation is VCS-owned");
@@ -829,7 +1049,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       contract(proof.preconditionDigest === digestJson(trustedSnapshot.revisions), "verification precondition does not match");
       if (value.type === "noop") return Object.freeze({ state: "complete", revision: proof.preconditionDigest });
       if (value.type === "terminal") throw new AdwError("terminal", value.reason);
-      if (token === null) throw new AdwError("forge", "auth");
+      if (token === null && !recordOnly) throw new AdwError("forge", "auth");
 
       const cache = new Map();
       const get = async endpoint => {
@@ -1035,12 +1255,13 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       } else if (value.type === "arm_auto_merge") {
         const assertMergeAuthority = async fresh => {
           const pull = fresh ? await page(`/repos/${owner}/${name}/pulls/${numericId(value.prId, "pull id")}`) : await pullAt(value.prId);
-          if (pull?.state !== "open" || pull?.head?.sha !== value.headSha || holdReasons(exactLiveLabels(pull)).length !== 0) throw new AdwError("stale", "auto-merge precondition failed");
+          if (pull?.state !== "open" || pull?.draft !== false || pull?.mergeable_state?.toLowerCase() !== "clean" || pull?.head?.sha !== value.headSha || holdReasons(exactLiveLabels(pull)).length !== 0) throw new AdwError("stale", "auto-merge precondition failed");
           const checkResponse = await page(`/repos/${owner}/${name}/commits/${value.headSha}/check-runs?filter=latest&per_page=100&page=1`);
           const checks = checkResponse?.check_runs;
           if (!Array.isArray(checks) || checks.length >= 100) throw new AdwError("forge", "overflow");
           const required = checks.filter(check => check.name === "check" && check.head_sha === value.headSha);
-          if (required.length !== 1 || required[0].status !== "completed" || required[0].conclusion !== "success") throw new AdwError("stale", "auto-merge check failed");
+          if (required.length !== 1 || required[0].status !== "completed" || required[0].conclusion !== "success"
+              || String(required[0].app?.id ?? "") !== GITHUB_ACTIONS_APP_ID || required[0].app?.slug !== "github-actions") throw new AdwError("stale", "auto-merge check failed");
           const commentResponse = await page(`/repos/${owner}/${name}/issues/${numericId(value.prId, "pull number")}/comments?per_page=100&page=1`);
           if (!Array.isArray(commentResponse) || commentResponse.length >= 100) throw new AdwError("forge", "overflow");
           validateAutoMergeMarkers({
@@ -1058,9 +1279,9 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         if (!complete) await assertMergeAuthority(false);
         prepared = {
           execute: async observePrepared => {
+            await observePrepared();
             const fresh = await assertMergeAuthority(true);
             const pullNodeId = text(fresh?.node_id, "pull node ID");
-            await observePrepared();
             await enablePullRequestAutoMerge(pullNodeId);
             const post = await page(`/repos/${owner}/${name}/pulls/${numericId(value.prId, "pull id")}`);
             if (post?.state !== "open" || post?.head?.sha !== value.headSha || post?.auto_merge?.merge_method !== "squash") throw new AdwError("stale", "auto-merge postcondition was not reached");
@@ -1107,7 +1328,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
           const trusted = await get(`/repos/${owner}/${name}/contents/${match[1].split("/").map(encodeURIComponent).join("/")}?ref=${trustedSnapshot.controlSha}`);
           return text(trusted.sha, "trusted content SHA");
         }
-        if ((match = /^issue:([1-9][0-9]*)$/.exec(resource))) return text((await issueAt(match[1])).updated_at, "issue revision");
+        if ((match = /^issue:([1-9][0-9]*)$/.exec(resource))) return issueSourceRevision(await issueAt(match[1]));
         if ((match = /^pull:([1-9][0-9]*)$/.exec(resource))) return text((await pullAt(match[1])).head?.sha, "pull revision");
         if ((match = /^(?:patch-base:|ref:)(.+)$/.exec(resource))) {
           const branch = match[1];
@@ -1139,7 +1360,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         if (resource === "issues") return digestJson((await allIssues()).filter(item => !item.pull_request).map(normalizeIssue));
         if (resource === "pulls") {
           const values = [];
-          for (const raw of await allPulls()) values.push(await enrichPull(raw, null, true));
+          for (const raw of await allPulls()) values.push(await enrichPull(raw, null, true, trustedSnapshot.routing.role === "auditor"));
           return digestJson(values);
         }
         if ((match = /^pull:([1-9][0-9]*):files$/.exec(resource))) return digestJson((await list(`/repos/${owner}/${name}/pulls/${match[1]}/files`)).map(item => normalizeFile(item, match[1])));
@@ -1168,6 +1389,10 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
             values.push(Object.freeze({ id: restId(alert.number, "alert id"), state: text(alert.state, "alert state"), updatedAt: text(alert.updated_at, "alert updatedAt"), details: normalizedContent(alert, `alert:${alert.number}`) }));
           }
           return digestJson(values);
+        }
+        if (resource === "settings") {
+          const live = await get(`/repos/${owner}/${name}`);
+          return digestJson(normalizeSettings(live));
         }
         if (resource === "rulesets") {
           const summaries = await list(`/repos/${owner}/${name}/rulesets`);
@@ -1218,17 +1443,47 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         return [...originals.keys()].every(name => seen.has(name));
       };
 
+      const vcsTransitionAllowed = async observedRevisions => {
+        const projection = binding?.vcsProjection;
+        if (projection === null || projection === undefined || recordOnly) return false;
+        const original = trustedSnapshot.revisions;
+        if (original.length !== observedRevisions.length || projection.headSha === proof.patch?.baseSha) return false;
+        if (value.type === "create_pr") {
+          for (let index = 0; index < original.length; index++) if (original[index].resource !== observedRevisions[index].resource || original[index].kind !== observedRevisions[index].kind || original[index].token !== observedRevisions[index].token) return false;
+          const ref = await get(`/repos/${owner}/${name}/git/ref/heads/${value.head.split("/").map(encodeURIComponent).join("/")}`);
+          return ref?.object?.sha === projection.headSha;
+        }
+        if (value.type !== "update_pr") return false;
+        const changed = new Set([`pull:${value.prId}`, `ref:${trustedSnapshot.state.headBranch}`]);
+        if (changed.size !== 2 || ![...changed].every(resource => original.some(revision => revision.resource === resource && revision.token === proof.patch?.baseSha))) return false;
+        for (let index = 0; index < original.length; index++) {
+          if (original[index].resource !== observedRevisions[index].resource || original[index].kind !== observedRevisions[index].kind) return false;
+          const expected = changed.has(original[index].resource) ? projection.headSha : original[index].token;
+          if (observedRevisions[index].token !== expected) return false;
+        }
+        return true;
+      };
+
       const observedBefore = await observeRevisions();
-      if (complete && value.type !== "sync_labels") return Object.freeze({ state: "complete", revision: observedBefore.digest });
+      if (complete && value.type !== "sync_labels" && value.type !== "comment" && binding?.vcsProjection == null) return Object.freeze({ state: "complete", revision: observedBefore.digest });
       const expectedBefore = binding?.expectedBefore ?? proof.preconditionDigest;
+      const projectedAllowed = await vcsTransitionAllowed(observedBefore.revisions);
+      const projectionMustBeObserved = binding?.vcsProjection != null && !recordOnly && !verifyOnly && expectedBefore === proof.preconditionDigest;
+      if (projectionMustBeObserved && !projectedAllowed) throw new AdwError("stale", "precondition changed");
       const syncAllowed = value.type === "sync_labels" && await syncTransitionAllowed(observedBefore.revisions);
-      if (!binding?.skipRevision && observedBefore.digest !== expectedBefore && !syncAllowed) throw new AdwError("stale", "precondition changed");
+      if (!binding?.skipRevision && observedBefore.digest !== expectedBefore && !syncAllowed && !projectedAllowed) throw new AdwError("stale", "precondition changed");
       if (complete) return Object.freeze({ state: "complete", revision: observedBefore.digest });
       if (verifyOnly) throw new AdwError("stale", "operation postcondition was not reached");
 
       if (preWrite !== null) await preWrite();
       const confirmed = await observeRevisions();
       if (confirmed.digest !== observedBefore.digest) throw new AdwError("stale", "precondition changed");
+      if (projectionMustBeObserved && !await vcsTransitionAllowed(confirmed.revisions)) throw new AdwError("stale", "precondition changed");
+      if (recordOnly) {
+        if (typeof binding?.recordIntent !== "function") throw new AdwError("contract", "record writer is unavailable");
+        binding.recordIntent();
+        return Object.freeze({ state: "complete", revision: confirmed.digest });
+      }
       let currentRevision = confirmed.digest;
       let preparedRevision = null;
       if (Array.isArray(prepared)) {
@@ -1267,7 +1522,10 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     try { authority = role(trustedSnapshot.routing.role); }
     catch (roleError) {
       try { authority = deterministicRole(trustedSnapshot.routing.role); deterministic = true; }
-      catch { throw new AdwError("contract", "snapshot role authority is not canonical"); }
+      catch {
+        try { authority = controlAuthority(trustedSnapshot.routing.role); deterministic = true; }
+        catch { throw new AdwError("contract", "snapshot role authority is not canonical"); }
+      }
     }
     const expectedRouting = deterministic
       ? { role: authority.name, mode: "single", primary: null }
@@ -1286,6 +1544,25 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     contract(credential.source === "github-app" && credential.repository === repository && credential.operationDigest === operationDigest, "GitHub App token authority does not match");
     contract(Array.isArray(credential.permissions) && digestJson(credential.permissions) === digestJson(permissions), "GitHub App token permissions do not match operation class");
     return credential;
+  };
+  const operationTokenCapabilities = () => {
+    const permissions = typeof token === "function" ? token.permissions : null;
+    return permissions === null || permissions === undefined ? null : Object.freeze([...permissions]);
+  };
+  const vcsProjectionAuthority = ({ capabilities }) => {
+    contract(Array.isArray(capabilities) && capabilities.includes("contents:write") && capabilities.every((value, index) => typeof value === "string" && (index === 0 || capabilities[index - 1].localeCompare(value) < 0)), "VCS capability set is invalid");
+    const expectedRemote = `https://github.com/${repository}.git`;
+    return Object.freeze({
+      expectedRemote,
+      credential: async request => {
+        exactObject(request, ["repository", "operationDigest", "remote"], "VCS credential request");
+        contract(request.repository === repository && request.remote === expectedRemote, "VCS credential authority does not match");
+        const credential = await credentialFor({ permissions: capabilities, operationDigest: request.operationDigest });
+        const expiresAt = typeof token === "function" ? token.expiresAt : undefined;
+        contract(typeof expiresAt === "string" && Number.isFinite(Date.parse(expiresAt)), "VCS credential expiry is unavailable");
+        return Object.freeze({ value: credential.value, expiresAt, operationDigest: request.operationDigest });
+      },
+    });
   };
   const applyMarker = binding => `<!-- smith:apply/v1 role=${binding.role} decision=${binding.decisionDigest} operation=${binding.operationIndex} digest=${binding.operationDigest} phase=complete -->`;
   const effectiveOperation = (operation, binding) => {
@@ -1310,7 +1587,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
   const hardenedApplyOperation = async (request, internal = null) => {
     const context = internal && typeof internal === "object" ? internal : Object.freeze({ priorAuthorityVerified: internal === true });
     exactObject(request, ["operation", "operationIndex", "decision", "snapshot", "verification", "priorOperations"], "apply request");
-    if (request.operation?.type === "create_branch" || (request.operation?.type === "update_pr" && request.operation.headSha !== undefined)) throw new AdwError("contract", "operation is VCS-owned");
+    if (request.operation?.type === "create_branch" || (request.operation?.type === "update_pr" && request.operation.headSha !== undefined && context.vcsProjection == null)) throw new AdwError("contract", "operation is VCS-owned");
     const trustedSnapshot = validateSnapshot(request.snapshot);
     contract(trustedSnapshot.repository.owner === owner && trustedSnapshot.repository.name === name, "snapshot repository does not match writer");
     const resources = trustedSnapshot.revisions.map(revision => revision.resource);
@@ -1335,16 +1612,35 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     contract(request.priorOperations.length === 0 || context.priorAuthorityVerified === true, "prior forge authority must be reconstructed by full apply");
     const expectedReceipt = context.expectedReceipt === undefined ? null : validateOperationReceipt(operation, context.expectedReceipt, expectedBefore);
     const operationDigest = digestJson(operation);
-    const binding = Object.freeze({ role: authority.name, decisionDigest: proof.decisionDigest, operationDigest, operationIndex: request.operationIndex, preconditionDigest: proof.preconditionDigest, expectedBefore: expectedReceipt?.afterRevision ?? expectedBefore, skipRevision: context.skipRevision === true, priorOperations: Object.freeze(priorReceipts) });
+    const vcsProjection = context.vcsProjection ?? null;
+    if (vcsProjection !== null) {
+      exactObject(vcsProjection, ["operationDigest", "headSha"], "VCS projection");
+      contract(vcsProjection.operationDigest === operationDigest && /^[0-9a-f]{40}$/.test(vcsProjection.headSha), "VCS projection authority does not match operation");
+    }
+    const binding = Object.freeze({ role: authority.name, decisionDigest: proof.decisionDigest, operationDigest, operationIndex: request.operationIndex, preconditionDigest: proof.preconditionDigest, expectedBefore: expectedReceipt?.afterRevision ?? expectedBefore, skipRevision: context.skipRevision === true, priorOperations: Object.freeze(priorReceipts), vcsProjection });
     if (operation.type === "noop") return expectedReceipt ?? unchangedReceipt(operation, expectedBefore);
     if (operation.type === "terminal") throw new AdwError("terminal", operation.reason);
-    const permissions = operationCapabilities(operation, trustedSnapshot);
+    const operationPermissions = operationCapabilities(operation, trustedSnapshot);
+    const permissions = context.credentialPermissions ?? operationPermissions;
+    if (context.credentialPermissions !== undefined) {
+      contract(Array.isArray(permissions) && permissions.every((value, index) => typeof value === "string" && (index === 0 || permissions[index - 1].localeCompare(value) < 0)), "apply capability set is not canonical");
+      contract(operationPermissions.every(value => permissions.includes(value)), "apply capability set is insufficient");
+    }
+    const metadataOperation = vcsProjection !== null && operation.type === "update_pr"
+      ? Object.freeze(Object.fromEntries(Object.entries(operation).filter(([key]) => key !== "headSha")))
+      : operation;
+    const effective = effectiveOperation(metadataOperation, binding);
+    if (context.recordOnly === true) {
+      const recordedBinding = Object.freeze({ ...binding, recordIntent: context.recordIntent });
+      const observed = await rawApplyOperation({ operation: effective, snapshot: trustedSnapshot, verification: proof, recordOnly: true, binding: recordedBinding });
+      contract(observed.state === "complete", "recorded operation precondition failed");
+      return unchangedReceipt(operation, expectedBefore);
+    }
     const credential = await credentialFor({ permissions, operationDigest });
     contract(!applyActive, "concurrent apply is forbidden");
     applyActive = true;
     activeApplyToken = credential.value;
     try {
-      const effective = effectiveOperation(operation, binding);
       if (expectedReceipt !== null) {
         const observed = await rawApplyOperation({ operation: effective, snapshot: trustedSnapshot, verification: proof, verifyOnly: true, binding });
         contract(observed.state === "complete", "resumed operation postcondition changed");
@@ -1362,9 +1658,49 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       applyActive = false;
     }
   };
+  const projectionAuthorities = (request, decision, name) => {
+    const allowed = new Set(["decision", "snapshot", "verification", "previousReceipt", "capabilities", "vcsProjections"]);
+    contract(request && !Array.isArray(request) && Object.getPrototypeOf(request) === Object.prototype && ["decision", "snapshot", "verification", "previousReceipt"].every(key => Object.hasOwn(request, key)) && Object.keys(request).every(key => allowed.has(key)), `${name} has invalid fields`);
+    const expected = decision.kind === "patch" ? decision.operations.filter(operation => ["create_pr", "update_pr"].includes(operation.type)).map(digestJson).sort() : [];
+    const supplied = request.vcsProjections ?? [];
+    contract(Array.isArray(supplied), "VCS projection authority does not match decision");
+    const projections = supplied.map(value => {
+      exactObject(value, ["operationDigest", "headSha"], "VCS projection");
+      contract(REVISION_DIGEST.test(value.operationDigest) && /^[0-9a-f]{40}$/.test(value.headSha), "VCS projection authority does not match decision");
+      return Object.freeze({ operationDigest: value.operationDigest, headSha: value.headSha });
+    }).sort((left, right) => left.operationDigest.localeCompare(right.operationDigest));
+    contract(new Set(projections.map(value => value.operationDigest)).size === projections.length && digestJson(projections.map(value => value.operationDigest)) === digestJson(expected), "VCS projection authority does not match decision");
+    return new Map(projections.map(value => [value.operationDigest, value]));
+  };
+  const hardenedRecordApply = async request => {
+    const canonicalDecision = validateDecision(request?.decision);
+    const projections = projectionAuthorities(request, canonicalDecision, "record apply request");
+    contract(request.previousReceipt === null, "dry-run cannot consume a write receipt");
+    const completed = [];
+    const intents = [];
+    for (let index = 0; index < canonicalDecision.operations.length; index++) {
+      const operation = canonicalDecision.operations[index];
+      const receipt = await hardenedApplyOperation(
+        { operation, operationIndex: index, decision: canonicalDecision, snapshot: request.snapshot, verification: request.verification, priorOperations: completed },
+        { priorAuthorityVerified: true, recordOnly: true, vcsProjection: projections.get(digestJson(operation)) ?? null, recordIntent: () => { intents.push(operation); } },
+      );
+      completed.push(receipt);
+    }
+    return Object.freeze({ receipt: createApplyReceipt({ decision: canonicalDecision, snapshot: request.snapshot, verification: request.verification, operations: completed }), intents: Object.freeze(intents) });
+  };
   const hardenedApply = async request => {
-    exactObject(request, ["decision", "snapshot", "verification", "previousReceipt"], "apply request");
-    const canonicalDecision = validateDecision(request.decision);
+    const canonicalDecision = validateDecision(request?.decision);
+    const projections = projectionAuthorities(request, canonicalDecision, "apply request");
+    let credentialPermissions;
+    if (Object.hasOwn(request, "capabilities")) {
+      contract(Array.isArray(request.capabilities) && request.capabilities.every((value, index) => typeof value === "string" && /^[a-z]+:[a-z]+$/.test(value) && (index === 0 || request.capabilities[index - 1].localeCompare(value) < 0)), "apply capability set is not canonical");
+      const expected = [...new Set([
+        ...canonicalDecision.operations.filter(operation => operation.type !== "create_branch").flatMap(operation => operationCapabilities(operation, request.snapshot)),
+        ...(canonicalDecision.kind === "patch" ? ["contents:write"] : []),
+      ])].sort();
+      contract(digestJson(request.capabilities) === digestJson(expected), "apply capability set does not match decision");
+      credentialPermissions = Object.freeze([...request.capabilities]);
+    }
     const completed = [];
     if (request.previousReceipt !== null) {
       exactObject(request.previousReceipt, ["decisionDigest", "verificationDigest", "operations"], "previous apply receipt");
@@ -1378,14 +1714,14 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       for (let index = 0; index < completed.length; index++) {
         const observed = await hardenedApplyOperation(
           { operation: canonicalDecision.operations[index], operationIndex: index, decision: canonicalDecision, snapshot: request.snapshot, verification: request.verification, priorOperations: completed.slice(0, index) },
-          { priorAuthorityVerified: true, expectedReceipt: completed[index], skipRevision: index !== latestRevisionAuthority },
+          { priorAuthorityVerified: true, expectedReceipt: completed[index], skipRevision: index !== latestRevisionAuthority, credentialPermissions, vcsProjection: projections.get(digestJson(canonicalDecision.operations[index])) ?? null },
         );
         contract(digestJson(observed) === digestJson(completed[index]), "resumed operation receipt changed");
       }
       for (let index = completed.length; index < canonicalDecision.operations.length; index++) {
         const observed = await hardenedApplyOperation(
           { operation: canonicalDecision.operations[index], operationIndex: index, decision: canonicalDecision, snapshot: request.snapshot, verification: request.verification, priorOperations: completed.slice(0, index) },
-          { priorAuthorityVerified: true },
+          { priorAuthorityVerified: true, credentialPermissions, vcsProjection: projections.get(digestJson(canonicalDecision.operations[index])) ?? null },
         );
         completed.push(observed);
       }
@@ -1395,7 +1731,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     }
     return createApplyReceipt({ decision: canonicalDecision, snapshot: request.snapshot, verification: request.verification, operations: completed });
   };
-  return Object.freeze({ ...api, applyOperation: hardenedApplyOperation, apply: hardenedApply });
+  return Object.freeze({ ...api, applyOperation: hardenedApplyOperation, apply: hardenedApply, recordApply: hardenedRecordApply, operationTokenCapabilities, vcsProjectionAuthority });
 }
 
 export function createDryRunGitHub(repository) {
@@ -1419,16 +1755,23 @@ export function createDefaultGitHub(repository) {
   const scopedToken = process.env.ADW_GITHUB_TOKEN;
   const scopedRepository = process.env.ADW_GITHUB_TOKEN_REPOSITORY;
   const scopedPermissions = process.env.ADW_GITHUB_TOKEN_PERMISSIONS;
+  const scopedExpiresAt = process.env.ADW_GITHUB_TOKEN_EXPIRES_AT;
   let token = null;
-  if (scopedToken !== undefined || scopedRepository !== undefined || scopedPermissions !== undefined) {
-    contract(typeof scopedToken === "string" && scopedToken.length > 0 && scopedRepository === repository && typeof scopedPermissions === "string", "operation-scoped GitHub App token is unavailable");
+  if (scopedToken !== undefined || scopedRepository !== undefined || scopedPermissions !== undefined || scopedExpiresAt !== undefined) {
+    contract(typeof scopedToken === "string" && scopedToken.length > 0 && scopedRepository === repository && typeof scopedPermissions === "string" && typeof scopedExpiresAt === "string" && Number.isFinite(Date.parse(scopedExpiresAt)), "operation-scoped GitHub App token is unavailable");
     let permissions;
     try { permissions = JSON.parse(scopedPermissions); } catch { throw new AdwError("contract", "operation-scoped GitHub App permissions are invalid"); }
     contract(Array.isArray(permissions) && permissions.every(value => typeof value === "string") && new Set(permissions).size === permissions.length, "operation-scoped GitHub App permissions are invalid");
-    token = async request => {
+    const provider = async request => {
       contract(digestJson(request.permissions) === digestJson(permissions), "GitHub App token permissions do not match operation class");
       return { value: scopedToken, source: "github-app", repository, permissions, operationDigest: request.operationDigest };
     };
+    Object.defineProperties(provider, {
+      readValue: { value: scopedToken },
+      permissions: { value: Object.freeze([...permissions]) },
+      expiresAt: { value: scopedExpiresAt },
+    });
+    token = provider;
   }
   return createGitHub({
     repository,

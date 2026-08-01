@@ -8,7 +8,7 @@ import test from "node:test";
 import { digestBytes, digestJson } from "../core.mjs";
 import { defineRole } from "../roles.mjs";
 import { runProcess } from "../providers.mjs";
-import { applyVerifiedPatch, createDefaultVcs, verifyPatch } from "../vcs.mjs";
+import { applyVerifiedPatch, createDefaultVcs, projectVerifiedPatch, verifyPatch } from "../vcs.mjs";
 
 const exec = promisify(execFile);
 
@@ -214,7 +214,7 @@ async function applyFixture(t, { reviser = false, signing = { mode: "unsigned" }
       : [{ resource: "patch-base:main", kind: "git_ref", token: value.baseSha }],
     routing: { role: reviser ? "reviser" : "builder", mode: "single", primary: "claude" },
     state: reviser
-      ? { headBranch: "feature", headSha: value.baseSha, resources: { "pull:7": { headBranch: "feature", headSha: value.baseSha, headRepository: "octo/example" } } }
+      ? { headBranch: "feature", headRepository: "octo/example", headSha: value.baseSha, resources: { "pull:7": { headBranch: "feature", headSha: value.baseSha, headRepository: "octo/example" } } }
       : { entityId: "1" },
   };
   const operation = reviser
@@ -243,6 +243,24 @@ async function applyFixture(t, { reviser = false, signing = { mode: "unsigned" }
   };
   return { ...value, remote, expectedRemote, snapshot, operation, decision, proof, calls, request, translatedRun };
 }
+
+test("read-only patch projection performs remote and tree conflict checks without credentials or push", async t => {
+  const value = await applyFixture(t);
+  const receipt = await projectVerifiedPatch({
+    ...value.request,
+    credential: undefined,
+    run: value.translatedRun,
+  });
+  assert.equal(receipt.operationDigest, digestJson(value.operation));
+  assert.equal(receipt.projection, "vcs_head");
+  assert.match(receipt.headSha, /^[0-9a-f]{40}$/);
+  assert.equal(value.calls.some(call => call.args.includes("push")), false);
+  assert.equal(value.calls.some(call => Object.values(call.env).some(item => typeof item === "string" && item.startsWith("Authorization:"))), false);
+  await git(value.executable, ["-C", value.repository, "commit", "--allow-empty", "-qm", "remote moved"]);
+  const moved = (await git(value.executable, ["-C", value.repository, "rev-parse", "HEAD"])).stdout.trim();
+  await git(value.executable, ["-C", value.repository, "push", "-q", value.remote, `${moved}:refs/heads/main`]);
+  await assert.rejects(() => projectVerifiedPatch({ ...value.request, credential: undefined, run: value.translatedRun }), error => error?.code === "stale" && error.message === "base changed");
+});
 
 test("verified patch creates one hardened non-force branch push and an operation subreceipt", async t => {
   const value = await applyFixture(t);

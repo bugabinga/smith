@@ -414,6 +414,7 @@ export function createDefaultVcs(executable = process.env.ADW_GIT_PATH) {
     capturePatch: request => capturePatch({ executable, ...request }),
     verifyPatch: request => verifyPatch({ executable, ...request }),
     applyVerifiedPatch: request => applyVerifiedPatch({ executable, ...request }),
+    projectVerifiedPatch: request => projectVerifiedPatch({ executable, ...request }),
   });
 }
 
@@ -613,7 +614,7 @@ function expectedCommit(state, { tree, parent, signed, message, metadata = false
  * The returned record is one operation subreceipt; Task 5 may order it before
  * the GitHub metadata subreceipt carrying the same operation digest.
  */
-export async function applyVerifiedPatch({
+async function verifiedPatchProjection({
   executable,
   repository,
   temporaryDirectory,
@@ -628,7 +629,7 @@ export async function applyVerifiedPatch({
   signing,
   run = runProcess,
   now = () => Date.now(),
-}) {
+}, readOnly) {
   let trustedSnapshot;
   let trustedDecision;
   let trustedProof;
@@ -681,7 +682,7 @@ export async function applyVerifiedPatch({
   if (!outside(repo, temporary) || !outside(repo, tool) || !outside(temporary, tool)) verification("path");
   const exactRemote = githubRemote(trustedSnapshot);
   if (expectedRemote !== exactRemote) verification("remote");
-  if (typeof credential !== "function" || typeof now !== "function") verification("credential");
+  if ((!readOnly && typeof credential !== "function") || typeof now !== "function") verification("credential");
 
   const manifest = trustedDecision.patch;
   const baseSha = manifest.baseSha;
@@ -703,8 +704,8 @@ export async function applyVerifiedPatch({
     const pullResource = `pull:${trustedSnapshot.event.entityId}`;
     const pull = trustedSnapshot.state.resources?.[pullResource];
     const repositoryName = `${trustedSnapshot.repository.owner}/${trustedSnapshot.repository.name}`;
-    if (trustedSnapshot.event.kind !== "pull_request" || selected.prId !== trustedSnapshot.event.entityId
-        || pull?.headRepository !== repositoryName) verification("fork");
+    if (!["pull_request", "pull_request_review", "pull_request_review_comment"].includes(trustedSnapshot.event.kind) || selected.prId !== trustedSnapshot.event.entityId
+        || pull?.headRepository !== repositoryName || trustedSnapshot.state.headRepository !== repositoryName) verification("fork");
     if (pull.headBranch !== branch || pull.headSha !== trustedSnapshot.state.headSha
         || trustedSnapshot.state.headSha !== baseSha || (selected.headSha !== undefined && selected.headSha !== baseSha)
         || !boundRevision(trustedSnapshot, pullResource, "pull", baseSha)
@@ -757,21 +758,24 @@ export async function applyVerifiedPatch({
     const writtenTree = (await command(["write-tree"])).stdout.trim();
     if (writtenTree !== resultTree || !SHA.test(writtenTree)) verification("tree");
 
-    let minted;
-    try { minted = await credential({ repository: `${trustedSnapshot.repository.owner}/${trustedSnapshot.repository.name}`, operationDigest, remote: exactRemote }); }
-    catch { throw new AdwError("forge", "auth"); }
-    const expiry = Date.parse(minted?.expiresAt);
-    const instant = now();
-    if (typeof minted?.value !== "string" || minted.value.length < 1 || minted.value.length > 4096 || /[\r\n\0]/.test(minted.value)
-        || !Number.isFinite(expiry) || !Number.isFinite(instant) || expiry <= instant || expiry > instant + 3_600_000
-        || (minted.operationDigest !== undefined && minted.operationDigest !== operationDigest)) throw new AdwError("forge", "auth");
-    const authorization = Buffer.from(`x-access-token:${minted.value}`).toString("base64");
-    minted = null;
-    const credentialEnv = configEnvironment([
-      ...localEntries, ["http.extraHeader", ""],
-      [`http.${exactRemote}.extraHeader`, `Authorization: Basic ${authorization}`],
-    ]);
-    const remoteCommand = (args, options = {}) => command(args, { ...options, extraEnv: credentialEnv });
+    let remoteCommand = (args, options = {}) => command(args, options);
+    if (!readOnly) {
+      let minted;
+      try { minted = await credential({ repository: `${trustedSnapshot.repository.owner}/${trustedSnapshot.repository.name}`, operationDigest, remote: exactRemote }); }
+      catch { throw new AdwError("forge", "auth"); }
+      const expiry = Date.parse(minted?.expiresAt);
+      const instant = now();
+      if (typeof minted?.value !== "string" || minted.value.length < 1 || minted.value.length > 4096 || /[\r\n\0]/.test(minted.value)
+          || !Number.isFinite(expiry) || !Number.isFinite(instant) || expiry <= instant || expiry > instant + 3_600_000
+          || (minted.operationDigest !== undefined && minted.operationDigest !== operationDigest)) throw new AdwError("forge", "auth");
+      const authorization = Buffer.from(`x-access-token:${minted.value}`).toString("base64");
+      minted = null;
+      const credentialEnv = configEnvironment([
+        ...localEntries, ["http.extraHeader", ""],
+        [`http.${exactRemote}.extraHeader`, `Authorization: Basic ${authorization}`],
+      ]);
+      remoteCommand = (args, options = {}) => command(args, { ...options, extraEnv: credentialEnv });
+    }
     const readRemote = async ref => {
       const output = (await remoteCommand(["ls-remote", "--refs", exactRemote, ref])).stdout.trim();
       if (output === "") return null;
@@ -811,12 +815,17 @@ export async function applyVerifiedPatch({
     if (!expectedCommit(created, { tree: resultTree, parent: baseSha, signed: signingConfig.mode === "signed", message, metadata: true })) verification("commit");
     if (created.signed) await command(["verify-commit", "--raw", commit]);
 
+    const durable = digestJson({ parent: baseSha, tree: resultTree, signing: signingConfig.mode });
+    if (readOnly) return Object.freeze({
+      operationDigest, projection: "vcs_head", status: "complete",
+      beforeRevision: trustedProof.preconditionDigest, preparedRevision: durable, afterRevision: durable,
+      headSha: commit,
+    });
     const push = baseBranch === null
       ? ["push", "--porcelain", exactRemote, `${commit}:${ref}`]
       : ["push", "--atomic", `--force-with-lease=refs/heads/${baseBranch}:${baseSha}`, "--porcelain", exactRemote, `${commit}:${ref}`, `${baseSha}:refs/heads/${baseBranch}`];
     await remoteCommand(push, { remoteFailure: true });
     if (await readRemote(ref) !== commit) stale("head changed");
-    const durable = digestJson({ parent: baseSha, tree: resultTree, signing: signingConfig.mode });
     receipt = Object.freeze({
       operationDigest, projection: "vcs_head", status: "complete",
       beforeRevision: trustedProof.preconditionDigest, preparedRevision: durable, afterRevision: durable,
@@ -827,4 +836,12 @@ export async function applyVerifiedPatch({
     try { await rm(runDirectory, { recursive: true, force: true }); }
     catch { terminal("cleanup"); }
   }
+}
+
+export async function applyVerifiedPatch(request) {
+  return verifiedPatchProjection(request, false);
+}
+
+export async function projectVerifiedPatch(request) {
+  return verifiedPatchProjection(request, true);
 }

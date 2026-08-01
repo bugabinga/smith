@@ -603,7 +603,15 @@ function canonicalInstant(value, name) {
   return value;
 }
 
+function numericRestCommentId(value) {
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value)) fail("marker comment.id must be a REST ID");
+  const number = Number(value);
+  if (!Number.isSafeInteger(number)) fail("marker comment.id must be a REST ID");
+  return number;
+}
+
 function markerRecord(comment, kind, key, value) {
+  numericRestCommentId(comment.id);
   return { kind, key, commentId: comment.id, createdAt: comment.createdAt, value };
 }
 
@@ -612,8 +620,10 @@ function latestMarkers(records) {
   for (const record of records) {
     const id = `${record.kind}:${record.key}`;
     const previous = groups.get(id);
-    if (!previous || record.createdAt > previous.createdAt || (record.createdAt === previous.createdAt && record.commentId > previous.commentId)) groups.set(id, record);
-    if (previous && record.createdAt === previous.createdAt && digestJson(record.value) !== digestJson(previous.value)) fail("marker conflict at equal authority order");
+    const commentNumber = numericRestCommentId(record.commentId);
+    const previousNumber = previous === undefined ? null : numericRestCommentId(previous.commentId);
+    if (!previous || record.createdAt > previous.createdAt || (record.createdAt === previous.createdAt && commentNumber > previousNumber)) groups.set(id, record);
+    if (previous && record.createdAt === previous.createdAt && commentNumber === previousNumber && digestJson(record.value) !== digestJson(previous.value)) fail("marker conflict at equal authority order");
   }
   return [...groups.values()].sort((a, b) => canonicalBytes(a).compare(canonicalBytes(b)));
 }
@@ -783,6 +793,75 @@ export function planReconciliation(request) {
   if (labelSync.wantedDigest !== labelSync.liveDigest && !held.has("repository")) intents.push({ kind: "sync_labels", definitionsDigest: labelSync.wantedDigest });
   const unique = new Map(intents.map(intent => [digestJson(intent), intent]));
   return deepFreeze([...unique.values()].sort((a, b) => canonicalBytes(a).compare(canonicalBytes(b))));
+}
+
+const RECONCILIATION_WORKFLOWS = Object.freeze({
+  retry_route: "adw-issues.yml",
+  fallback_route: "adw-issues.yml",
+  run_obligation: "adw-maintenance.yml",
+  run_review: "adw-pulls.yml",
+  retry_pioneer: "adw-issues.yml",
+});
+
+function validateReconciliationIntent(intent) {
+  object(intent, "reconciliation intent");
+  if (intent.kind === "held") {
+    exact(intent, ["kind", "entityId", "reasons"], "reconciliation intent");
+    string(intent.entityId, "reconciliation intent entity");
+    const reasons = holdReasons(intent.reasons);
+    if (reasons.length === 0 || digestJson(reasons) !== digestJson(intent.reasons)) fail("reconciliation hold reasons are not canonical");
+  } else if (intent.kind === "retry_route") {
+    exact(intent, ["kind", "issueId", "sourceRevision"], "reconciliation intent");
+    string(intent.issueId, "reconciliation issue"); string(intent.sourceRevision, "reconciliation source revision");
+  } else if (intent.kind === "fallback_route") {
+    exact(intent, ["kind", "issueId", "sourceRevision", "provider"], "reconciliation intent");
+    string(intent.issueId, "reconciliation issue"); string(intent.sourceRevision, "reconciliation source revision"); oneOf(intent.provider, PROVIDERS, "reconciliation provider");
+  } else if (intent.kind === "run_obligation") {
+    exact(intent, ["kind", "prId", "mergeSha", "role"], "reconciliation intent");
+    string(intent.prId, "reconciliation pull"); sha(intent.mergeSha, "reconciliation merge SHA"); string(intent.role, "reconciliation role");
+  } else if (intent.kind === "run_review") {
+    exact(intent, ["kind", "prId", "headSha", "reviewKind"], "reconciliation intent");
+    string(intent.prId, "reconciliation pull"); sha(intent.headSha, "reconciliation head SHA"); oneOf(intent.reviewKind, new Set(["correctness", "security"]), "reconciliation review kind");
+  } else if (intent.kind === "retry_pioneer") {
+    exact(intent, ["kind", "issueId", "sourceRevision"], "reconciliation intent");
+    string(intent.issueId, "reconciliation issue"); string(intent.sourceRevision, "reconciliation source revision");
+  } else if (intent.kind === "hold_spec") {
+    exact(intent, ["kind", "issueId", "artifactDigest"], "reconciliation intent");
+    string(intent.issueId, "reconciliation issue"); digest(intent.artifactDigest, "reconciliation artifact");
+  } else if (intent.kind === "sync_labels") {
+    exact(intent, ["kind", "definitionsDigest"], "reconciliation intent");
+    digest(intent.definitionsDigest, "reconciliation label digest");
+  } else fail("reconciliation intent kind is invalid");
+  return copy(intent);
+}
+
+export function mapReconciliationIntents({ snapshot, intents }) {
+  const trustedSnapshot = validateSnapshot(snapshot);
+  if (trustedSnapshot.routing.role !== "reconciler" || trustedSnapshot.routing.mode !== "single" || trustedSnapshot.routing.primary !== null) fail("reconciliation control authority is invalid");
+  array(intents, "reconciliation intents");
+  const validated = intents.map(validateReconciliationIntent);
+  const ordered = [...validated].sort((left, right) => canonicalBytes(left).compare(canonicalBytes(right)));
+  if (new Set(ordered.map(digestJson)).size !== ordered.length) fail("reconciliation intents contain duplicates");
+  const operations = [];
+  for (const intent of ordered) {
+    if (intent.kind === "held") continue;
+    if (intent.kind === "hold_spec") {
+      operations.push({ type: "add_label", entityId: intent.issueId, label: "needs:spec" });
+    } else if (intent.kind === "sync_labels") {
+      operations.push({ type: "sync_labels", definitionsDigest: intent.definitionsDigest });
+    } else {
+      const { kind, ...fields } = intent;
+      operations.push({
+        type: "dispatch_workflow",
+        workflow: RECONCILIATION_WORKFLOWS[kind],
+        ref: trustedSnapshot.repository.defaultBranch,
+        inputs: { kind, ...fields },
+      });
+    }
+  }
+  if (operations.length === 0) operations.push({ type: "noop", reason: "unchanged" });
+  const unique = new Map(operations.map(operation => [digestJson(operation), validateOperationShape(operation)]));
+  return deepFreeze([...unique.values()]);
 }
 
 export function validateVerification(value) {

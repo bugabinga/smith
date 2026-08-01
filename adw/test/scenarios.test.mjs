@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
-  digestBytes, digestJson, mergeEligibility, parseLegacyMarkers, planMergeGate, planReconciliation,
+  digestBytes, digestJson, mapReconciliationIntents, mergeEligibility, parseLegacyMarkers, planMergeGate, planReconciliation,
   reduceAssessments,
 } from "../core.mjs";
-import { deterministicRole, listRoles, reduceDeterministicArtifact, reduceRoleArtifact, role, validateRolePayload } from "../roles.mjs";
+import { controlSnapshotPlan, roleSnapshotPlan } from "../github.mjs";
+import { controlAuthority, deterministicRole, listRoles, planAudit, reduceControlArtifact, reduceDeterministicArtifact, reduceRoleArtifact, reduceStatusArtifact, role, validateRolePayload } from "../roles.mjs";
 
 const controlSha = "a".repeat(40);
 const headSha = "b".repeat(40);
@@ -67,7 +68,7 @@ function roleDecision(name, payload, state, patchBytes = null) {
   return reduceRoleArtifact({ snapshot, rolePolicy: policy, reduction, assessments: entries });
 }
 
-test("composed issue reaches merge only through both current-head review artifacts", () => {
+test("injected E2E: review/security evidence gates composed issue merge", () => {
   const triage = roleDecision("triager", { verdict: "accept", body: "Ready", labels: [] }, { entityId: "1", labels: [] });
   assert.ok(triage.operations.some(value => value.label === "ready"));
   const plan = roleDecision("planner", { verdict: "planned", summary: "Plan", issues: [{ title: "Slice", body: "Build", labels: ["planned"] }] }, { entityId: "1", labels: [] });
@@ -220,6 +221,138 @@ test("missed post-merge work remains retryable while holds suppress writes", () 
   const base = { snapshot, routes: [], pulls: [pull], labelSync: { wantedDigest: "1".repeat(64), liveDigest: "1".repeat(64) }, comments: [], trust, reviews: [], pioneers: [], holds: [] };
   assert.deepEqual(planReconciliation(base), [{ kind: "run_obligation", prId: "2", mergeSha: "e".repeat(40), role: "docs-writer" }]);
   assert.deepEqual(planReconciliation({ ...base, holds: [{ entityId: "pr:2", reasons: ["hold"] }] }), [{ kind: "held", entityId: "pr:2", reasons: ["hold"] }]);
+});
+
+test("review-comment and check routes have reconciliation authority but no assessment route", () => {
+  for (const eventKind of ["pull_request_review_comment", "check"]) {
+    assert.equal(controlSnapshotPlan("reconciler", eventKind).role, "reconciler");
+    for (const roleName of listRoles()) assert.throws(() => roleSnapshotPlan(roleName, eventKind), error => error?.code === "contract");
+  }
+});
+
+test("injected E2E: issue route maps reconciliation into provider-free closed dispatch authority", () => {
+  const policy = controlAuthority("reconciler");
+  const snapshot = {
+    ...snapshotFor("sweeper"),
+    event: { kind: "schedule", action: "reconcile", entityId: "repository" },
+    routing: { role: policy.name, mode: "single", primary: null },
+    state: { currentRevisions: { "issue:7": "r2" } },
+  };
+  const request = {
+    snapshot,
+    routes: [{ issueId: "7", sourceRevision: "r1", status: "primary", primary: "claude", fallback: "codex", primaryOutcome: null, fallbackOutcome: null, artifactDigest: null, prId: null }],
+    pulls: [], labelSync: { wantedDigest: "1".repeat(64), liveDigest: "1".repeat(64) },
+    comments: [], trust, reviews: [], pioneers: [], holds: [],
+  };
+  const intents = planReconciliation(request);
+  const operations = mapReconciliationIntents({ snapshot, intents });
+  assert.deepEqual(operations, [{
+    type: "dispatch_workflow", workflow: "adw-issues.yml", ref: "main",
+    inputs: { kind: "retry_route", issueId: "7", sourceRevision: "r2" },
+  }]);
+  const decision = reduceControlArtifact({ name: "reconciler", snapshot, operations });
+  assert.equal(decision.assessmentDigests.length, 0);
+  assert.equal(role("sweeper").operations.includes("dispatch_workflow"), false);
+  assert.deepEqual(policy.operations, ["add_label", "dispatch_workflow", "noop", "sync_labels"]);
+});
+
+test("injected E2E: post-merge obligation and review/check repairs map deterministically", () => {
+  const policy = controlAuthority("reconciler");
+  const snapshot = {
+    ...snapshotFor("sweeper"),
+    event: { kind: "check", action: "completed", entityId: "90" },
+    routing: { role: policy.name, mode: "single", primary: null },
+    state: { currentRevisions: {} },
+  };
+  const intents = [
+    { kind: "run_obligation", prId: "2", mergeSha: "e".repeat(40), role: "docs-writer" },
+    { kind: "run_review", prId: "3", headSha, reviewKind: "security" },
+  ].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  assert.deepEqual(mapReconciliationIntents({ snapshot, intents }).map(value => [value.workflow, value.inputs.kind]), [
+    ["adw-pulls.yml", "run_review"],
+    ["adw-maintenance.yml", "run_obligation"],
+  ]);
+});
+
+test("injected E2E: settings drift and labels use full provider-free audit state", () => {
+  const authority = controlAuthority("auditor");
+  const expectedRuleset = { name: "main", target: "branch", enforcement: "active", conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } }, rules: [{ type: "required_status_checks", parameters: { strict_required_status_checks_policy: false, required_status_checks: [{ context: "check" }, { context: "merge-gate" }] } }], bypass_actors: [] };
+  const labelSource = '- name: "ready"\n  color: "00ff00"\n  description: "Ready"\n';
+  const snapshot = {
+    ...snapshotFor("sweeper"),
+    event: { kind: "schedule", action: "audit", entityId: "repository" },
+    routing: { role: authority.name, mode: "single", primary: null },
+    state: { entityId: "repository", trust, resources: {
+      "trusted:.github/rulesets/main.json": { data: JSON.stringify(expectedRuleset) },
+      "trusted:.github/labels.yml": { data: labelSource },
+      rulesets: [{ ...expectedRuleset, rules: [{ ...expectedRuleset.rules[0], parameters: { ...expectedRuleset.rules[0].parameters, strict_required_status_checks_policy: true } }] }],
+      settings: { allowAutoMerge: true, allowMergeCommit: false, allowRebaseMerge: false, allowSquashMerge: true, deleteBranchOnMerge: true },
+      labels: [], pulls: [],
+    } },
+  };
+  const decision = planAudit(snapshot);
+  assert.deepEqual(decision.operations.map(value => value.type), ["report_drift", "sync_labels"]);
+  assert.match(decision.operations[0].body, /strict_required_status_checks_policy/);
+  assert.equal(decision.assessmentDigests.length, 0);
+});
+
+test("injected E2E: green-but-blocked jam cannot arm merge", () => {
+  const authority = controlAuthority("auditor");
+  const expectedRuleset = { name: "main", target: "branch", enforcement: "active", conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } }, rules: [], bypass_actors: [] };
+  const snapshot = {
+    ...snapshotFor("sweeper"),
+    event: { kind: "schedule", action: "audit", entityId: "repository" },
+    routing: { role: authority.name, mode: "single", primary: null },
+    state: { entityId: "repository", trust, resources: {
+      "trusted:.github/rulesets/main.json": { data: JSON.stringify(expectedRuleset) },
+      "trusted:.github/labels.yml": { data: "" }, rulesets: [expectedRuleset], labels: [],
+      settings: { allowAutoMerge: true, allowMergeCommit: false, allowRebaseMerge: false, allowSquashMerge: true, deleteBranchOnMerge: true },
+      pulls: [{ number: "2", state: "open", merged: false, mergeState: "blocked", headSha, base: "main", headRepository: "bugabinga/smith", labels: ["reviewed", "security-cleared"],
+        checks: [{ name: "check", headSha, status: "completed", conclusion: "success" }, { name: "merge-gate", headSha, status: "completed", conclusion: "success" }],
+        evidence: [evidence("correctness"), evidence("security")], riskMarker: null, timeline: [] }],
+    } },
+  };
+  const decision = planAudit(snapshot);
+  assert.ok(decision.operations.some(value => value.type === "comment" && value.marker.includes("smith:jam/v1")));
+  assert.ok(decision.operations.some(value => value.type === "publish_check" && value.name === "merge-gate" && value.conclusion === "failure"));
+  assert.equal(decision.operations.some(value => value.type === "arm_auto_merge"), false);
+});
+
+test("injected E2E: merge arm follows current-head deterministic gate", () => {
+  const authority = controlAuthority("auditor");
+  const expectedRuleset = { name: "main", target: "branch", enforcement: "active", conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } }, rules: [], bypass_actors: [] };
+  const snapshot = {
+    ...snapshotFor("sweeper"), event: { kind: "schedule", action: "audit", entityId: "repository" },
+    routing: { role: authority.name, mode: "single", primary: null },
+    state: { entityId: "repository", trust, resources: {
+      "trusted:.github/rulesets/main.json": { data: JSON.stringify(expectedRuleset) }, "trusted:.github/labels.yml": { data: "" },
+      rulesets: [expectedRuleset], labels: [], settings: { allowAutoMerge: true, allowMergeCommit: false, allowRebaseMerge: false, allowSquashMerge: true, deleteBranchOnMerge: true },
+      pulls: [{ number: "2", state: "open", draft: false, merged: false, mergeState: "clean", headSha, base: "main", headRepository: "bugabinga/smith", labels: ["reviewed", "security-cleared"],
+        checks: [{ name: "check", headSha, status: "completed", conclusion: "success" }], evidence: [evidence("correctness"), evidence("security")], riskMarker: null, timeline: [] }],
+    } },
+  };
+  assert.deepEqual(planAudit(snapshot).operations.map(value => value.type), ["publish_check", "arm_auto_merge"]);
+  for (const patch of [{ draft: true }, { mergeState: "unknown" }, { mergeState: "dirty" }]) {
+    const blocked = structuredClone(snapshot);
+    Object.assign(blocked.state.resources.pulls[0], patch);
+    assert.equal(planAudit(blocked).operations.some(value => value.type === "arm_auto_merge"), false);
+  }
+});
+
+test("terminal/fallback outcomes reduce to sanitized canonical publication operations", () => {
+  const policy = role("reviewer");
+  const value = {
+    ...snapshotFor("reviewer", { entityId: "2", headSha, labels: [] }),
+    event: { kind: "pull_request", action: "synchronize", entityId: "2" },
+    revisions: [{ resource: "pull:2", kind: "pull", token: headSha }],
+  };
+  for (const reduction of [{ status: "fallback", reason: "malformed", provider: "codex" }, { status: "terminal", reason: "providers_unavailable" }]) {
+    const decision = reduceStatusArtifact({ snapshot: value, rolePolicy: policy, reduction });
+    assert.equal(decision.operations[0].type, "publish_check");
+    assert.equal(decision.operations[0].summary.includes("malformed"), false);
+    assert.match(decision.operations[0].summary, /^ADW reviewer (fallback|terminal): /);
+  }
+  assert.deepEqual(role("reviewer").operations, policy.operations);
 });
 
 test("captured legacy evidence imports semantically without Projects or release", async () => {

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { canonicalBytes, digestJson } from "../core.mjs";
+import { AdwError, canonicalBytes, digestBytes, digestJson } from "../core.mjs";
+import { composeApply, validateApplyResult } from "../main.mjs";
 import * as githubAdapter from "../github.mjs";
 import { createApplyReceipt, createGitHub, GITHUB_OPERATION_TRANSITIONS, operationCapabilities } from "../github.mjs";
+import { role } from "../roles.mjs";
 import { applyVerifiedPatch } from "../vcs.mjs";
 
 const validateAutoMergeMarkers = request => githubAdapter.validateAutoMergeMarkers(request);
@@ -15,6 +17,13 @@ const appIdentity = Object.freeze({ appId: "12345", slug: "smith", botUserId: "6
 const app = Object.freeze({ id: 12345, slug: "smith" });
 const bot = Object.freeze({ id: 67890, login: "smith[bot]", type: "Bot" });
 const reply = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
+const issueSourceRevision = issue => digestJson({
+  body: issue.body ?? "",
+  labels: (issue.labels ?? []).map(label => typeof label === "string" ? label : label.name).sort(),
+  milestoneId: issue.milestone === null || issue.milestone === undefined ? null : String(issue.milestone.id),
+  state: issue.state,
+  title: issue.title,
+});
 
 function snapshot(revisions = [], resources = {}) {
   return {
@@ -229,6 +238,44 @@ test("writer rejects VCS-owned branch and patch-head projection", async () => {
   assert.equal(calls.length, 0);
 });
 
+test("patch update metadata accepts only the exact observed VCS head transition", async () => {
+  const bytes = Buffer.from("revision");
+  const projectedHead = "d".repeat(40);
+  const originalIssue = issueSourceRevision({ state: "open", title: "I", body: "", labels: [], milestone: null });
+  const manifest = { baseSha: headSha, digest: digestBytes(bytes), size: bytes.length, files: [{ path: "smith/src/lib.rs", kind: "regular", oldMode: "100644", newMode: "100644" }] };
+  const operation = { type: "update_pr", prId: "3", body: "Revised", headSha };
+  const value = {
+    ...snapshot([{ resource: "issue:9", kind: "issue", token: originalIssue }, { resource: "pull:3", kind: "pull", token: headSha }, { resource: "ref:feature", kind: "git_ref", token: headSha }]),
+    event: { kind: "pull_request", action: "synchronize", entityId: "3" }, routing: { role: "reviser", mode: "single", primary: "claude" },
+    state: { entityId: "3", headSha, headBranch: "feature", resources: { "pull:3": { headRepository: repository, headBranch: "feature", headSha } } },
+  };
+  const canonicalDecision = { ...decision(value, [operation]), kind: "patch", patch: manifest };
+  const proof = { ...verification(value, canonicalDecision), kind: "patch", patch: manifest, resultTree: "c".repeat(40) };
+  let pullBody = "Old";
+  let issueBody = "";
+  const { github, calls } = harness(request => {
+    const path = endpoint(request);
+    if (request.args[2] === "GET" && path.endsWith("/pulls/3")) return reply({ id: 3, number: 3, state: "open", title: "P", body: pullBody, head: { sha: projectedHead } });
+    if (request.args[2] === "GET" && path.endsWith("/git/ref/heads/feature")) return reply({ object: { sha: projectedHead } });
+    if (request.args[2] === "GET" && path.endsWith("/issues/9")) return reply({ id: 9, number: 9, state: "open", title: "I", body: issueBody, labels: [], milestone: null, updated_at: "2026-01-01T00:00:00.000Z" });
+    if (request.args[2] === "PATCH" && path.endsWith("/pulls/3")) { pullBody = body(request).body; return reply({ id: 3, number: 3, body: pullBody, head: { sha: projectedHead } }); }
+    throw new Error(`unexpected ${request.args[2]} ${path}`);
+  });
+  const capabilities = [...new Set([...operationCapabilities(operation, value), "contents:write"])].sort();
+  const operationDigest = digestJson(operation);
+  const vcsProjections = [{ operationDigest, headSha: projectedHead }];
+  const receipt = await github.apply({ decision: canonicalDecision, snapshot: value, verification: proof, previousReceipt: null, capabilities, vcsProjections });
+  assert.equal(receipt.operations[0].operationDigest, operationDigest);
+  assert.deepEqual(body(calls.find(call => call.args[2] === "PATCH")), { body: "Revised" });
+  await assert.rejects(() => github.apply({ decision: canonicalDecision, snapshot: value, verification: proof, previousReceipt: null, capabilities, vcsProjections: [] }), error => error?.code === "contract");
+  pullBody = "Old again";
+  issueBody = "changed";
+  await assert.rejects(
+    () => github.apply({ decision: canonicalDecision, snapshot: value, verification: proof, previousReceipt: null, capabilities, vcsProjections }),
+    error => error?.code === "stale" && error.message === "precondition changed",
+  );
+});
+
 test("canonical role operations are never widened by the writer", async () => {
   const operations = [
     { type: "close_issue", issueId: "1", reason: "completed" },
@@ -254,8 +301,9 @@ test("opaque GitHub numbers fail contract before credentials or API calls", asyn
 });
 
 test("named revisions are re-read before the first mutation and stale state fails closed", async () => {
-  const value = snapshot([{ resource: "issue:1", kind: "issue", token: "2026-01-01T00:00:00Z" }]);
-  const { github, calls } = harness(request => reply({ id: 1, number: 1, state: "open", title: "T", body: "B", labels: [], milestone: null, updated_at: "2026-01-02T00:00:00Z" }));
+  const original = { id: 1, number: 1, state: "open", title: "T", body: "B", labels: [], milestone: null, updated_at: "2026-01-01T00:00:00Z" };
+  const value = snapshot([{ resource: "issue:1", kind: "issue", token: issueSourceRevision(original) }]);
+  const { github, calls } = harness(request => reply({ ...original, body: "changed", updated_at: "2026-01-02T00:00:00Z" }));
   await assert.rejects(() => apply(github, { type: "add_label", entityId: "1", label: "ready" }, value), error => error?.code === "stale" && error.message === "precondition changed");
   assert.deepEqual(calls.map(call => call.args.slice(1, 4)), [
     ["--method", "GET", "/repos/bugabinga/smith/issues/1"],
@@ -266,9 +314,9 @@ test("named revisions are re-read before the first mutation and stale state fail
 test("natural post-state reconstructs a lost receipt without repeating the write", async () => {
   const original = "2026-01-01T00:00:00.000Z";
   const post = "2026-01-01T00:00:01.000Z";
-  const value = snapshot([{ resource: "issue:1", kind: "issue", token: original }]);
-  const operation = { type: "add_label", entityId: "1", label: "ready" };
   let issue = { id: 1, number: 1, state: "open", title: "T", body: "B", labels: [], milestone: null, updated_at: original };
+  const value = snapshot([{ resource: "issue:1", kind: "issue", token: issueSourceRevision(issue) }]);
+  const operation = { type: "add_label", entityId: "1", label: "ready" };
   const { github, calls } = harness(request => {
     if (request.args[2] === "GET") return reply(issue);
     issue = { ...issue, labels: [{ name: "ready" }], updated_at: post };
@@ -277,7 +325,7 @@ test("natural post-state reconstructs a lost receipt without repeating the write
   await apply(github, operation, value);
   const writes = calls.filter(call => call.args[2] !== "GET").length;
   const reconstructed = await apply(github, operation, value);
-  assert.equal(reconstructed.afterRevision, digestJson([{ resource: "issue:1", kind: "issue", token: post }]));
+  assert.equal(reconstructed.afterRevision, digestJson([{ resource: "issue:1", kind: "issue", token: issueSourceRevision(issue) }]));
   assert.equal(calls.filter(call => call.args[2] !== "GET").length, writes);
 });
 
@@ -432,6 +480,44 @@ test("in-progress rerun recovery fails terminal on non-exact delivery evidence",
   assert.equal(calls.some(call => call.args[2] !== "GET"), false);
 });
 
+test("auto-merge freshly enforces non-draft clean current-head authority immediately before GraphQL", async () => {
+  const operation = { type: "arm_auto_merge", prId: "3", headSha, method: "squash" };
+  const routing = { role: "auditor", mode: "single", primary: null };
+  const value = {
+    ...snapshot([{ resource: "pull:3", kind: "pull", token: headSha }]), routing,
+    state: { entityId: "3", trust: { ownerIds: ["7"], appId: appIdentity.botUserId }, resources: {} },
+  };
+  const canonicalDecision = decision(value, [operation]);
+  const correctness = `<!-- smith:review-evidence/v1 kind=correctness head=${headSha} conclusion=approve provider=claude authoritative=true artifact=${"1".repeat(64)} -->`;
+  const security = `<!-- smith:review-evidence/v1 kind=security head=${headSha} conclusion=approve provider=codex authoritative=true artifact=${"2".repeat(64)} -->`;
+  const comments = [{ id: 1, user: bot, body: pairedMarker("reviewer", correctness) }, { id: 2, user: bot, body: pairedMarker("security-reviewer", security) }];
+  let pullReads = 0;
+  let graphqlCalls = 0;
+  let checkApp = { id: 99, slug: "other" };
+  const { github } = harness(request => {
+    const path = endpoint(request);
+    if (request.args[1] === "graphql") { graphqlCalls++; return reply({ data: { enablePullRequestAutoMerge: { pullRequest: { id: "P_3" } } } }); }
+    if (request.args[2] === "GET" && path.endsWith("/pulls/3")) {
+      pullReads++;
+      return reply({ id: 3, node_id: "P_3", number: 3, state: "open", draft: pullReads >= 4, mergeable_state: "clean", labels: [], head: { sha: headSha }, auto_merge: graphqlCalls ? { merge_method: "squash" } : null });
+    }
+    if (request.args[2] === "GET" && path.includes(`/commits/${headSha}/check-runs?`)) return reply({ check_runs: [{ id: 4, name: "check", head_sha: headSha, status: "completed", conclusion: "success", app: checkApp }] });
+    if (request.args[2] === "GET" && path.includes("/issues/3/comments?")) return reply(comments);
+    throw new Error(`unexpected ${request.args[2]} ${path}`);
+  });
+  await assert.rejects(
+    () => apply(github, operation, value, { routing, decision: canonicalDecision }),
+    error => error?.code === "stale" && error.message === "auto-merge check failed",
+  );
+  checkApp = { id: 15368, slug: "github-actions" };
+  pullReads = 0;
+  await assert.rejects(
+    () => apply(github, operation, value, { routing, decision: canonicalDecision }),
+    error => error?.code === "stale" && error.message === "auto-merge precondition failed",
+  );
+  assert.equal(graphqlCalls, 0);
+});
+
 test("operation capabilities are exact, operation-scoped, and exclude settings writes", () => {
   assert.deepEqual(operationCapabilities({ type: "comment" }), ["issues:write"]);
   assert.deepEqual(operationCapabilities({ type: "publish_check" }), ["checks:write"]);
@@ -584,12 +670,12 @@ test("partial retries chain from the latest observed token and reject unrelated 
   const original = "2026-01-01T00:00:00.000Z";
   const firstPost = "2026-01-01T00:00:01.000Z";
   const unrelated = "2026-01-01T00:00:02.000Z";
-  const revisions = [{ resource: "issue:1", kind: "issue", token: original }];
+  let issue = { id: 1001, number: 1, state: "open", title: "T", body: "B", labels: [], milestone: null, updated_at: original };
+  const revisions = [{ resource: "issue:1", kind: "issue", token: issueSourceRevision(issue) }];
   const operations = [{ type: "add_label", entityId: "1", label: "ready" }, { type: "add_label", entityId: "1", label: "blocked" }];
   const value = routedSnapshot(operations[0], snapshot(revisions));
   const canonicalDecision = decision(value, operations);
   const proof = verification(value, canonicalDecision);
-  let issue = { id: 1001, number: 1, state: "open", title: "T", body: "B", labels: [], milestone: null, updated_at: original };
   let failSecond = true;
   let blockedWrites = 0;
   const { github } = harness(request => {
@@ -610,7 +696,7 @@ test("partial retries chain from the latest observed token and reject unrelated 
       return error?.code === "forge" && error.message === "server" && partialReceipt?.operations?.length === 1;
     },
   );
-  assert.equal(partialReceipt.operations[0].afterRevision, digestJson([{ resource: "issue:1", kind: "issue", token: firstPost }]));
+  assert.equal(partialReceipt.operations[0].afterRevision, digestJson([{ resource: "issue:1", kind: "issue", token: issueSourceRevision(issue) }]));
   issue = { ...issue, labels: [...issue.labels, { name: "external" }], updated_at: unrelated };
   failSecond = false;
   const writesBeforeRetry = blockedWrites;
@@ -626,22 +712,160 @@ test("partial retries chain from the latest observed token and reject unrelated 
   assert.throws(() => createApplyReceipt({ decision: canonicalDecision, snapshot: value, verification: proof, operations: [partialReceipt.operations[0], brokenChain] }), error => error?.code === "contract");
 });
 
+test("injected E2E: patch PR applies VCS before GitHub metadata with bound subreceipts", async () => {
+  const bytes = Buffer.from("patch");
+  const manifest = { baseSha: headSha, digest: digestBytes(bytes), size: bytes.length, files: [{ path: "smith/src/lib.rs", kind: "regular", oldMode: "100644", newMode: "100644" }] };
+  const value = {
+    ...routedSnapshot({ type: "create_pr" }, snapshot([{ resource: "patch-base:main", kind: "git_ref", token: headSha }])),
+    routing: { role: "builder", mode: "single", primary: "claude" },
+  };
+  const operation = { type: "create_pr", head: "claude/issue-1", base: "main", title: "Patch", body: "Body", marker: "patch-marker" };
+  const canonicalDecision = { ...decision(value, [operation]), kind: "patch", patch: manifest };
+  const proof = { ...verification(value, canonicalDecision), kind: "patch", patch: manifest, resultTree: "c".repeat(40) };
+  const order = [];
+  const before = proof.preconditionDigest;
+  const vcs = { applyVerifiedPatch: async request => {
+    order.push("vcs");
+    assert.equal(request.patchBytes, bytes);
+    return { operationDigest: digestJson(operation), projection: "vcs_head", status: "complete", beforeRevision: before, preparedRevision: "1".repeat(64), afterRevision: "1".repeat(64), headSha: "d".repeat(40) };
+  } };
+  const github = { apply: async request => {
+    order.push("github");
+    assert.equal(request.previousReceipt, null);
+    return { decisionDigest: proof.decisionDigest, verificationDigest: digestJson(proof), operations: [{ operationDigest: digestJson(operation), status: "complete", beforeRevision: before, preparedRevision: "2".repeat(64), afterRevision: "2".repeat(64) }] };
+  } };
+  const result = await composeApply({ sourceDigest: "3".repeat(64), snapshot: value, decision: canonicalDecision, verification: proof, patchBytes: bytes, github, vcs, vcsRequest: {} });
+  assert.deepEqual(order, ["vcs", "github"]);
+  assert.deepEqual(result.operations[0].receipts.map(receipt => receipt.projection), ["vcs_head", "github_metadata"]);
+  assert.equal(result.status, "complete");
+  assert.doesNotThrow(() => validateApplyResult(result, { sourceDigest: "3".repeat(64), snapshot: value, decision: canonicalDecision, verification: proof, authority: role("builder"), capabilities: result.authority.capabilities }));
+});
+
+test("injected E2E: patch update_pr decomposes VCS head and metadata under one operation digest", async () => {
+  const bytes = Buffer.from("revision");
+  const manifest = { baseSha: headSha, digest: digestBytes(bytes), size: bytes.length, files: [{ path: "smith/src/lib.rs", kind: "regular", oldMode: "100644", newMode: "100644" }] };
+  const value = { ...snapshot([{ resource: "pull:3", kind: "pull", token: headSha }, { resource: "ref:feature", kind: "git_ref", token: headSha }]), event: { kind: "pull_request", action: "synchronize", entityId: "3" }, routing: { role: "reviser", mode: "single", primary: "claude" }, state: { entityId: "3", headSha, headBranch: "feature", resources: { "pull:3": { headRepository: repository, headBranch: "feature", headSha } } } };
+  const operation = { type: "update_pr", prId: "3", body: "Revised", headSha };
+  const canonicalDecision = { ...decision(value, [operation]), kind: "patch", patch: manifest };
+  const proof = { ...verification(value, canonicalDecision), kind: "patch", patch: manifest, resultTree: "c".repeat(40) };
+  const raw = revision => ({ operationDigest: digestJson(operation), status: "complete", beforeRevision: proof.preconditionDigest, preparedRevision: revision, afterRevision: revision });
+  const result = await composeApply({
+    sourceDigest: "4".repeat(64), snapshot: value, decision: canonicalDecision, verification: proof, patchBytes: bytes,
+    vcs: { applyVerifiedPatch: async () => ({ ...raw("5".repeat(64)), projection: "vcs_head", headSha: "e".repeat(40) }) }, vcsRequest: {},
+    github: { apply: async request => {
+      assert.deepEqual(request.vcsProjections, [{ operationDigest: digestJson(operation), headSha: "e".repeat(40) }]);
+      return { decisionDigest: proof.decisionDigest, verificationDigest: digestJson(proof), operations: [raw("6".repeat(64))] };
+    } },
+  });
+  assert.equal(new Set(result.operations[0].receipts.map(value => value.operationDigest)).size, 1);
+  assert.deepEqual(result.operations[0].receipts.map(value => value.projection), ["vcs_head", "github_metadata"]);
+});
+
+test("injected E2E: partial retry binds previous receipt and resumes without caller authority", async () => {
+  const operations = [{ type: "add_label", entityId: "1", label: "ready" }, { type: "comment", entityId: "1", body: "done", marker: "done-marker" }];
+  const value = routedSnapshot(operations[0], snapshot());
+  const canonicalDecision = decision(value, operations);
+  const proof = verification(value, canonicalDecision);
+  const first = { operationDigest: digestJson(operations[0]), status: "complete", beforeRevision: proof.preconditionDigest, preparedRevision: "7".repeat(64), afterRevision: "7".repeat(64) };
+  const failed = new AdwError("forge", "server", { partialReceipt: { decisionDigest: proof.decisionDigest, verificationDigest: digestJson(proof), operations: [first] } });
+  const partial = await composeApply({ sourceDigest: "8".repeat(64), snapshot: value, decision: canonicalDecision, verification: proof, github: { apply: async () => { throw failed; } } });
+  assert.equal(partial.status, "partial");
+  assert.deepEqual(partial.operations.map(value => value.status), ["complete", "failed"]);
+  let supplied;
+  const second = { operationDigest: digestJson(operations[1]), status: "complete", beforeRevision: first.afterRevision, preparedRevision: "9".repeat(64), afterRevision: "9".repeat(64) };
+  const complete = await composeApply({
+    sourceDigest: "8".repeat(64), snapshot: value, decision: canonicalDecision, verification: proof, previousReceipt: partial,
+    github: { apply: async request => { supplied = request.previousReceipt; return { decisionDigest: proof.decisionDigest, verificationDigest: digestJson(proof), operations: [first, second] }; } },
+  });
+  assert.deepEqual(supplied.operations, [first]);
+  assert.equal(complete.status, "complete");
+});
+
+test("injected E2E: stale retry emits canonical sanitized failure", async () => {
+  const operation = { type: "add_label", entityId: "1", label: "ready" };
+  const value = routedSnapshot(operation, snapshot());
+  const canonicalDecision = decision(value, [operation]);
+  const proof = verification(value, canonicalDecision);
+  const result = await composeApply({ sourceDigest: "a".repeat(64), snapshot: value, decision: canonicalDecision, verification: proof, github: { apply: async () => { throw new AdwError("stale", "precondition changed\nsecret"); } } });
+  assert.equal(result.status, "failed");
+  assert.deepEqual(result.failure, { operationIndex: 0, projection: "github_state", code: "stale", message: "precondition changed" });
+});
+
+test("pioneer marker comments do not self-stale stable issue revisions, but content changes do", async () => {
+  const issue = { id: 1, number: 1, state: "open", title: "Claim", body: "Prototype this", labels: [{ name: "needs:prototype" }], milestone: null, updated_at: "2026-01-01T00:00:00.000Z" };
+  const revision = issueSourceRevision(issue);
+  const operation = { type: "comment", entityId: "1", body: "Result", marker: `<!-- smith:pioneer/v1 issue=1 source=${revision} verdict=inconclusive artifact=- -->` };
+  const value = { ...snapshot([{ resource: "issue:1", kind: "issue", token: revision }]), routing: { role: "pioneer", mode: "single", primary: "claude" } };
+  let live = structuredClone(issue);
+  let comments = [];
+  const { github } = harness(request => {
+    const path = endpoint(request);
+    if (request.args[2] === "GET" && path.endsWith("/issues/1")) return reply(live);
+    if (request.args[2] === "GET" && path.includes("/issues/1/comments")) return reply(comments);
+    if (request.args[2] === "POST" && path.endsWith("/issues/1/comments")) {
+      live.updated_at = "2026-01-01T00:00:01.000Z";
+      const comment = { id: 10, body: body(request).body, user: bot, created_at: live.updated_at };
+      comments = [comment];
+      return reply(comment);
+    }
+    throw new Error(`unexpected ${request.args[2]} ${path}`);
+  });
+  await apply(github, operation, value, { routing: value.routing });
+  live = { ...live, body: "Changed claim", updated_at: "2026-01-01T00:00:02.000Z" };
+  await assert.rejects(() => apply(github, operation, value, { routing: value.routing }), error => error?.code === "stale" && error.message === "precondition changed");
+});
+
+test("dry-run record writer performs identical stale reads without mutation", async () => {
+  const original = "2026-01-01T00:00:00.000Z";
+  const operation = { type: "add_label", entityId: "1", label: "ready" };
+  let liveIssue = { id: 1, number: 1, state: "open", title: "T", body: "B", labels: [], milestone: null, updated_at: original };
+  const value = routedSnapshot(operation, snapshot([{ resource: "issue:1", kind: "issue", token: issueSourceRevision(liveIssue) }]));
+  const canonicalDecision = decision(value, [operation]);
+  const proof = verification(value, canonicalDecision);
+  const calls = [];
+  const github = createGitHub({
+    repository, token: null, appIdentity, ghPath: process.execPath,
+    baseEnv: { PATH: "/bin", HOME: "/tmp", LANG: "C.UTF-8", TMPDIR: "/tmp" },
+    run: async request => {
+      calls.push(request);
+      assert.equal(request.args[2], "GET");
+      return reply(liveIssue);
+    },
+  });
+  const recorded = await github.recordApply({ decision: canonicalDecision, snapshot: value, verification: proof, previousReceipt: null });
+  assert.deepEqual(recorded.intents, [operation]);
+  assert.equal(calls.some(call => call.args[2] !== "GET"), false);
+  liveIssue = { ...liveIssue, body: "changed", updated_at: "2026-01-01T00:00:01.000Z" };
+  await assert.rejects(() => github.recordApply({ decision: canonicalDecision, snapshot: value, verification: proof, previousReceipt: null }), error => error?.code === "stale" && error.message === "precondition changed");
+  assert.equal(calls.some(call => call.args[2] !== "GET"), false);
+});
+
+test("injected E2E: product-check rerun remains a canonical provider decision operation", async () => {
+  const operation = { type: "rerun_check", runId: "4" };
+  const value = { ...snapshot(), routing: { role: "sweeper", mode: "single", primary: "codex" } };
+  const canonicalDecision = decision(value, [operation]);
+  const proof = verification(value, canonicalDecision);
+  const raw = { operationDigest: digestJson(operation), status: "complete", beforeRevision: proof.preconditionDigest, preparedRevision: "b".repeat(64), afterRevision: "c".repeat(64) };
+  const result = await composeApply({ sourceDigest: "d".repeat(64), snapshot: value, decision: canonicalDecision, verification: proof, github: { apply: async () => ({ decisionDigest: proof.decisionDigest, verificationDigest: digestJson(proof), operations: [raw] }) } });
+  assert.equal(result.operations[0].receipts[0].projection, "github_state");
+});
+
 test("receipts persist observed original-prepared-post revision transitions", async () => {
   const original = "2026-01-01T00:00:00.000Z";
   const post = "2026-01-01T00:00:01.000Z";
-  const revisions = [{ resource: "issue:1", kind: "issue", token: original }];
+  let issue = { id: 1001, number: 1, state: "open", title: "T", body: "B", labels: [], milestone: null, updated_at: original };
+  const revisions = [{ resource: "issue:1", kind: "issue", token: issueSourceRevision(issue) }];
   const operation = { type: "add_label", entityId: "1", label: "ready" };
   const value = routedSnapshot(operation, snapshot(revisions));
   const canonicalDecision = decision(value, [operation]);
   const proof = verification(value, canonicalDecision);
-  let issue = { id: 1001, number: 1, state: "open", title: "T", body: "B", labels: [], milestone: null, updated_at: original };
   const { github } = harness(request => {
     if (request.args[2] === "GET") return reply(issue);
     issue = { ...issue, labels: [{ name: body(request).labels[0] }], updated_at: post };
     return reply(issue);
   });
   const receipt = await apply(github, operation, value, { decision: canonicalDecision });
-  const observedPost = digestJson([{ resource: "issue:1", kind: "issue", token: post }]);
+  const observedPost = digestJson([{ resource: "issue:1", kind: "issue", token: issueSourceRevision(issue) }]);
   assert.deepEqual(receipt, {
     operationDigest: digestJson(operation),
     status: "complete",
