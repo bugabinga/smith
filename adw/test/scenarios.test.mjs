@@ -131,6 +131,39 @@ test("every provider-role write respects a current hold", () => {
   for (const [name, payload, state, patchBytes] of cases) assert.deepEqual(roleDecision(name, payload, state, patchBytes).operations, [{ type: "terminal", reason: "held" }], name);
 });
 
+test("route labels block merge while routed roles deterministically reconcile them", () => {
+  for (const label of ["needs:prototype", "needs:breakdown", "changes-requested"]) {
+    const result = mergeEligibility(mergeState({ labels: ["reviewed", "security-cleared", label] }));
+    assert.ok(result.reasons.includes(label), label);
+  }
+
+  const planner = roleDecision("planner", {
+    verdict: "planned", summary: "Split", issues: [{ title: "Slice", body: "Build", labels: ["planned"] }],
+  }, { entityId: "1", labels: ["needs:breakdown"] });
+  assert.deepEqual(planner.operations.map(operation => [operation.type, operation.label ?? null]), [
+    ["create_issue", null], ["remove_label", "needs:breakdown"],
+  ]);
+
+  const pioneer = roleDecision("pioneer", {
+    verdict: "inconclusive", summary: "Needs hardware", claim: "claim", patch: null,
+  }, { entityId: "1", labels: ["needs:prototype"] });
+  assert.deepEqual(pioneer.operations.map(operation => [operation.type, operation.label ?? null]), [
+    ["comment", null], ["remove_label", "needs:prototype"],
+  ]);
+
+  const bytes = Buffer.from("x");
+  const patch = { baseSha: headSha, digest: digestBytes(bytes), size: 1, files: [{ path: "smith/src/lib.rs", kind: "regular", oldMode: "100644", newMode: "100644" }] };
+  const reviser = roleDecision("reviser", { verdict: "patch", summary: "Revised", patch }, {
+    entityId: "2", labels: ["changes-requested"], changedPaths: ["smith/src/lib.rs"],
+  }, bytes);
+  assert.deepEqual(reviser.operations.map(operation => operation.type), ["update_pr"]);
+
+  const reviewer = roleDecision("reviewer", { verdict: "approve", risk: "none", findings: [] }, {
+    entityId: "2", labels: ["changes-requested"], headSha,
+  });
+  assert.ok(reviewer.operations.some(operation => operation.type === "remove_label" && operation.label === "changes-requested"));
+});
+
 test("issue route falls back once then reaches current-head squash intent", () => {
   const policy = role("builder");
   const snapshot = snapshotFor("builder", { input: { protected: false, incomplete: false, fork: false, binary: false, oversized: false } });
@@ -256,6 +289,14 @@ test("review-comment and check routes have reconciliation authority but no asses
   for (const eventKind of ["pull_request_review_comment", "check"]) {
     assert.equal(controlSnapshotPlan("reconciler", eventKind).role, "reconciler");
     for (const roleName of listRoles()) assert.throws(() => roleSnapshotPlan(roleName, eventKind), error => error?.code === "contract");
+  }
+});
+
+test("submitted reviews admit provider-free reconciliation and only the reviser provider route", () => {
+  assert.equal(controlSnapshotPlan("reconciler", "pull_request_review").role, "reconciler");
+  assert.equal(roleSnapshotPlan("reviser", "pull_request_review").role, "reviser");
+  for (const roleName of listRoles().filter(name => name !== "reviser")) {
+    assert.throws(() => roleSnapshotPlan(roleName, "pull_request_review"), error => error?.code === "contract", roleName);
   }
 });
 

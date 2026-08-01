@@ -3,7 +3,7 @@ import { access, readFile } from "node:fs/promises";
 import test from "node:test";
 import { canonicalBytes, digestBytes, digestJson } from "../core.mjs";
 import {
-  OPERATIONS, PROVIDERS, defineRole, deriveDeterministicArtifacts, deterministicRole,
+  OPERATIONS, PROVIDERS, controlAuthority, defineRole, deriveDeterministicArtifacts, deterministicRole,
   listDeterministicRoles, listRoles, reduceDeterministicArtifact, reduceRoleArtifact, role, validateRolePayload,
 } from "../roles.mjs";
 
@@ -99,13 +99,13 @@ test("provider roles expose only operations their reducers can emit", () => {
   const terminal = ["noop", "terminal"];
   const expected = {
     triager: ["comment", "add_label"],
-    planner: ["create_issue"],
+    planner: ["create_issue", "remove_label"],
     surveyor: ["create_issue"],
     builder: ["create_pr", "comment", "add_label"],
     "codex-builder": ["create_pr", "comment", "add_label"],
     "docs-writer": ["create_pr", "comment", "add_label"],
     reviser: ["update_pr", "comment", "add_label"],
-    pioneer: ["create_pr", "add_label", "comment"],
+    pioneer: ["create_pr", "add_label", "comment", "remove_label"],
     sweeper: ["rerun_check", "create_issue"],
     "adw-doctor": ["create_issue", "report_drift"],
     "dependency-manager": ["comment", "add_label"],
@@ -259,6 +259,49 @@ test("holds and unauthenticated steering fail closed", () => {
     () => reduceRoleArtifact(roleCase("steerer", { verdict: "comment", body: "Answer" }, { entityId: "1", labels: [], ownerAuthenticated: false })),
     error => error?.code === "contract",
   );
+});
+
+test("route labels admit only their intended execution and deterministic dequeue", () => {
+  const planned = reduceRoleArtifact(roleCase("planner", {
+    verdict: "planned", summary: "Split", issues: [{ title: "Slice", body: "Build", labels: ["planned"] }],
+  }, { entityId: "1", labels: ["needs:breakdown"] }));
+  assert.deepEqual(planned.operations.map(operation => [operation.type, operation.label ?? null]), [
+    ["create_issue", null], ["remove_label", "needs:breakdown"],
+  ]);
+
+  const pioneered = reduceRoleArtifact(roleCase("pioneer", {
+    verdict: "inconclusive", summary: "Retry with hardware", claim: "claim", patch: null,
+  }, { entityId: "1", labels: ["needs:prototype"] }));
+  assert.deepEqual(pioneered.operations.map(operation => [operation.type, operation.label ?? null]), [
+    ["comment", null], ["remove_label", "needs:prototype"],
+  ]);
+
+  const patchBytes = Buffer.from("x");
+  const patch = { baseSha: "b".repeat(40), digest: digestBytes(patchBytes), size: 1, files: [{ path: "smith/src/lib.rs", kind: "regular", oldMode: "100644", newMode: "100644" }] };
+  const revised = reduceRoleArtifact(roleCase("reviser", { verdict: "patch", summary: "Revise", patch }, {
+    entityId: "2", labels: ["changes-requested"], changedPaths: ["smith/src/lib.rs"],
+  }, patch, patchBytes));
+  assert.deepEqual(revised.operations.map(operation => operation.type), ["update_pr"]);
+
+  const reviewed = reduceRoleArtifact(roleCase("reviewer", { verdict: "approve", risk: "none", findings: [] }, {
+    entityId: "2", headSha: "b".repeat(40), labels: ["changes-requested"],
+  }));
+  assert.ok(reviewed.operations.some(operation => operation.type === "remove_label" && operation.label === "changes-requested"));
+
+  for (const blocker of ["blocked", "risk:high", "needs:info", "needs:spec"]) {
+    const held = reduceRoleArtifact(roleCase("planner", {
+      verdict: "planned", summary: "Split", issues: [{ title: "Slice", body: "Build", labels: [] }],
+    }, { entityId: "1", labels: ["needs:breakdown", blocker] }));
+    assert.deepEqual(held.operations, [{ type: "terminal", reason: "held" }], blocker);
+  }
+  const unrelated = reduceRoleArtifact(roleCase("planner", {
+    verdict: "planned", summary: "Split", issues: [{ title: "Slice", body: "Build", labels: [] }],
+  }, { entityId: "1", labels: ["needs:prototype"] }));
+  assert.deepEqual(unrelated.operations, [{ type: "terminal", reason: "held" }]);
+});
+
+test("reconciler authority explicitly accepts submitted reviews", () => {
+  assert.ok(controlAuthority("reconciler").eventKinds.includes("pull_request_review"));
 });
 
 test("reduction rejects forged policy and event targets", () => {

@@ -845,6 +845,30 @@ On 2026-08-01, focused Node passed 172/172 and full Node passed 248/248; workspa
 
 Read-only live reduction at main `491a42a3cc8848853e4ccd6cedc5695d9bd06e8c` produced an auditor snapshot of 78,778 bytes (digest `94137e8e76db3e82f379ffaa3343d318aae70e79a2d9e11484da0c1365cd5ce3`) and a reconciler snapshot of 223,611 bytes (digest `1d30d6deedb293a8ec810d05b33a27622e738ca969706a6168b76f444f6909b6`). Auditor failed the three explicit-behind heads, judged #150 eligible without circular `BLOCKED`, and would reconstruct its existing auto-merge arm; reconciler reduced successfully with zero cancelled applies in the bounded live window. Therefore live audit remains blocked until Task 12's independent #150 safety proof or owner disposition. No GitHub object was mutated.
 
+### Task 7E: Bind deployed refs, submitted-review control, and route-label execution
+
+**Files:**
+
+- Modify: `adw/roles.mjs`
+- Modify: `adw/test/{roles,scenarios,wrappers}.test.mjs`
+- Modify: `prototypes/p38-adw-disposable/wrappers/adw-{issues,pulls,maintenance}.yml`
+- Modify: `.github/workflows/adw-{issues,pulls,maintenance}.yml`
+- Modify: `docs/super/plans/2026-08-01-adw-mjs-control-plane-phase-5-production-cutover-proof.md`
+
+- [x] **Step 1: Add wrapper, role, and scenario RED before implementation**
+
+The focused three-file run recorded 71 tests with 63 passes and 8 expected failures. Regressions exposed missing default-ref authority for direct internal dispatch, maintenance's non-push ref bypass, missing pull base-ref checks, implicit submitted-review routing, absent reconciler event authority, and route labels terminalizing planner/pioneer/reviser/reviewer work. No production workflow, GitHub object, secret, setting, issue, PR, or branch was mutated.
+
+- [x] **Step 2: Implement only event-specific trust and execution-hold corrections**
+
+Maintenance now requires `github.ref == 'refs/heads/main'` and `github.workflow_sha == github.sha` before every natural, manual, or internal lane. Pull natural events bind the event-specific default base ref and its deployed workflow SHA; pull and issue `repository_dispatch` bind the default branch, and every guard remains behind `ADW_CUTOVER_HOLD`. Exact App-authored `changes_requested` review events still invoke only reviser, while every other submitted review is provider-free reconciliation and `reconciler` explicitly accepts `pull_request_review`.
+
+Merge holds remain unchanged. Execution filtering ignores only `needs:breakdown` for planner, `needs:prototype` for pioneer, and `changes-requested` for reviser plus the reviewer that deterministically clears it after a successful revision. Planner and pioneer dequeue their own route labels on canonical non-noop completion; reviser preserves `changes-requested` until reviewer approval removes it. `blocked`, `risk:high`, `needs:info`, `needs:spec`, and every unrelated hold remain terminal.
+
+- [x] **Step 3: Promote exact bytes and verify offline**
+
+Focused Node passed 71/71; full Node passed 253/253. Exact actionlint v1.7.7 passed all four production ADW workflows; `yq` v4.53.3 parsed the three canonical and four production workflows. All three canonical/production wrapper pairs are byte-equal, canonical operational YAML remains 383 physical lines, and `git diff --check` passes.
+
 ### Task 8: Push the owner-authored protected PR and record owner approval on its exact head
 
 **Files:** none

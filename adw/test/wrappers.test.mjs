@@ -379,26 +379,37 @@ test("wrapper event truth table prevents provider loops and reserves manual disp
   for (const name of ["primary-claude", "primary-codex", "fallback-claude", "fallback-codex"]) assert.match(jobs(issue).get(name), /needs\.prepare\.outputs\.(?:decision|fallback|primary)/);
 });
 
-test("top-level callers reject feature-branch workflow bytes before forwarding secrets", async () => {
+test("top-level callers bind secret-bearing events to deployed default-branch bytes", async () => {
   const values = await sources();
+  const defaultRef = "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)";
   const issueGraph = jobs(values["adw-issues.yml"]);
   for (const name of ["target", "prepare"]) {
     const condition = inputLine(issueGraph.get(name), "if");
     assert.match(condition, /inputs\.lane != '' && inputs\.control_sha == github\.workflow_sha/);
     assert.match(condition, /inputs\.lane == '' && github\.workflow_sha == github\.sha/);
+    assert.match(condition, /github\.event_name == 'repository_dispatch'.*github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)/);
   }
+
   const pullLane = jobs(values["adw-pulls.yml"]).get("pull-event-lane");
   const pullCondition = inputLine(pullLane, "if");
-  for (const trusted of [
-    "github.workflow_sha == github.sha",
-    "github.workflow_sha == github.event.pull_request.base.sha",
-    "github.workflow_sha == github.event.check_run.pull_requests[0].base.sha",
-    "github.workflow_sha == github.event.check_suite.pull_requests[0].base.sha",
-  ]) assert.ok(pullCondition.includes(trusted), `pull trust root lacks ${trusted}`);
+  assert.match(pullCondition, /github\.event_name == 'repository_dispatch'.*github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\).*github\.workflow_sha == github\.sha/);
+  for (const [event, payload] of [
+    ["pull_request_target", "github.event.pull_request"],
+    ["pull_request_review", "github.event.pull_request"],
+    ["pull_request_review_comment", "github.event.pull_request"],
+    ["check_run", "github.event.check_run.pull_requests[0]"],
+    ["check_suite", "github.event.check_suite.pull_requests[0]"],
+  ]) {
+    assert.ok(pullCondition.includes(`github.event_name == '${event}'`), `pull trust root lacks ${event}`);
+    assert.ok(pullCondition.includes(`${payload}.base.ref == github.event.repository.default_branch`), `pull trust root lacks ${event} default base`);
+    assert.ok(pullCondition.includes(`github.workflow_sha == ${payload}.base.sha`), `pull trust root lacks ${event} deployed SHA`);
+  }
+
   const maintenanceLane = jobs(values["adw-maintenance.yml"]).get("maintenance-event-lane");
   const maintenanceCondition = inputLine(maintenanceLane, "if");
-  assert.match(maintenanceCondition, /github\.workflow_sha == github\.sha/);
-  assert.match(maintenanceCondition, /github\.event_name != 'push' \|\| github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)/);
+  assert.match(maintenanceCondition, /vars\.ADW_CUTOVER_HOLD != 'true' && github\.ref == 'refs\/heads\/main' && github\.workflow_sha == github\.sha/);
+  assert.doesNotMatch(maintenanceCondition, /github\.event_name != 'push'/);
+  assert.ok(pullCondition.includes(defaultRef));
   for (const block of [pullLane, maintenanceLane]) {
     assert.ok(block.indexOf("if:") < block.indexOf("secrets:"), "caller trust check must precede secret forwarding");
   }
@@ -412,7 +423,7 @@ test("submitted reviews revise only changes-requested App-authored pulls", async
     const line = inputLine(pullLane, name);
     assert.match(line, /github\.event_name == 'pull_request_review'.*github\.event\.review\.state == 'changes_requested'.*github\.event\.pull_request\.user\.id == fromJSON\(vars\.APP_BOT_USER_ID\).*github\.event\.pull_request\.user\.login == vars\.APP_BOT_LOGIN.*github\.event\.pull_request\.user\.type == 'Bot'/);
     assert.match(line, new RegExp(`'${routes[name]}'`));
-    assert.match(line, new RegExp(`github\\.event_name == 'pull_request_review'.*'${reconciled[name]}'`));
+    assert.match(line, new RegExp(`github\\.event_name == 'pull_request_review'.*github\\.event\\.review\\.state != 'changes_requested'.*'${reconciled[name]}'`));
   }
   for (const name of ["role", "primary", "fallback", "decision"]) {
     const line = inputLine(pullLane, name);
@@ -536,6 +547,7 @@ test("MJS rejects wrapper role and event mismatches; review-comment and checks r
     alert: ["alert-triager"],
   };
   for (const [event, roles] of Object.entries(providerRoutes)) for (const name of roles) assert.equal(roleSnapshotPlan(name, event).role, name);
+  assert.equal(controlSnapshotPlan("reconciler", "pull_request_review").role, "reconciler");
   assert.equal(controlSnapshotPlan("reconciler", "pull_request_review_comment").role, "reconciler");
   assert.equal(controlSnapshotPlan("reconciler", "check").role, "reconciler");
   assert.equal(controlSnapshotPlan("reconciler", "pull_request").role, "reconciler");

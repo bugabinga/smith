@@ -134,11 +134,11 @@ const patch = allowedPrefixes => ({ maxBytes: 1_048_576, maxFiles: 100, allowedP
 const BASE_ROLES = deepFreeze({
   "steerer": config({ name: "steerer", charter: ".claude/agents/steerer.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: sol("high"), capabilities: ["comments:read", "comments:write"], fields: ["comment", "entity", "owner"], operations: ["comment", "noop", "terminal"] }),
   "triager": config({ name: "triager", charter: ".claude/agents/triager.md", primary: "codex", fallback: "claude", claude: opus("high"), codex: luna("medium"), capabilities: ["issues:read", "issues:write"], fields: ["issue", "labels", "milestones"], operations: ["add_label", "comment", "noop", "terminal"] }),
-  "planner": config({ name: "planner", charter: ".claude/agents/planner.md", primary: "claude", fallback: "codex", claude: fable("xhigh"), codex: sol("xhigh"), capabilities: ["issues:read", "issues:write", "milestones:write"], fields: ["issues", "milestones", "spec_change"], operations: ["create_issue", "noop", "terminal"] }),
+  "planner": config({ name: "planner", charter: ".claude/agents/planner.md", primary: "claude", fallback: "codex", claude: fable("xhigh"), codex: sol("xhigh"), capabilities: ["issues:read", "issues:write", "milestones:write"], fields: ["issues", "milestones", "spec_change"], operations: ["create_issue", "noop", "remove_label", "terminal"] }),
   "surveyor": config({ name: "surveyor", charter: ".claude/agents/surveyor.md", primary: "claude", fallback: "codex", claude: fable("high"), codex: sol("high"), capabilities: ["issues:read", "issues:write"], fields: ["issues", "milestones", "repository"], operations: ["create_issue", "noop", "terminal"] }),
   "builder": config({ name: "builder", charter: ".claude/agents/builder.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: terra("high"), capabilities: ["contents:write", "issues:read", "pulls:write"], fields: ["issue", "repository", "route"], operations: ["add_label", "comment", "create_pr", "noop", "terminal"], patch: patch(broadPrefixes) }),
   "codex-builder": config({ name: "codex-builder", charter: ".claude/agents/builder.md", primary: "codex", fallback: null, codex: terra("high"), capabilities: ["contents:write", "issues:read", "pulls:write"], fields: ["issue", "repository", "route"], operations: ["add_label", "comment", "create_pr", "noop", "terminal"], patch: patch(broadPrefixes) }),
-  "pioneer": config({ name: "pioneer", charter: ".claude/skills/pioneer/SKILL.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: sol("high"), capabilities: ["contents:write", "issues:write", "pulls:write"], fields: ["claim", "issue", "spec"], operations: ["add_label", "comment", "create_pr", "noop", "terminal"], patch: patch(["prototypes/"]) }),
+  "pioneer": config({ name: "pioneer", charter: ".claude/skills/pioneer/SKILL.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: sol("high"), capabilities: ["contents:write", "issues:write", "pulls:write"], fields: ["claim", "issue", "spec"], operations: ["add_label", "comment", "create_pr", "noop", "remove_label", "terminal"], patch: patch(["prototypes/"]) }),
   "reviewer": config({ name: "reviewer", charter: ".claude/agents/reviewer.md", primary: "claude", fallback: "codex", claude: opus("xhigh"), codex: sol("high"), capabilities: ["checks:write", "pulls:read"], fields: ["diff", "files", "pull", "reviews"], operations: ["add_label", "comment", "publish_check", "remove_label", "terminal", "noop"], limits: fallbackAuthority }),
   "security-reviewer": config({ name: "security-reviewer", charter: ".claude/agents/security-reviewer.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: sol("high"), capabilities: ["checks:write", "pulls:read"], fields: ["diff", "files", "pull", "security"], operations: ["add_label", "comment", "publish_check", "remove_label", "terminal", "noop"], limits: fallbackAuthority }),
   "reviser": config({ name: "reviser", charter: ".claude/agents/builder.md", primary: "claude", fallback: "codex", claude: opus("high"), codex: terra("high"), capabilities: ["contents:write", "pulls:write"], fields: ["changed_paths", "findings", "pull"], operations: ["add_label", "comment", "noop", "terminal", "update_pr"], patch: patch(broadPrefixes) }),
@@ -176,7 +176,7 @@ const CONTROL_AUTHORITIES = deepFreeze({
     operations: ["add_label", "dispatch_repository", "noop", "rerun_check", "sync_labels"],
     snapshot: { fields: ["issues", "labels", "pulls", "routes", "runs"], maxBytes: 262144 },
     trustedPaths: [".github/labels.yml"],
-    eventKinds: ["check", "dispatch", "pull_request", "pull_request_review_comment", "push", "schedule", "workflow"],
+    eventKinds: ["check", "dispatch", "pull_request", "pull_request_review", "pull_request_review_comment", "push", "schedule", "workflow"],
   },
   auditor: {
     name: "auditor", kind: "control", mode: "single", primary: null, patch: null, capabilities: ["checks:read", "checks:write", "contents:read", "issues:read", "issues:write", "pulls:read", "pulls:write", "repository:read", "settings:read"],
@@ -330,6 +330,18 @@ function semanticOutcome(verdict) {
   return "positive";
 }
 
+const EXECUTION_ROUTE_LABELS = Object.freeze({
+  planner: "needs:breakdown",
+  pioneer: "needs:prototype",
+  reviewer: "changes-requested",
+  reviser: "changes-requested",
+});
+
+function executionHoldReasons(labels, roleName) {
+  const routeLabel = EXECUTION_ROUTE_LABELS[roleName];
+  return holdReasons(labels).filter(reason => reason !== routeLabel);
+}
+
 function boundedFindingReport(summary, actions) {
   const limit = 65_536;
   let safeSummary = "";
@@ -403,7 +415,7 @@ export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessment
   let operations = [];
   if (payload.verdict === "noop") {
     operations = [{ type: "noop", reason: "not_applicable" }];
-  } else if (holdReasons(state.labels ?? []).length > 0) {
+  } else if (executionHoldReasons(state.labels ?? [], rolePolicy.name).length > 0) {
     kind = "terminal";
     operations = [{ type: "terminal", reason: "held" }];
   } else if (rolePolicy.payloadFamily === "steering") {
@@ -424,6 +436,10 @@ export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessment
       marker,
     }));
     if (operations.length === 0 && payload.verdict === "blocked") operations.push({ type: "create_issue", title: `ADW ${rolePolicy.name} blocked`, body: payload.summary, labels: ["blocked"], marker });
+    if (rolePolicy.name === "planner" && payload.verdict === "planned" && state.labels?.includes("needs:breakdown")) {
+      requireIssueEndpoint();
+      operations.push({ type: "remove_label", entityId: state.entityId, label: "needs:breakdown" });
+    }
     if (operations.length === 0) operations.push({ type: "noop", reason: "not_applicable" });
   } else if (rolePolicy.payloadFamily === "change") {
     if (payload.verdict === "blocked") {
@@ -447,6 +463,10 @@ export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessment
     } else if (payload.verdict === "disproved") {
       operations = [{ type: "add_label", entityId: state.entityId, label: "needs:spec" }, { type: "comment", entityId: state.entityId, body: `${payload.summary}\n\nFalsified claim: ${payload.claim}`, marker }];
     } else operations = [{ type: "comment", entityId: state.entityId, body: payload.summary, marker }];
+    if (state.labels?.includes("needs:prototype")) {
+      if (operations.length === 1 && operations[0].type === "noop") operations = [];
+      operations.push({ type: "remove_label", entityId: state.entityId, label: "needs:prototype" });
+    }
   } else if (rolePolicy.payloadFamily === "review") {
     requireIssueEndpoint();
     if (!snapshot.revisions.some(revision => revision.token === state.headSha)) payloadFail("review head is not a snapshot revision");
