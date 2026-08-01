@@ -1,5 +1,5 @@
 name: ADW maintenance triggers
-run-name: "${{ github.event_name == 'repository_dispatch' && github.event.client_payload.smith_operation_digest || github.event_name == 'workflow_dispatch' && format('ADW maintenance {0}', inputs.lane) || github.event_name == 'schedule' && 'ADW maintenance cron' || github.event_name == 'push' && 'ADW maintenance push' || format('ADW maintenance {0}', github.event_name) }}"
+run-name: "${{ github.event_name == 'repository_dispatch' && github.event.client_payload.smith_operation_digest || github.event_name == 'workflow_dispatch' && format('ADW maintenance {0}', inputs.lane) || github.event_name == 'schedule' && format('ADW maintenance {0}', github.event.schedule) || github.event_name == 'push' && 'ADW maintenance push' || format('ADW maintenance {0}', github.event_name) }}"
 on:
   push:
     branches: [main]
@@ -19,7 +19,7 @@ permissions: {}
 jobs:
   maintenance-event-lane:
     name: reconciliation, planning, audit, labels, alert, or obligation lane
-    if: vars.ADW_CUTOVER_HOLD != 'true' && ((github.event_name != 'repository_dispatch' && github.event_name != 'workflow_dispatch') || (github.event_name == 'repository_dispatch' && github.event.sender.id == fromJSON(vars.APP_BOT_USER_ID) && github.event.sender.login == vars.APP_BOT_LOGIN && github.event.sender.type == 'Bot') || (github.event_name == 'workflow_dispatch' && github.event.sender.id == github.event.repository.owner.id && github.event.sender.login == github.repository_owner && github.event.sender.type == 'User'))
+    if: vars.ADW_CUTOVER_HOLD != 'true' && github.workflow_sha == github.sha && (github.event_name != 'push' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) && ((github.event_name != 'repository_dispatch' && github.event_name != 'workflow_dispatch') || (github.event_name == 'repository_dispatch' && github.event.sender.id == fromJSON(vars.APP_BOT_USER_ID) && github.event.sender.login == vars.APP_BOT_LOGIN && github.event.sender.type == 'Bot') || (github.event_name == 'workflow_dispatch' && github.event.sender.id == github.event.repository.owner.id && github.event.sender.login == github.repository_owner && github.event.sender.type == 'User'))
     permissions:
       contents: read
     uses: ./.github/workflows/adw-issues.yml
@@ -30,7 +30,7 @@ jobs:
       fallback: ${{ github.event_name == 'repository_dispatch' && 'none' || (github.event_name == 'workflow_dispatch' || github.event.schedule == '17 2 * * *' || github.event.schedule == '7 */6 * * *' || github.event.schedule == '37 2 * * *') && 'none' || github.event.schedule == '47 2 * * 1' && 'claude' || 'codex' }}
       decision: ${{ github.event_name == 'workflow_dispatch' && inputs.lane || github.event.schedule == '17 2 * * *' && 'audit' || github.event.schedule == '7 */6 * * *' && 'reconcile' || 'reduce' }}
       read_class: prepare-maintenance
-      control_sha: ${{ github.sha }}
+      control_sha: ${{ github.workflow_sha }}
       target_sha: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.mergeSha || github.sha }}
       target_repository: ${{ github.repository }}
     secrets:

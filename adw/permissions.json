@@ -175,6 +175,9 @@
       "contents": "read"
     },
     "reduce": {},
+    "target": {
+      "contents": "read"
+    },
     "verify": {}
   }
 }

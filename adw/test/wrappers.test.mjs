@@ -17,6 +17,7 @@ const productionInventory = [
   ".github/workflows/adw-selftest.yml",
 ];
 const operationalNames = new Set(names);
+const phase5Plan = new URL("../../docs/super/plans/2026-08-01-adw-mjs-control-plane-phase-5-production-cutover-proof.md", import.meta.url);
 const ACTIONS = Object.freeze({
   checkout: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
   upload: "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
@@ -96,7 +97,7 @@ const expectedPermissions = {
     },
   },
   jobTokenPermissions: {
-    apply: { contents: "read" }, evidence: {}, prepare: { contents: "read" }, provider: {}, reconcile: { contents: "read" }, reduce: {}, verify: {},
+    apply: { contents: "read" }, evidence: {}, prepare: { contents: "read" }, provider: {}, reconcile: { contents: "read" }, reduce: {}, target: { contents: "read" }, verify: {},
   },
 };
 
@@ -130,6 +131,12 @@ function jobs(source) {
 
 function runCommands(source) {
   return sourceLines(source).filter(line => /^\s+run:/.test(line)).map(line => line.slice(line.indexOf("run:") + 4).trim());
+}
+
+function inputLine(block, name) {
+  const line = block.split("\n").find(value => value.trimStart().startsWith(`${name}:`));
+  assert.ok(line, `missing ${name} input`);
+  return line;
 }
 
 function actionUses(source) {
@@ -338,7 +345,7 @@ test("wrapper event truth table prevents provider loops and reserves manual disp
   assert.match(prepare, /github\.event\.action != 'labeled'.*'triager'/s);
   assert.match(prepare, /github\.event_name == 'issues'.*github\.event\.action == 'labeled'.*\('ready'|'ready'.*'codex'.*'needs:prototype'.*'needs:breakdown'/s);
   assert.match(prepare, /github\.event_name == 'issue_comment'.*github\.event\.sender\.id == github\.event\.repository\.owner\.id.*github\.event\.sender\.type == 'User'/s);
-  assert.doesNotMatch(prepare, /contains\(github\.event\.comment\.body/);
+  assert.match(prepare, /contains\(format\(' \{0\} ', github\.event\.comment\.body\), ' @smith '\)/);
   assert.match(prepare, /github\.event_name == 'repository_dispatch'.*APP_BOT_USER_ID|github\.event\.sender\.id == fromJSON\(vars\.APP_BOT_USER_ID\)/s);
   assert.match(prepare, /github\.event_name == 'issue_comment'.*'steerer'/s);
   assert.match(prepare, /github\.event\.label\.name == 'codex'.*'codex-builder'/s);
@@ -366,6 +373,123 @@ test("wrapper event truth table prevents provider loops and reserves manual disp
     assert.match(lane, /primary:.*'none'/s);
   }
   for (const name of ["primary-claude", "primary-codex", "fallback-claude", "fallback-codex"]) assert.match(jobs(issue).get(name), /needs\.prepare\.outputs\.(?:decision|fallback|primary)/);
+});
+
+test("top-level callers reject feature-branch workflow bytes before forwarding secrets", async () => {
+  const values = await sources();
+  const issueGraph = jobs(values["adw-issues.yml"]);
+  for (const name of ["target", "prepare"]) {
+    const condition = inputLine(issueGraph.get(name), "if");
+    assert.match(condition, /inputs\.lane != '' && inputs\.control_sha == github\.workflow_sha/);
+    assert.match(condition, /inputs\.lane == '' && github\.workflow_sha == github\.sha/);
+  }
+  const pullLane = jobs(values["adw-pulls.yml"]).get("pull-event-lane");
+  const pullCondition = inputLine(pullLane, "if");
+  for (const trusted of [
+    "github.workflow_sha == github.sha",
+    "github.workflow_sha == github.event.pull_request.base.sha",
+    "github.workflow_sha == github.event.check_run.pull_requests[0].base.sha",
+    "github.workflow_sha == github.event.check_suite.pull_requests[0].base.sha",
+  ]) assert.ok(pullCondition.includes(trusted), `pull trust root lacks ${trusted}`);
+  const maintenanceLane = jobs(values["adw-maintenance.yml"]).get("maintenance-event-lane");
+  const maintenanceCondition = inputLine(maintenanceLane, "if");
+  assert.match(maintenanceCondition, /github\.workflow_sha == github\.sha/);
+  assert.match(maintenanceCondition, /github\.event_name != 'push' \|\| github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)/);
+  for (const block of [pullLane, maintenanceLane]) {
+    assert.ok(block.indexOf("if:") < block.indexOf("secrets:"), "caller trust check must precede secret forwarding");
+  }
+});
+
+test("submitted reviews revise only changes-requested App-authored pulls", async () => {
+  const pullLane = jobs((await sources())["adw-pulls.yml"]).get("pull-event-lane");
+  const routes = {lane: "pull-revision", role: "reviser", primary: "claude", fallback: "codex", decision: "reduce"};
+  const reconciled = {lane: "pull-reconcile", role: "reconciler", primary: "none", fallback: "none", decision: "reconcile"};
+  for (const name of Object.keys(routes)) {
+    const line = inputLine(pullLane, name);
+    assert.match(line, /github\.event_name == 'pull_request_review'.*github\.event\.review\.state == 'changes_requested'.*github\.event\.pull_request\.user\.id == fromJSON\(vars\.APP_BOT_USER_ID\).*github\.event\.pull_request\.user\.login == vars\.APP_BOT_LOGIN.*github\.event\.pull_request\.user\.type == 'Bot'/);
+    assert.match(line, new RegExp(`'${routes[name]}'`));
+    assert.match(line, new RegExp(`github\\.event_name == 'pull_request_review'.*'${reconciled[name]}'`));
+  }
+  for (const name of ["role", "primary", "fallback", "decision"]) {
+    const line = inputLine(pullLane, name);
+    assert.match(line, /pull_request_review_comment.*startsWith\(github\.event_name, 'check_'\)/);
+  }
+});
+
+test("owner steering requires a space-bounded @smith token", async () => {
+  const prepare = jobs((await sources())["adw-issues.yml"]).get("prepare");
+  const condition = inputLine(prepare, "if");
+  assert.match(condition, /github\.event_name == 'issue_comment'.*github\.event\.sender\.id == github\.event\.repository\.owner\.id.*contains\(format\(' \{0\} ', github\.event\.comment\.body\), ' @smith '\)/);
+  const bounded = body => ` ${body} `.includes(" @smith ");
+  for (const body of ["@smith", "@smith revise", "please @smith revise", "please @smith"]) assert.equal(bounded(body), true, body);
+  for (const body of ["smith", "@smithers revise", "mail@smith revise", "@smith: revise"]) assert.equal(bounded(body), false, body);
+});
+
+test("provider jobs require a successful prepare trust root", async () => {
+  const graph = jobs((await sources())["adw-issues.yml"]);
+  assert.match(inputLine(graph.get("prepare"), "if"), /needs\.target\.result == 'success'/);
+  for (const name of ["primary-claude", "primary-codex", "fallback-claude", "fallback-codex"]) {
+    const block = graph.get(name);
+    assert.match(inputLine(block, "if"), /needs\.prepare\.result == 'success'/, name);
+    assert.match(block, /ADW_PROVIDER_CREDENTIAL/);
+  }
+  for (const name of ["reduce", "reconcile", "audit", "verify", "apply"]) assert.match(inputLine(graph.get(name), "if"), /needs\.prepare\.result == 'success'/, name);
+});
+
+test("scheduled maintenance run names contain the exact cron expression", async () => {
+  const maintenance = (await sources())["adw-maintenance.yml"];
+  assert.match(maintenance, /^run-name: .*github\.event_name == 'schedule' && format\('ADW maintenance \{0\}', github\.event\.schedule\)/m);
+  assert.doesNotMatch(maintenance, /github\.event_name == 'schedule' && 'ADW maintenance cron'/);
+});
+
+test("trusted workflow SHA controls orchestration while entity head remains the target", async () => {
+  const values = await sources();
+  const issue = values["adw-issues.yml"];
+  assert.doesNotMatch(issue, /inputs\.control_sha \|\| github\.sha/);
+  assert.match(issue, /inputs\.control_sha \|\| github\.workflow_sha/);
+  for (const name of ["adw-pulls.yml", "adw-maintenance.yml"]) {
+    const lane = [...jobs(values[name]).values()][0];
+    assert.equal(inputLine(lane, "control_sha").trim(), "control_sha: ${{ github.workflow_sha }}");
+  }
+  const pullLane = jobs(values["adw-pulls.yml"]).get("pull-event-lane");
+  assert.match(inputLine(pullLane, "target_sha"), /client_payload\.headSha.*pull_request\.head\.sha.*check_run\.head_sha.*check_suite\.head_sha/);
+  assert.doesNotMatch(inputLine(pullLane, "target_sha"), /workflow_sha|pull_request\.base\.sha/);
+});
+
+test("Phase 5 plan records the pre-hold runs and keeps the first-push gate incomplete", async () => {
+  const plan = await readFile(phase5Plan, "utf8");
+  assert.match(plan, /`ADW_CUTOVER_HOLD=true` must be armed before the first branch push/);
+  for (const run of ["30713498516", "30713534731", "30713534847", "30713540804", "30713540946"]) assert.match(plan, new RegExp(run));
+  assert.match(plan, /four pull runs minted App read tokens, then prepare failed on old control/i);
+  assert.match(plan, /zero artifacts and zero writes/i);
+  assert.match(plan, /- \[ \] \*\*Step 2: Arm the hold before the first branch push\*\*/);
+  assert.match(plan, /- \[x\] \*\*Step 3: Push the branch \(executed before the required hold\)\*\*/);
+});
+
+test("capture_run binds distinct expected run-head and control SHAs at every call", async () => {
+  const plan = await readFile(phase5Plan, "utf8");
+  const fn = plan.slice(plan.indexOf("capture_run() ("), plan.indexOf("\n)\n```", plan.indexOf("capture_run() (") + 3));
+  assert.match(fn, /local run_id=\$1 lane=\$2 expected_run_head=\$3 control_sha=\$4 repo=bugabinga\/smith/);
+  assert.match(fn, /\[\[ \$expected_run_head =~ \^\[0-9a-f\]\{40\}\$ \]\]/);
+  assert.match(fn, /--arg head "\$expected_run_head"/);
+  assert.match(fn, /--arg control "\$control_sha"/);
+  for (const call of [
+    'capture_run "$AUDIT_RUN" provider-free "$MERGE_SHA" "$MERGE_SHA"',
+    'capture_run "$RECONCILE_RUN" provider-free "$MERGE_SHA" "$MERGE_SHA"',
+    'capture_run "$TRIAGE_RUN" provider-codex "$MERGE_SHA" "$MERGE_SHA"',
+    'capture_run "$STEER_RUN" provider-claude "$MERGE_SHA" "$MERGE_SHA"',
+    'capture_run "$REVIEW_COMMENT_RUN" provider-free "$REVIEW_HEAD" "$MERGE_SHA"',
+    'capture_run "$CHECK_RUN" provider-free "$REVIEW_HEAD" "$MERGE_SHA"',
+  ]) assert.ok(plan.includes(call), `missing four-argument call: ${call}`);
+});
+
+test("cutover plan treats legacy merge-gate absence as an explicit owner bypass", async () => {
+  const plan = await readFile(phase5Plan, "utf8");
+  const task8 = plan.slice(plan.indexOf("### Task 8:"), plan.indexOf("### Task 9:"));
+  assert.match(task8, /legacy `merge-gate` is intentionally absent/);
+  assert.match(task8, /current_user_can_bypass.*always/s);
+  assert.match(task8, /explicit owner bypass/i);
+  assert.doesNotMatch(task8, /gh pr checks[^\n]*--required/);
 });
 
 test("cutover hold guards every operational job before tokens, artifacts, or assessment", async () => {
@@ -396,11 +520,12 @@ test("MJS rejects wrapper role and event mismatches; review-comment and checks r
   assert.throws(() => roleSnapshotPlan("reviewer", "issue"), error => error?.code === "contract");
 });
 
-test("shared graph separates prepare, providers, one fallback, decisions, verify, apply, and evidence", async () => {
+test("shared graph separates target data, prepare, providers, one fallback, decisions, verify, apply, and evidence", async () => {
   const issue = await readFile(paths["adw-issues.yml"], "utf8");
   const graph = jobs(issue);
-  const expected = ["prepare", "primary-claude", "primary-codex", "fallback-claude", "fallback-codex", "reduce", "reconcile", "audit", "verify", "apply", "evidence"];
+  const expected = ["target", "prepare", "primary-claude", "primary-codex", "fallback-claude", "fallback-codex", "reduce", "reconcile", "audit", "verify", "apply", "evidence"];
   assert.deepEqual([...graph.keys()], expected);
+  assert.deepEqual(permissionBlock(graph.get("target")), expectedPermissions.jobTokenPermissions.target);
   assert.deepEqual(permissionBlock(graph.get("prepare")), expectedPermissions.jobTokenPermissions.prepare);
   for (const name of ["primary-claude", "primary-codex", "fallback-claude", "fallback-codex"]) assert.deepEqual(permissionBlock(graph.get(name)), {});
   assert.deepEqual(permissionBlock(graph.get("reduce")), {});
@@ -413,7 +538,7 @@ test("shared graph separates prepare, providers, one fallback, decisions, verify
   assert.match(graph.get("fallback-codex"), /if:.*always\(\).*primary-claude.*(?:failure|cancelled|!= 'success')/s);
   assert.doesNotMatch(graph.get("fallback-claude"), /primary-claude\.result/);
   assert.doesNotMatch(graph.get("fallback-codex"), /primary-codex\.result/);
-  assert.match(graph.get("reduce"), /needs:\s*\[primary-claude, primary-codex, fallback-claude, fallback-codex\]/);
+  assert.match(graph.get("reduce"), /needs:\s*\[prepare, primary-claude, primary-codex, fallback-claude, fallback-codex\]/);
   assert.match(graph.get("reduce"), /ADW_FALLBACK_ATTEMPTED:.*fallback-claude\.result != 'skipped'.*fallback-codex\.result != 'skipped'/);
   assert.match(graph.get("verify"), /if:.*vars\.ADW_CUTOVER_HOLD != 'true'.*always\(\)/);
   assert.match(graph.get("apply"), /if:.*vars\.ADW_CUTOVER_HOLD != 'true'.*always\(\)/);
@@ -435,6 +560,7 @@ test("shared graph separates prepare, providers, one fallback, decisions, verify
     applyResult: ["result.json", "result.sha256"],
     source: ["control/**", "target.bundle", "manifest.json", "manifest.sha256"],
   });
+  assert.deepEqual(uploadNames(graph.get("target")), ["adw-target"]);
   assert.deepEqual(uploadNames(graph.get("prepare")).sort(), ["adw-snapshot", "adw-source"]);
   assert.deepEqual(uploadNames(graph.get("primary-claude")), ["adw-assessment-claude"]);
   assert.deepEqual(uploadNames(graph.get("primary-codex")), ["adw-assessment-codex"]);
@@ -467,18 +593,25 @@ test("provider jobs receive one credential and no forge, checkout, or opposite-p
   }
 });
 
-test("control and target checkouts are immutable and never persist credentials", async () => {
+test("untrusted target checkout is isolated while control and target SHAs stay immutable", async () => {
   const values = await sources();
-  const prepare = jobs(values["adw-issues.yml"]).get("prepare");
-  const checkoutCount = actionUses(prepare).filter(value => value === ACTIONS.checkout).length;
-  assert.equal(checkoutCount, 2);
-  assert.match(prepare, /name:\s*checkout immutable control[\s\S]*ref:\s*"\$\{\{ inputs\.control_sha \|\| github\.sha \}\}"[\s\S]*path:\s*control[\s\S]*persist-credentials:\s*false/);
-  assert.match(prepare, /name:\s*checkout immutable target[\s\S]*ref:\s*"\$\{\{ inputs\.target_sha \|\| github\.sha \}\}"[\s\S]*path:\s*target[\s\S]*persist-credentials:\s*false/);
+  const graph = jobs(values["adw-issues.yml"]);
+  const target = graph.get("target");
+  const prepare = graph.get("prepare");
+  assert.equal(actionUses(target).filter(value => value === ACTIONS.checkout).length, 1);
+  assert.equal(actionUses(prepare).filter(value => value === ACTIONS.checkout).length, 1);
+  assert.match(prepare, /name:\s*checkout immutable control[\s\S]*ref:\s*"\$\{\{ inputs\.control_sha \|\| github\.workflow_sha \}\}"[\s\S]*path:\s*control[\s\S]*persist-credentials:\s*false/);
+  assert.match(target, /name:\s*checkout immutable target[\s\S]*ref:\s*"\$\{\{ inputs\.target_sha \|\| github\.sha \}\}"[\s\S]*path:\s*target[\s\S]*persist-credentials:\s*false/);
+  assert.doesNotMatch(target, /\bsecrets\.|ADW_PROVIDER_CREDENTIAL|create-github-app-token|\brun:/);
+  assert.match(prepare, /needs:\s*target/);
+  assert.match(prepare, /name:\s*adw-target[^\n]*path:\s*"\$\{\{ github\.workspace \}\}\/target"/);
   assert.match(prepare, /ADW_CONTROL_CHECKOUT:\s*\$\{\{ github\.workspace \}\}\/control/);
   assert.match(prepare, /ADW_TARGET_CHECKOUT:\s*\$\{\{ github\.workspace \}\}\/target/);
-  assert.match(values["adw-pulls.yml"], /control_sha:[^\n]*github\.sha/);
+  assert.match(values["adw-pulls.yml"], /control_sha:\s*\$\{\{ github\.workflow_sha \}\}/);
   assert.match(values["adw-pulls.yml"], /target_sha:[^\n]*(?:head\.sha|head_sha|client_payload\.headSha)/);
   assert.match(values["adw-pulls.yml"], /target_repository:[^\n]*github\.repository/);
+  assert.doesNotMatch(inputLine(jobs(values["adw-pulls.yml"]).get("pull-event-lane"), "control_sha"), /pull_request\.head|head_sha|client_payload\.headSha/);
+  assert.doesNotMatch(inputLine(jobs(values["adw-pulls.yml"]).get("pull-event-lane"), "target_sha"), /workflow_sha/);
   assert.doesNotMatch(Object.values(values).join("\n"), /client_payload\.(?:repository|ref|token)/);
   assert.match(prepare, /ADW_EVENT_NAME:\s*\$\{\{ github\.event_name == 'pull_request_target' && 'pull_request' \|\| github\.event_name \}\}/);
   assert.doesNotMatch(Object.values(values).join("\n"), /persist-credentials:\s*true|ref:\s*(?:main|master|refs\/heads\/)/);

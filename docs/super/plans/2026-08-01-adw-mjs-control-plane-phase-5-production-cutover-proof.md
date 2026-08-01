@@ -29,7 +29,7 @@ On 2026-08-01, the owner approved the first offered authorization route: current
 - Production repository is exactly `bugabinga/smith`; default branch is exactly `main`.
 - Existing secret `APP_ID` is the App ID used by `actions/create-github-app-token`. `APP_CLIENT_ID` is absent and the private App client ID is unavailable; no task may add, infer, request, or substitute `APP_CLIENT_ID`.
 - Existing secrets `APP_ID`, `APP_PRIVATE_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, and `CODEX_AUTH_JSON` are presence-checked only. Their values are never read, printed, copied, replaced, or rotated.
-- Ephemeral non-secret variable `ADW_CUTOVER_HOLD=true` suppresses every operational MJS job from immediately before merge until the parent-correct signed rollback exists; it is then deleted before positive proof.
+- `ADW_CUTOVER_HOLD=true` must be armed before the first branch push that exposes candidate operational workflow records. It remains armed through every corrective push and the cutover until the parent-correct signed rollback exists; only then may it be deleted before positive proof.
 - Seed exact non-secret variables `APP_BOT_USER_ID=306488075` and `APP_BOT_LOGIN=agent-smith-bugabinga-adc[bot]` before cutover.
 - Internal App intents use only `repository_dispatch` event types `retry_route`, `fallback_route`, `retry_pioneer`, `run_review`, and `run_obligation`; manual `workflow_dispatch` exposes only owner choices `audit` and `reconcile`.
 - Production proof is positive-only. Never inject malformed artifacts, stale revisions, cancelled jobs, partial writes, invalid credentials, changed permissions, malformed events, provider outages, ruleset damage, or secret rotation.
@@ -49,7 +49,7 @@ The 2026-08-01 planning snapshot is:
 - Secrets present: `APP_ID`, `APP_PRIVATE_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_AUTH_JSON`.
 - Repository variables absent; therefore both exact App bot variables must be seeded.
 - App bot identity already observed on forge records: numeric user ID `306488075`, login `agent-smith-bugabinga-adc[bot]`.
-- Main ruleset ID `19155559`; squash-only and signed commits are active; required checks are `check` and `merge-gate`.
+- Main ruleset ID `19155559`; squash-only and signed commits are active; required contexts are `check` and `merge-gate`. PR #167 has current-head `check` but no legacy `merge-gate`, so cutover requires the confirmed owner administrative bypass rather than pretending that context exists.
 - Live ruleset has organic drift from `.github/rulesets/main.json`: live strict required checks are `true` and include `do_not_enforce_on_create:true`, while checked-in policy says strict `false` and omits that field.
 - Live label `urgent` has organic color drift (`ededed` live versus `e03131` checked in).
 - PR #150 head `146c5467cd6b87d1ae3ef10f116b075f5910a94e` is `BLOCKED`.
@@ -59,6 +59,15 @@ The 2026-08-01 planning snapshot is:
 - All four PRs have current-head legacy App review evidence and are open; their pre-existing auto-merge state must not be interpreted as permission to merge while blocked/behind.
 
 At execution, re-read every value. A changed SHA or merge state is not a reason to inject state. If one of the four PRs is no longer organically blocked/behind, stop that assertion and ask the owner for another naturally blocked/behind PR; do not make one.
+
+### Actual pre-hold execution record
+
+The initial branch push preceded the required hold. Live Actions evidence was re-read without mutation on 2026-08-01:
+
+- Push run [`30713498516`](https://github.com/bugabinga/smith/actions/runs/30713498516) failed before job creation on the then-unsupported alert trigger grammar and produced zero artifacts.
+- Pull review runs [`30713534731`](https://github.com/bugabinga/smith/actions/runs/30713534731) and [`30713540804`](https://github.com/bugabinga/smith/actions/runs/30713540804), plus review-comment runs [`30713534847`](https://github.com/bugabinga/smith/actions/runs/30713534847) and [`30713540946`](https://github.com/bugabinga/smith/actions/runs/30713540946), used feature-branch workflow records at head `2baf202af878a5e18806056f5883b40c5a46addf`. All four pull runs minted App read tokens, then prepare failed on old control `491a42a3cc8848853e4ccd6cedc5695d9bd06e8c` with `command is unsupported`.
+- The two review runs incorrectly scheduled fallback jobs after prepare failure, but artifact download failed before either provider command; every apply-token and apply command was skipped. The four pull runs each had zero artifacts and zero writes.
+- `ADW_CUTOVER_HOLD=true` was armed at `2026-08-01T19:14:00Z`; the exact App variables were present, and no later candidate operational run existed at validation time. This is containment evidence, not retroactive satisfaction of the first-push gate.
 
 ## File map
 
@@ -136,23 +145,24 @@ At execution, re-read every value. A changed SHA or merge state is not a reason 
 
 ## Evidence artifact contract
 
-Every accepted production run records its run ID and URL, event, head SHA, attempt, conclusion, job list, artifact IDs/names, and downloaded sidecar verification. Expected artifact sets are:
+Every accepted production run records its run ID and URL, event, expected run head SHA, trusted control SHA, attempt, conclusion, job list, artifact IDs/names, and downloaded sidecar verification. Expected artifact sets are:
 
-- Provider lane: `adw-source`, `adw-snapshot`, exactly one successful primary `adw-assessment-{claude|codex}`, `adw-decision`, `adw-verification`, `adw-apply-result-1`.
-- Provider-free audit/reconcile lane: `adw-source`, `adw-snapshot`, `adw-decision`, `adw-verification`, `adw-apply-result-1`; no `adw-assessment-*`.
+- Provider lane: `adw-target`, `adw-source`, `adw-snapshot`, exactly one successful primary `adw-assessment-{claude|codex}`, `adw-decision`, `adw-verification`, `adw-apply-result-1`.
+- Provider-free audit/reconcile lane: `adw-target`, `adw-source`, `adw-snapshot`, `adw-decision`, `adw-verification`, `adw-apply-result-1`; no `adw-assessment-*`.
 - Evidence job must succeed by downloading the same `adw-apply-result-1`.
 - Every JSON/patch sidecar digest must match exact bytes.
 - Every `result.json` must have `schemaVersion:1`, `status:"complete"`, `failure:null`, all operations `status:"complete"`, and only complete receipts.
 - `snapshot.json.controlSha`, `decision.json.controlSha`, `verification.json.controlSha`, and `result.json.controlSha` must equal the run's trusted control SHA.
 - Decision/snapshot/verification/result digest links must match the corresponding canonical artifact bytes, as additionally enforced by the runtime and offline tests.
 
-Define this exact positive-run capture function once in the owner shell. Call it with a forge-derived run ID, lane (`provider-free`, `provider-claude`, or `provider-codex`), and trusted control SHA:
+Define this exact positive-run capture function once in the owner shell. Call it with a forge-derived run ID, lane (`provider-free`, `provider-claude`, or `provider-codex`), expected run head SHA, and trusted control SHA:
 
 ```bash
 capture_run() (
   set -euo pipefail
-  local run_id=$1 lane=$2 control_sha=$3 repo=bugabinga/smith
+  local run_id=$1 lane=$2 expected_run_head=$3 control_sha=$4 repo=bugabinga/smith
   [[ $run_id =~ ^[1-9][0-9]*$ ]]
+  [[ $expected_run_head =~ ^[0-9a-f]{40}$ ]]
   [[ $control_sha =~ ^[0-9a-f]{40}$ ]]
   local root="$HOME/adw-phase5-evidence/$run_id"
   rm -rf "$root"
@@ -168,9 +178,9 @@ capture_run() (
 
   local expected
   case "$lane" in
-    provider-free) expected='adw-apply-result-1,adw-decision,adw-snapshot,adw-source,adw-verification' ;;
-    provider-claude) expected='adw-apply-result-1,adw-assessment-claude,adw-decision,adw-snapshot,adw-source,adw-verification' ;;
-    provider-codex) expected='adw-apply-result-1,adw-assessment-codex,adw-decision,adw-snapshot,adw-source,adw-verification' ;;
+    provider-free) expected='adw-apply-result-1,adw-decision,adw-snapshot,adw-source,adw-target,adw-verification' ;;
+    provider-claude) expected='adw-apply-result-1,adw-assessment-claude,adw-decision,adw-snapshot,adw-source,adw-target,adw-verification' ;;
+    provider-codex) expected='adw-apply-result-1,adw-assessment-codex,adw-decision,adw-snapshot,adw-source,adw-target,adw-verification' ;;
     *) return 2 ;;
   esac
   local actual
@@ -217,7 +227,7 @@ capture_run() (
       ([.operations[].status] | all(. == "complete")) and
       ([.operations[].receipts[]?.status] | all(. == "complete"))
     ' "$receipt" >/dev/null
-  jq -e --argjson id "$run_id" --arg head "$control_sha" '
+  jq -e --argjson id "$run_id" --arg head "$expected_run_head" '
     .databaseId == $id and .headSha == $head and .attempt == 1 and
     .status == "completed" and .conclusion == "success" and
     ([.jobs[] | select((.name | test("(^| / )evidence$")) and .conclusion == "success")] | length == 1)
@@ -225,7 +235,7 @@ capture_run() (
 )
 ```
 
-Expected: any API, download, sidecar, exact-set, receipt, binding, attempt, head, or evidence-job failure exits nonzero; zero files cannot pass vacuously.
+Expected: any API, download, sidecar, exact-set, receipt, control binding, expected run-head binding, attempt, or evidence-job failure exits nonzero; zero files cannot pass vacuously.
 
 ### Task 1: Record the owner-approved Phase 4 supersession
 
@@ -311,7 +321,8 @@ issues labeled codex                 -> codex-builder
 issues labeled needs:prototype       -> pioneer
 issues labeled needs:breakdown       -> planner
 issues labeled any other label       -> skipped
-owner issue_comment                  -> steerer, Claude primary
+owner issue_comment with bounded @smith -> steerer, Claude primary
+owner comment without bounded @smith -> skipped
 App/non-owner issue_comment          -> skipped
 pull opened/reopened/synchronize     -> reviewer
 pull labeled changes-requested       -> reviser
@@ -319,7 +330,8 @@ pull labeled reviewed                -> security-reviewer
 pull labeled any other label         -> reconcile-only
 pull closed+merged                    -> docs-writer
 pull closed+unmerged                 -> reconcile-only
-pull_request_review submitted        -> reviser
+pull_request_review changes_requested on exact App-authored PR -> reviser
+all other pull_request_review submissions -> reconcile-only
 pull_request_review_comment created  -> reconcile-only
 check_run/check_suite completed      -> reconcile-only
 manual maintenance audit/reconcile   -> provider-free owner control lane
@@ -443,7 +455,7 @@ Require each dispatched workflow to:
 
 - run from `main` at the repository-dispatch head proven by `github.mjs`;
 - use the exact natural/manual/internal run names above so evidence selection binds entity or operation rather than timestamp alone;
-- derive control SHA from `github.sha`;
+- derive control SHA only from trusted `github.workflow_sha`;
 - bind issue ID/source revision or PR/head/merge SHA from validated `client_payload`;
 - execute the requested role/provider only;
 - never accept caller-supplied repository or arbitrary ref;
@@ -758,9 +770,37 @@ Delete both unsupported trigger blocks and both `endsWith(..._alert)` branches f
 
 The focused regression, all 18 wrapper tests, and all 224 Node tests pass. Exact actionlint v1.7.7 passes the four production ADW workflows and the known-clean `ci.yml` control; linting every production workflow no longer reports `adw-maintenance.yml` but still reports seven unrelated pre-existing findings in `ci-prototype.yml`, `devskim.yml`, `p35-adw-harness.yml`, `p37-codex-harness.yml`, and `prototypes.yml`. All production workflow YAML parses, all three promoted wrappers equal canonical bytes, canonical wrappers total 371 physical lines, and `git diff --check` passes.
 
+### Task 7B: Close deployed-workflow trust and proof-capture blockers
+
+**Files:**
+
+- Modify: `adw/permissions.json`
+- Modify: `adw/test/wrappers.test.mjs`
+- Modify: `prototypes/p38-adw-disposable/wrappers/adw-{issues,pulls,maintenance}.yml`
+- Modify: `.github/workflows/adw-{issues,pulls,maintenance}.yml`
+- Modify: `docs/super/plans/2026-08-01-adw-mjs-control-plane-phase-5-production-cutover-proof.md`
+
+- [x] **Step 1: Validate live evidence read-only and add RED contracts**
+
+PR #167 remained at `cdca1b92987ec8af11f792c15e5454811a7d08f9`, main remained at `491a42a3cc8848853e4ccd6cedc5695d9bd06e8c`, and the hold was `true`. The focused wrapper run recorded 27 tests with 14 passes and 13 expected failures covering all nine required behaviors plus isolation of untrusted target checkout; no production setting, workflow, issue, PR, or branch was mutated.
+
+- [x] **Step 2: Implement canonical wrappers, then promote exact bytes**
+
+Gate every top-level caller on trusted deployed workflow SHA before secret forwarding; isolate entity-head checkout in a read-only target job; require successful target/prepare roots before providers and downstream credentials; route only exact App-authored `changes_requested` reviews to reviser; require a space-bounded `@smith`; name schedules with the exact cron; and use `github.workflow_sha` as control while preserving entity head as target. Canonical wrappers were edited first and then byte-copied to production.
+
+- [x] **Step 3: Bind proof history, run head, control SHA, and cutover bypass honestly**
+
+Record all five pre-hold run URLs and their zero-artifact/zero-write outcome, leave the missed first-push hold gate unchecked, bind `capture_run` to separate expected run head and trusted control SHA, update every call, and treat absent cutover `merge-gate` only through explicit owner bypass. Existing proof-PR merge-gate assertions remain unchanged.
+
+- [x] **Step 4: Verify the corrected tree**
+
+Focused Node: 27/27 pass. Full Node: 233/233 pass. Exact actionlint v1.7.7 passes all four production ADW workflows. `yq` v4.53.3 parses all four, all three canonical/production wrapper pairs are byte-equal, canonical operational YAML totals 383 physical lines, and `git diff --check` passes.
+
 ### Task 8: Push the owner-authored protected PR and record owner approval on its exact head
 
 **Files:** none
+
+The branch and PR already exist. Their first push occurred before the required hold; the unchecked hold step preserves that sequencing defect rather than rewriting history. No corrective commit may be pushed until the currently armed hold is revalidated.
 
 - [ ] **Step 1: Rebase only before approval, then rerun Task 7**
 
@@ -777,59 +817,55 @@ for commit in $(git rev-list "$BASE"..HEAD); do git verify-commit "$commit"; don
 
 Expected: final branch contains latest main and all checks pass. No rebase is permitted after the exact-head owner approval comment.
 
-- [ ] **Step 2: Push the branch**
+- [ ] **Step 2: Arm the hold before the first branch push**
 
 ```bash
-git push --set-upstream origin adw/mjs-phase4
+test "$(gh variable get ADW_CUTOVER_HOLD --repo bugabinga/smith)" = true
 ```
 
-Expected: branch push succeeds; branch name is retained because it already contains Phase 4 Tasks 1–6 and this atomic cutover.
+Expected: the hold predates the first workflow-bearing branch push. This cannot be completed retroactively for the existing branch, so it remains unchecked; the already-armed live hold must nevertheless stay `true` before any further push.
 
-- [ ] **Step 3: Open one cutover PR**
+- [x] **Step 3: Push the branch (executed before the required hold)**
 
 ```bash
-gh api user | jq -e '.id == 876467 and .login == "bugabinga"' >/dev/null
-gh pr create --repo bugabinga/smith \
-  --base main \
-  --head adw/mjs-phase4 \
-  --title "Cut over production ADW writes to MJS" \
-  --body-file - <<'EOF'
-## What forced this
-Production authority cannot transfer while legacy and candidate writers can overlap, and the disposable App identity required for equivalent proof is unavailable.
-
-## The call
-Move all operational ADW writes to three MJS wrappers in one owner-controlled quiet-window squash.
-
-## What we deliberately didn't do
-No disposable repository or release replacement: the former cannot reproduce the production App boundary, and the latter remains deferred.
-
-## Evidence
-The retained Node failure matrix, workspace check, and wrapper contracts pass; positive production run URLs and receipts will be posted after cutover.
-
-## Surface touched
-The control-plane range is anchored at `adw/` and its workflow/charter boundaries.
-
-## If this ages badly
-Disable and drain MJS, then fast-forward the prepared signed rollback when any trigger in the Phase 5 plan fires.
-EOF
-PR=$(gh pr view --repo bugabinga/smith --json number --jq .number)
-echo "$PR"
+test "$(git ls-remote origin refs/heads/adw/mjs-phase4 | cut -f1)" = \
+  "$(gh pr view 167 --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
 ```
 
-Expected: one PR authored with the approved current `bugabinga` authentication; do not open a separate Phase 5 PR. Owner authorship is permitted because the exact-head comment and confirmed ruleset bypass provide the authorized evidence route.
+Expected: the remote branch exists. This checkbox records the actual push only; it does not satisfy Step 2.
 
-- [ ] **Step 4: Wait for required checks on the exact PR head**
+- [x] **Step 4: Open one cutover PR**
 
 ```bash
-PR=$(gh pr view --repo bugabinga/smith --json number --jq .number)
+gh pr view 167 --repo bugabinga/smith \
+  --json number,title,state,headRefName,baseRefName,author \
+  --jq '.number == 167 and .title == "Cut over production ADW writes to MJS" and
+        .state == "OPEN" and .headRefName == "adw/mjs-phase4" and
+        .baseRefName == "main" and .author.login == "bugabinga"'
+```
+
+Expected: PR #167 is the sole owner-authored cutover PR; no replacement PR is opened.
+
+- [x] **Step 5: Validate the current remote head and explicit owner bypass route**
+
+```bash
+PR=167
 PR_HEAD=$(gh pr view "$PR" --repo bugabinga/smith --json headRefOid --jq .headRefOid)
-gh pr checks "$PR" --repo bugabinga/smith --watch --fail-fast
+checks=$(gh api "repos/bugabinga/smith/commits/$PR_HEAD/check-runs?filter=latest&per_page=100")
+jq -e --arg head "$PR_HEAD" '
+  [.check_runs[] | select(.name == "check" and .head_sha == $head and
+    .status == "completed" and .conclusion == "success")] | length >= 1
+' <<<"$checks" >/dev/null
+test "$(jq --arg head "$PR_HEAD" \
+  '[.check_runs[] | select(.name == "merge-gate" and .head_sha == $head)] | length' \
+  <<<"$checks")" = 0
+test "$(gh api repos/bugabinga/smith/rulesets/19155559 --jq .current_user_can_bypass)" = always
 test "$PR_HEAD" = "$(gh pr view "$PR" --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
 ```
 
-Expected: all required checks green; head unchanged.
+Expected: current-head product `check` is green; legacy `merge-gate` is intentionally absent on this owner-authored cutover. The missing legacy result is covered only by explicit owner bypass during the final administrative squash, never by weakening the ruleset. Re-run this step after the corrective commit is pushed.
 
-- [ ] **Step 5: Record the exact-head owner approval marker**
+- [ ] **Step 6: Record the exact-head owner approval marker**
 
 From the authenticated owner shell, post exactly one approval comment and retain its immutable REST coordinates:
 
@@ -859,7 +895,7 @@ Expected: the owner-authored comment has the exact marker containing `PR_HEAD`; 
 
 **Files:** none; rollback material stays outside the repository tree
 
-- [ ] **Step 1: Presence-check secrets without reading values**
+- [x] **Step 1: Presence-check secrets without reading values**
 
 ```bash
 required='APP_ID APP_PRIVATE_KEY CLAUDE_CODE_OAUTH_TOKEN CODEX_AUTH_JSON'
@@ -869,18 +905,16 @@ for name in $required; do grep -qx "$name" <<<"$actual"; done
 ! grep -qx APP_CLIENT_ID <<<"$(gh variable list --repo bugabinga/smith --json name --jq '.[].name')"
 ```
 
-Expected: four required names present; `APP_CLIENT_ID` secret and variable both absent. Do not run `gh secret set` or `gh secret delete`.
+Expected: four required names present; `APP_CLIENT_ID` secret and variable both absent. Do not run `gh secret set` or `gh secret delete`. Revalidated read-only on 2026-08-01.
 
-- [ ] **Step 2: Seed exact App bot variables**
+- [x] **Step 2: Validate exact App bot variables already seeded**
 
 ```bash
-gh variable set APP_BOT_USER_ID --repo bugabinga/smith --body '306488075'
-gh variable set APP_BOT_LOGIN --repo bugabinga/smith --body 'agent-smith-bugabinga-adc[bot]'
 gh variable list --repo bugabinga/smith --json name,value \
   --jq 'sort_by(.name) | map(select(.name == "APP_BOT_USER_ID" or .name == "APP_BOT_LOGIN"))'
 ```
 
-Expected:
+Expected and revalidated read-only on 2026-08-01:
 
 ```json
 [{"name":"APP_BOT_LOGIN","value":"agent-smith-bugabinga-adc[bot]"},{"name":"APP_BOT_USER_ID","value":"306488075"}]
@@ -1004,7 +1038,6 @@ done
 jq -e '
   [.[] | select(.path == ".github/workflows/adw-selftest.yml" and .state == "active")] | length == 1
 ' <<<"$workflow_states" >/dev/null
-gh variable set ADW_CUTOVER_HOLD --repo bugabinga/smith --body true
 test "$(gh variable get ADW_CUTOVER_HOLD --repo bugabinga/smith)" = true
 ```
 
@@ -1022,7 +1055,11 @@ test "$PR_HEAD" = "$(gh pr view "$PR" --repo bugabinga/smith --json headRefOid -
 test "$CUTOVER_BASE" = "$(gh api repos/bugabinga/smith/commits/main --jq .sha)"
 test "$CUTOVER_BASE" = "$(git rev-parse origin/main)"
 test "$(gh pr view "$PR" --repo bugabinga/smith --json mergeable --jq .mergeable)" = MERGEABLE
-gh pr checks "$PR" --repo bugabinga/smith --required
+CUTOVER_CHECKS=$(gh api "repos/bugabinga/smith/commits/$PR_HEAD/check-runs?filter=latest&per_page=100")
+jq -e --arg head "$PR_HEAD" '
+  [.check_runs[] | select(.name == "check" and .head_sha == $head and
+    .status == "completed" and .conclusion == "success")] | length >= 1
+' <<<"$CUTOVER_CHECKS" >/dev/null
 OWNER_APPROVAL_COMMENT_JSON=$(gh api \
   "repos/bugabinga/smith/issues/comments/$OWNER_APPROVAL_COMMENT_ID")
 jq -e --argjson id "$OWNER_APPROVAL_COMMENT_ID" \
@@ -1056,7 +1093,7 @@ test -f "$ROLLBACK_ROOT/legacy-active-runs.now"
 test ! -s "$ROLLBACK_ROOT/legacy-active-runs.now"
 ```
 
-Expected: exact owner-approved head and main base, mergeable PR, green required checks, immutable exact-head owner comment, unchanged rollback patch hashes, confirmed owner bypass, all legacy workflows disabled, and an explicitly created empty final-drain file.
+Expected: exact owner-approved head and main base, mergeable PR, green current-head product `check`, immutable exact-head owner comment, unchanged rollback patch hashes, explicit owner bypass for the absent legacy `merge-gate`, all legacy workflows disabled, and an explicitly created empty final-drain file.
 
 - [ ] **Step 2: Perform the one atomic squash merge**
 
@@ -1190,7 +1227,7 @@ Expected: success; auditor provider jobs skipped; existing label drift repaired 
 
 - [ ] **Step 3: Capture and validate audit artifacts/receipt**
 
-Run `capture_run "$AUDIT_RUN" provider-free "$MERGE_SHA"`. Then assert:
+Run `capture_run "$AUDIT_RUN" provider-free "$MERGE_SHA" "$MERGE_SHA"`. Then assert:
 
 ```bash
 AUDIT_DIR="$HOME/adw-phase5-evidence/$AUDIT_RUN/download"
@@ -1271,7 +1308,7 @@ Expected: success; no provider job runs unless reconciliation positively dispatc
 
 - [ ] **Step 6: Capture reconciliation and any child runs**
 
-Run `capture_run "$RECONCILE_RUN" provider-free "$MERGE_SHA"`. For each `dispatch_repository` receipt, find the exact `repository_dispatch` child run whose `display_title` is its operation digest, call `capture_run` with the intent's canonical provider lane and `MERGE_SHA`, and require bot actor ID/login `306488075`/`agent-smith-bugabinga-adc[bot]`.
+Run `capture_run "$RECONCILE_RUN" provider-free "$MERGE_SHA" "$MERGE_SHA"`. For each `dispatch_repository` receipt, find the exact `repository_dispatch` child run whose `display_title` is its operation digest, call `capture_run` with the intent's canonical provider lane, `"$MERGE_SHA"` as expected run head, and `"$MERGE_SHA"` as trusted control SHA, then require bot actor ID/login `306488075`/`agent-smith-bugabinga-adc[bot]`.
 
 Expected: parent receipt and every natural child receipt complete; no duplicate operation digest.
 
@@ -1307,7 +1344,7 @@ Expected: `primary-codex` succeeds; `primary-claude` and `fallback-claude` are s
 
 - [ ] **Step 3: Capture Codex assessment and receipt**
 
-Run `capture_run "$TRIAGE_RUN" provider-codex "$MERGE_SHA"`, then:
+Run `capture_run "$TRIAGE_RUN" provider-codex "$MERGE_SHA" "$MERGE_SHA"`, then:
 
 ```bash
 TRIAGE_DIR="$HOME/adw-phase5-evidence/$TRIAGE_RUN/download"
@@ -1344,7 +1381,7 @@ Expected: owner-authenticated `primary-claude` succeeds as steerer; Codex primar
 
 - [ ] **Step 5: Capture Claude assessment, App response, and receipt**
 
-Run `capture_run "$STEER_RUN" provider-claude "$MERGE_SHA"`, then:
+Run `capture_run "$STEER_RUN" provider-claude "$MERGE_SHA" "$MERGE_SHA"`, then:
 
 ```bash
 STEER_DIR="$HOME/adw-phase5-evidence/$STEER_RUN/download"
@@ -1416,7 +1453,7 @@ Expected: prepare → reconcile → verify → serialized apply/evidence; all fo
 
 - [ ] **Step 3: Validate review-comment artifacts and receipt**
 
-Run `capture_run "$REVIEW_COMMENT_RUN" provider-free "$MERGE_SHA"`, then:
+Run `capture_run "$REVIEW_COMMENT_RUN" provider-free "$REVIEW_HEAD" "$MERGE_SHA"`, then:
 
 ```bash
 jq -e '[.jobs[] | select((.name | test("primary-|fallback-| / reduce$")) and .conclusion != "skipped")] | length == 0' \
@@ -1434,7 +1471,7 @@ Expected: all provider/reduce jobs skipped, reconciler receipt complete, and PR 
 ```bash
 CHECK_RUN=$(gh run list --repo bugabinga/smith --workflow adw-pulls.yml \
   --event check_run --limit 50 --json databaseId,createdAt,headSha,displayTitle |
-  jq -er --arg head "$MERGE_SHA" --arg title "ADW pull #$PR_PROOF" '
+  jq -er --arg head "$REVIEW_HEAD" --arg title "ADW pull #$PR_PROOF" '
     [.[] | select(.headSha == $head and .displayTitle == $title)]
     | sort_by(.createdAt) | last | .databaseId')
 [[ $CHECK_RUN =~ ^[1-9][0-9]*$ ]]
@@ -1443,7 +1480,7 @@ gh run watch "$CHECK_RUN" --repo bugabinga/smith --exit-status
 
 If GitHub emitted `check_suite` rather than `check_run`, select the matching `check_suite` run instead; do not create another check.
 
-Run `capture_run "$CHECK_RUN" provider-free "$MERGE_SHA"`, then:
+Run `capture_run "$CHECK_RUN" provider-free "$REVIEW_HEAD" "$MERGE_SHA"`, then:
 
 ```bash
 jq -e '[.jobs[] | select((.name | test("primary-|fallback-| / reduce$")) and .conclusion != "skipped")] | length == 0' \
@@ -1542,7 +1579,7 @@ Expected: second consecutive natural cycle succeeds within 13 hours of quiet-win
 
 - [ ] **Step 4: Capture both cycles and recheck no dual writers**
 
-Run `capture_run "$CYCLE1" provider-free "$MERGE_SHA"` and `capture_run "$CYCLE2" provider-free "$MERGE_SHA"`. Then:
+Run `capture_run "$CYCLE1" provider-free "$MERGE_SHA" "$MERGE_SHA"` and `capture_run "$CYCLE2" provider-free "$MERGE_SHA" "$MERGE_SHA"`. Then:
 
 ```bash
 for run in "$CYCLE1" "$CYCLE2"; do

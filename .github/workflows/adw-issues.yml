@@ -25,10 +25,23 @@ on:
     types: [created]
 permissions: {}
 jobs:
+  target:
+    name: stage untrusted target data
+    runs-on: ubuntu-24.04
+    if: vars.ADW_CUTOVER_HOLD != 'true' && ((inputs.lane != '' && inputs.control_sha == github.workflow_sha) || (inputs.lane == '' && github.workflow_sha == github.sha && ((github.event_name == 'repository_dispatch' && github.event.sender.id == fromJSON(vars.APP_BOT_USER_ID) && github.event.sender.login == vars.APP_BOT_LOGIN && github.event.sender.type == 'Bot') || (github.event_name == 'issues' && (github.event.action != 'labeled' || github.event.label.name == 'ready' || github.event.label.name == 'codex' || github.event.label.name == 'needs:prototype' || github.event.label.name == 'needs:breakdown')) || (github.event_name == 'issue_comment' && github.event.sender.id == github.event.repository.owner.id && github.event.sender.login == github.repository_owner && github.event.sender.type == 'User' && contains(format(' {0} ', github.event.comment.body), ' @smith ')))))
+    permissions:
+      contents: read
+    steps:
+      - name: checkout immutable target
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {repository: "${{ inputs.target_repository || github.repository }}", ref: "${{ inputs.target_sha || github.sha }}", path: target, fetch-depth: 0, persist-credentials: false}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with: {name: adw-target, path: "${{ github.workspace }}/target", if-no-files-found: error, retention-days: 1, include-hidden-files: true, overwrite: true}
   prepare:
     name: prepare trusted issue or called lane
+    needs: target
     runs-on: ubuntu-24.04
-    if: vars.ADW_CUTOVER_HOLD != 'true' && (inputs.lane != '' || (github.event_name == 'repository_dispatch' && github.event.sender.id == fromJSON(vars.APP_BOT_USER_ID) && github.event.sender.login == vars.APP_BOT_LOGIN && github.event.sender.type == 'Bot') || (github.event_name == 'issues' && (github.event.action != 'labeled' || github.event.label.name == 'ready' || github.event.label.name == 'codex' || github.event.label.name == 'needs:prototype' || github.event.label.name == 'needs:breakdown')) || (github.event_name == 'issue_comment' && github.event.sender.id == github.event.repository.owner.id && github.event.sender.login == github.repository_owner && github.event.sender.type == 'User'))
+    if: vars.ADW_CUTOVER_HOLD != 'true' && needs.target.result == 'success' && ((inputs.lane != '' && inputs.control_sha == github.workflow_sha) || (inputs.lane == '' && github.workflow_sha == github.sha && ((github.event_name == 'repository_dispatch' && github.event.sender.id == fromJSON(vars.APP_BOT_USER_ID) && github.event.sender.login == vars.APP_BOT_LOGIN && github.event.sender.type == 'Bot') || (github.event_name == 'issues' && (github.event.action != 'labeled' || github.event.label.name == 'ready' || github.event.label.name == 'codex' || github.event.label.name == 'needs:prototype' || github.event.label.name == 'needs:breakdown')) || (github.event_name == 'issue_comment' && github.event.sender.id == github.event.repository.owner.id && github.event.sender.login == github.repository_owner && github.event.sender.type == 'User' && contains(format(' {0} ', github.event.comment.body), ' @smith ')))))
     permissions:
       contents: read
     outputs:
@@ -39,10 +52,9 @@ jobs:
     steps:
       - name: checkout immutable control
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: {ref: "${{ inputs.control_sha || github.sha }}", path: control, persist-credentials: false}
-      - name: checkout immutable target
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: {repository: "${{ inputs.target_repository || github.repository }}", ref: "${{ inputs.target_sha || github.sha }}", path: target, fetch-depth: 0, persist-credentials: false}
+        with: {ref: "${{ inputs.control_sha || github.workflow_sha }}", path: control, persist-credentials: false}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with: {name: adw-target, path: "${{ github.workspace }}/target"}
       - name: mint exact read token
         id: prepare-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
@@ -73,7 +85,7 @@ jobs:
           ADW_EVENT_NAME: ${{ github.event_name == 'pull_request_target' && 'pull_request' || github.event_name }}
           ADW_REPOSITORY: ${{ github.repository }}
           ADW_ROLE: ${{ inputs.role || (github.event_name == 'repository_dispatch' && github.event.client_payload.role) || (github.event_name == 'issue_comment' && 'steerer') || (github.event.label.name == 'codex' && 'codex-builder') || (github.event.label.name == 'needs:prototype' && 'pioneer') || (github.event.label.name == 'needs:breakdown' && 'planner') || (github.event.label.name == 'ready' && 'builder') || 'triager' }}
-          ADW_CONTROL_SHA: ${{ inputs.control_sha || github.sha }}
+          ADW_CONTROL_SHA: ${{ inputs.control_sha || github.workflow_sha }}
           ADW_GH_PATH: /usr/bin/gh
           ADW_GIT_PATH: /usr/bin/git
           ADW_GITHUB_TOKEN: ${{ steps.prepare-token.outputs.token }}
@@ -90,7 +102,7 @@ jobs:
   primary-claude:
     needs: prepare
     runs-on: ubuntu-24.04
-    if: vars.ADW_CUTOVER_HOLD != 'true' && needs.prepare.outputs.decision == 'reduce' && needs.prepare.outputs.primary == 'claude'
+    if: vars.ADW_CUTOVER_HOLD != 'true' && needs.prepare.result == 'success' && needs.prepare.outputs.decision == 'reduce' && needs.prepare.outputs.primary == 'claude'
     permissions: {}
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -98,7 +110,7 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with: {name: adw-source, path: "${{ github.workspace }}/source"}
       - working-directory: ${{ github.workspace }}/source/control
-        env: {ADW_SOURCE_ARTIFACT: "${{ github.workspace }}/source", ADW_SNAPSHOT_ARTIFACT: "${{ github.workspace }}/transport/adw-snapshot", ADW_ASSESSMENT_ARTIFACT: "${{ github.workspace }}/output", ADW_TARGET_DIRECTORY: "${{ github.workspace }}/target", ADW_RUNNER_TEMP: "${{ runner.temp }}", ADW_NPM_PATH: /usr/local/bin/npm, ADW_GIT_PATH: /usr/bin/git, ADW_CONTROL_SHA: "${{ inputs.control_sha || github.sha }}", ADW_PROVIDER_CREDENTIAL: "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", ADW_RUN_ID: "${{ github.run_id }}", ADW_JOB_ID: primary-claude, ADW_RUN_ATTEMPT: "${{ github.run_attempt }}", ADW_IDEMPOTENCY_KEY: "${{ github.run_id }}:claude:${{ needs.prepare.outputs.role }}"}
+        env: {ADW_SOURCE_ARTIFACT: "${{ github.workspace }}/source", ADW_SNAPSHOT_ARTIFACT: "${{ github.workspace }}/transport/adw-snapshot", ADW_ASSESSMENT_ARTIFACT: "${{ github.workspace }}/output", ADW_TARGET_DIRECTORY: "${{ github.workspace }}/target", ADW_RUNNER_TEMP: "${{ runner.temp }}", ADW_NPM_PATH: /usr/local/bin/npm, ADW_GIT_PATH: /usr/bin/git, ADW_CONTROL_SHA: "${{ inputs.control_sha || github.workflow_sha }}", ADW_PROVIDER_CREDENTIAL: "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", ADW_RUN_ID: "${{ github.run_id }}", ADW_JOB_ID: primary-claude, ADW_RUN_ATTEMPT: "${{ github.run_attempt }}", ADW_IDEMPOTENCY_KEY: "${{ github.run_id }}:claude:${{ needs.prepare.outputs.role }}"}
         run: node adw/main.mjs assess --provider claude
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -106,7 +118,7 @@ jobs:
   primary-codex:
     needs: prepare
     runs-on: ubuntu-24.04
-    if: vars.ADW_CUTOVER_HOLD != 'true' && needs.prepare.outputs.decision == 'reduce' && needs.prepare.outputs.primary == 'codex'
+    if: vars.ADW_CUTOVER_HOLD != 'true' && needs.prepare.result == 'success' && needs.prepare.outputs.decision == 'reduce' && needs.prepare.outputs.primary == 'codex'
     permissions: {}
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -114,7 +126,7 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with: {name: adw-source, path: "${{ github.workspace }}/source"}
       - working-directory: ${{ github.workspace }}/source/control
-        env: {ADW_SOURCE_ARTIFACT: "${{ github.workspace }}/source", ADW_SNAPSHOT_ARTIFACT: "${{ github.workspace }}/transport/adw-snapshot", ADW_ASSESSMENT_ARTIFACT: "${{ github.workspace }}/output", ADW_TARGET_DIRECTORY: "${{ github.workspace }}/target", ADW_RUNNER_TEMP: "${{ runner.temp }}", ADW_NPM_PATH: /usr/local/bin/npm, ADW_GIT_PATH: /usr/bin/git, ADW_CONTROL_SHA: "${{ inputs.control_sha || github.sha }}", ADW_PROVIDER_CREDENTIAL: "${{ secrets.CODEX_AUTH_JSON }}", ADW_RUN_ID: "${{ github.run_id }}", ADW_JOB_ID: primary-codex, ADW_RUN_ATTEMPT: "${{ github.run_attempt }}", ADW_IDEMPOTENCY_KEY: "${{ github.run_id }}:codex:${{ needs.prepare.outputs.role }}"}
+        env: {ADW_SOURCE_ARTIFACT: "${{ github.workspace }}/source", ADW_SNAPSHOT_ARTIFACT: "${{ github.workspace }}/transport/adw-snapshot", ADW_ASSESSMENT_ARTIFACT: "${{ github.workspace }}/output", ADW_TARGET_DIRECTORY: "${{ github.workspace }}/target", ADW_RUNNER_TEMP: "${{ runner.temp }}", ADW_NPM_PATH: /usr/local/bin/npm, ADW_GIT_PATH: /usr/bin/git, ADW_CONTROL_SHA: "${{ inputs.control_sha || github.workflow_sha }}", ADW_PROVIDER_CREDENTIAL: "${{ secrets.CODEX_AUTH_JSON }}", ADW_RUN_ID: "${{ github.run_id }}", ADW_JOB_ID: primary-codex, ADW_RUN_ATTEMPT: "${{ github.run_attempt }}", ADW_IDEMPOTENCY_KEY: "${{ github.run_id }}:codex:${{ needs.prepare.outputs.role }}"}
         run: node adw/main.mjs assess --provider codex
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -122,7 +134,7 @@ jobs:
   fallback-claude:
     needs: [prepare, primary-codex]
     runs-on: ubuntu-24.04
-    if: vars.ADW_CUTOVER_HOLD != 'true' && always() && needs.prepare.outputs.fallback == 'claude' && needs.primary-codex.result != 'success'
+    if: vars.ADW_CUTOVER_HOLD != 'true' && always() && needs.prepare.result == 'success' && needs.prepare.outputs.fallback == 'claude' && needs.primary-codex.result != 'success'
     permissions: {}
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -130,7 +142,7 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with: {name: adw-source, path: "${{ github.workspace }}/source"}
       - working-directory: ${{ github.workspace }}/source/control
-        env: {ADW_SOURCE_ARTIFACT: "${{ github.workspace }}/source", ADW_SNAPSHOT_ARTIFACT: "${{ github.workspace }}/transport/adw-snapshot", ADW_ASSESSMENT_ARTIFACT: "${{ github.workspace }}/output", ADW_TARGET_DIRECTORY: "${{ github.workspace }}/target", ADW_RUNNER_TEMP: "${{ runner.temp }}", ADW_NPM_PATH: /usr/local/bin/npm, ADW_GIT_PATH: /usr/bin/git, ADW_CONTROL_SHA: "${{ inputs.control_sha || github.sha }}", ADW_PROVIDER_CREDENTIAL: "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", ADW_RUN_ID: "${{ github.run_id }}", ADW_JOB_ID: fallback-claude, ADW_RUN_ATTEMPT: "${{ github.run_attempt }}", ADW_IDEMPOTENCY_KEY: "${{ github.run_id }}:claude:${{ needs.prepare.outputs.role }}"}
+        env: {ADW_SOURCE_ARTIFACT: "${{ github.workspace }}/source", ADW_SNAPSHOT_ARTIFACT: "${{ github.workspace }}/transport/adw-snapshot", ADW_ASSESSMENT_ARTIFACT: "${{ github.workspace }}/output", ADW_TARGET_DIRECTORY: "${{ github.workspace }}/target", ADW_RUNNER_TEMP: "${{ runner.temp }}", ADW_NPM_PATH: /usr/local/bin/npm, ADW_GIT_PATH: /usr/bin/git, ADW_CONTROL_SHA: "${{ inputs.control_sha || github.workflow_sha }}", ADW_PROVIDER_CREDENTIAL: "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", ADW_RUN_ID: "${{ github.run_id }}", ADW_JOB_ID: fallback-claude, ADW_RUN_ATTEMPT: "${{ github.run_attempt }}", ADW_IDEMPOTENCY_KEY: "${{ github.run_id }}:claude:${{ needs.prepare.outputs.role }}"}
         run: node adw/main.mjs assess --provider claude
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -138,7 +150,7 @@ jobs:
   fallback-codex:
     needs: [prepare, primary-claude]
     runs-on: ubuntu-24.04
-    if: vars.ADW_CUTOVER_HOLD != 'true' && always() && needs.prepare.outputs.fallback == 'codex' && needs.primary-claude.result != 'success'
+    if: vars.ADW_CUTOVER_HOLD != 'true' && always() && needs.prepare.result == 'success' && needs.prepare.outputs.fallback == 'codex' && needs.primary-claude.result != 'success'
     permissions: {}
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -146,15 +158,15 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with: {name: adw-source, path: "${{ github.workspace }}/source"}
       - working-directory: ${{ github.workspace }}/source/control
-        env: {ADW_SOURCE_ARTIFACT: "${{ github.workspace }}/source", ADW_SNAPSHOT_ARTIFACT: "${{ github.workspace }}/transport/adw-snapshot", ADW_ASSESSMENT_ARTIFACT: "${{ github.workspace }}/output", ADW_TARGET_DIRECTORY: "${{ github.workspace }}/target", ADW_RUNNER_TEMP: "${{ runner.temp }}", ADW_NPM_PATH: /usr/local/bin/npm, ADW_GIT_PATH: /usr/bin/git, ADW_CONTROL_SHA: "${{ inputs.control_sha || github.sha }}", ADW_PROVIDER_CREDENTIAL: "${{ secrets.CODEX_AUTH_JSON }}", ADW_RUN_ID: "${{ github.run_id }}", ADW_JOB_ID: fallback-codex, ADW_RUN_ATTEMPT: "${{ github.run_attempt }}", ADW_IDEMPOTENCY_KEY: "${{ github.run_id }}:codex:${{ needs.prepare.outputs.role }}"}
+        env: {ADW_SOURCE_ARTIFACT: "${{ github.workspace }}/source", ADW_SNAPSHOT_ARTIFACT: "${{ github.workspace }}/transport/adw-snapshot", ADW_ASSESSMENT_ARTIFACT: "${{ github.workspace }}/output", ADW_TARGET_DIRECTORY: "${{ github.workspace }}/target", ADW_RUNNER_TEMP: "${{ runner.temp }}", ADW_NPM_PATH: /usr/local/bin/npm, ADW_GIT_PATH: /usr/bin/git, ADW_CONTROL_SHA: "${{ inputs.control_sha || github.workflow_sha }}", ADW_PROVIDER_CREDENTIAL: "${{ secrets.CODEX_AUTH_JSON }}", ADW_RUN_ID: "${{ github.run_id }}", ADW_JOB_ID: fallback-codex, ADW_RUN_ATTEMPT: "${{ github.run_attempt }}", ADW_IDEMPOTENCY_KEY: "${{ github.run_id }}:codex:${{ needs.prepare.outputs.role }}"}
         run: node adw/main.mjs assess --provider codex
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with: {name: adw-assessment-codex, path: "${{ github.workspace }}/output", if-no-files-found: ignore, retention-days: 1, overwrite: true}
   reduce:
-    needs: [primary-claude, primary-codex, fallback-claude, fallback-codex]
+    needs: [prepare, primary-claude, primary-codex, fallback-claude, fallback-codex]
     runs-on: ubuntu-24.04
-    if: vars.ADW_CUTOVER_HOLD != 'true' && always() && (needs.primary-claude.result != 'skipped' || needs.primary-codex.result != 'skipped')
+    if: vars.ADW_CUTOVER_HOLD != 'true' && always() && needs.prepare.result == 'success' && (needs.primary-claude.result != 'skipped' || needs.primary-codex.result != 'skipped')
     permissions: {}
     outputs: {apply_class: "${{ steps.decision.outputs.apply_class }}", apply_capabilities: "${{ steps.decision.outputs.apply_capabilities }}", apply_permissions: "${{ steps.decision.outputs.apply_permissions }}", permission_actions: "${{ steps.decision.outputs.permission_actions }}", permission_administration: "${{ steps.decision.outputs.permission_administration }}", permission_checks: "${{ steps.decision.outputs.permission_checks }}", permission_contents: "${{ steps.decision.outputs.permission_contents }}", permission_issues: "${{ steps.decision.outputs.permission_issues }}", permission_metadata: "${{ steps.decision.outputs.permission_metadata }}", permission_pull_requests: "${{ steps.decision.outputs.permission_pull_requests }}", permission_security_events: "${{ steps.decision.outputs.permission_security_events }}", permission_vulnerability_alerts: "${{ steps.decision.outputs.permission_vulnerability_alerts }}"}
     steps:
@@ -164,7 +176,7 @@ jobs:
         with: {name: adw-source, path: "${{ github.workspace }}/source"}
       - id: decision
         working-directory: ${{ github.workspace }}/source/control
-        env: {ADW_SOURCE_ARTIFACT: "${{ github.workspace }}/source", ADW_SNAPSHOT_ARTIFACT: "${{ github.workspace }}/transport/adw-snapshot", ADW_PRIMARY_ASSESSMENT_ARTIFACT: "${{ needs.primary-claude.result != 'skipped' && format('{0}/transport/adw-assessment-claude', github.workspace) || format('{0}/transport/adw-assessment-codex', github.workspace) }}", ADW_FALLBACK_ASSESSMENT_ARTIFACT: "${{ needs.primary-claude.result != 'skipped' && format('{0}/transport/adw-assessment-codex', github.workspace) || format('{0}/transport/adw-assessment-claude', github.workspace) }}", ADW_FALLBACK_ATTEMPTED: "${{ needs.fallback-claude.result != 'skipped' || needs.fallback-codex.result != 'skipped' }}", ADW_DECISION_ARTIFACT: "${{ github.workspace }}/output", ADW_CONTROL_SHA: "${{ inputs.control_sha || github.sha }}", ADW_EMIT_GITHUB_OUTPUT: exact-permissions-v1}
+        env: {ADW_SOURCE_ARTIFACT: "${{ github.workspace }}/source", ADW_SNAPSHOT_ARTIFACT: "${{ github.workspace }}/transport/adw-snapshot", ADW_PRIMARY_ASSESSMENT_ARTIFACT: "${{ needs.primary-claude.result != 'skipped' && format('{0}/transport/adw-assessment-claude', github.workspace) || format('{0}/transport/adw-assessment-codex', github.workspace) }}", ADW_FALLBACK_ASSESSMENT_ARTIFACT: "${{ needs.primary-claude.result != 'skipped' && format('{0}/transport/adw-assessment-codex', github.workspace) || format('{0}/transport/adw-assessment-claude', github.workspace) }}", ADW_FALLBACK_ATTEMPTED: "${{ needs.fallback-claude.result != 'skipped' || needs.fallback-codex.result != 'skipped' }}", ADW_DECISION_ARTIFACT: "${{ github.workspace }}/output", ADW_CONTROL_SHA: "${{ inputs.control_sha || github.workflow_sha }}", ADW_EMIT_GITHUB_OUTPUT: exact-permissions-v1}
         run: node adw/main.mjs reduce
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -172,7 +184,7 @@ jobs:
   reconcile:
     needs: prepare
     runs-on: ubuntu-24.04
-    if: vars.ADW_CUTOVER_HOLD != 'true' && needs.prepare.outputs.decision == 'reconcile'
+    if: vars.ADW_CUTOVER_HOLD != 'true' && needs.prepare.result == 'success' && needs.prepare.outputs.decision == 'reconcile'
     permissions:
       contents: read
     outputs: {apply_class: "${{ steps.decision.outputs.apply_class }}", apply_capabilities: "${{ steps.decision.outputs.apply_capabilities }}", apply_permissions: "${{ steps.decision.outputs.apply_permissions }}", permission_actions: "${{ steps.decision.outputs.permission_actions }}", permission_administration: "${{ steps.decision.outputs.permission_administration }}", permission_checks: "${{ steps.decision.outputs.permission_checks }}", permission_contents: "${{ steps.decision.outputs.permission_contents }}", permission_issues: "${{ steps.decision.outputs.permission_issues }}", permission_metadata: "${{ steps.decision.outputs.permission_metadata }}", permission_pull_requests: "${{ steps.decision.outputs.permission_pull_requests }}", permission_security_events: "${{ steps.decision.outputs.permission_security_events }}", permission_vulnerability_alerts: "${{ steps.decision.outputs.permission_vulnerability_alerts }}"}
@@ -183,7 +195,7 @@ jobs:
         with: {name: adw-source, path: "${{ github.workspace }}/source"}
       - id: decision
         working-directory: ${{ github.workspace }}/source/control
-        env: {ADW_SOURCE_ARTIFACT: "${{ github.workspace }}/source", ADW_SNAPSHOT_ARTIFACT: "${{ github.workspace }}/transport/adw-snapshot", ADW_DECISION_ARTIFACT: "${{ github.workspace }}/output", ADW_CONTROL_SHA: "${{ inputs.control_sha || github.sha }}", ADW_EMIT_GITHUB_OUTPUT: exact-permissions-v1}
+        env: {ADW_SOURCE_ARTIFACT: "${{ github.workspace }}/source", ADW_SNAPSHOT_ARTIFACT: "${{ github.workspace }}/transport/adw-snapshot", ADW_DECISION_ARTIFACT: "${{ github.workspace }}/output", ADW_CONTROL_SHA: "${{ inputs.control_sha || github.workflow_sha }}", ADW_EMIT_GITHUB_OUTPUT: exact-permissions-v1}
         run: node adw/main.mjs reconcile
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -191,7 +203,7 @@ jobs:
   audit:
     needs: prepare
     runs-on: ubuntu-24.04
-    if: vars.ADW_CUTOVER_HOLD != 'true' && needs.prepare.outputs.decision == 'audit'
+    if: vars.ADW_CUTOVER_HOLD != 'true' && needs.prepare.result == 'success' && needs.prepare.outputs.decision == 'audit'
     permissions:
       contents: read
     outputs: {apply_class: "${{ steps.decision.outputs.apply_class }}", apply_capabilities: "${{ steps.decision.outputs.apply_capabilities }}", apply_permissions: "${{ steps.decision.outputs.apply_permissions }}", permission_actions: "${{ steps.decision.outputs.permission_actions }}", permission_administration: "${{ steps.decision.outputs.permission_administration }}", permission_checks: "${{ steps.decision.outputs.permission_checks }}", permission_contents: "${{ steps.decision.outputs.permission_contents }}", permission_issues: "${{ steps.decision.outputs.permission_issues }}", permission_metadata: "${{ steps.decision.outputs.permission_metadata }}", permission_pull_requests: "${{ steps.decision.outputs.permission_pull_requests }}", permission_security_events: "${{ steps.decision.outputs.permission_security_events }}", permission_vulnerability_alerts: "${{ steps.decision.outputs.permission_vulnerability_alerts }}"}
@@ -202,7 +214,7 @@ jobs:
         with: {name: adw-source, path: "${{ github.workspace }}/source"}
       - id: decision
         working-directory: ${{ github.workspace }}/source/control
-        env: {ADW_SOURCE_ARTIFACT: "${{ github.workspace }}/source", ADW_SNAPSHOT_ARTIFACT: "${{ github.workspace }}/transport/adw-snapshot", ADW_DECISION_ARTIFACT: "${{ github.workspace }}/output", ADW_CONTROL_SHA: "${{ inputs.control_sha || github.sha }}", ADW_EMIT_GITHUB_OUTPUT: exact-permissions-v1}
+        env: {ADW_SOURCE_ARTIFACT: "${{ github.workspace }}/source", ADW_SNAPSHOT_ARTIFACT: "${{ github.workspace }}/transport/adw-snapshot", ADW_DECISION_ARTIFACT: "${{ github.workspace }}/output", ADW_CONTROL_SHA: "${{ inputs.control_sha || github.workflow_sha }}", ADW_EMIT_GITHUB_OUTPUT: exact-permissions-v1}
         run: node adw/main.mjs audit
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -210,7 +222,7 @@ jobs:
   verify:
     needs: [prepare, reduce, reconcile, audit]
     runs-on: ubuntu-24.04
-    if: vars.ADW_CUTOVER_HOLD != 'true' && always()
+    if: vars.ADW_CUTOVER_HOLD != 'true' && always() && needs.prepare.result == 'success'
     permissions: {}
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -218,7 +230,7 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with: {name: adw-source, path: "${{ github.workspace }}/source"}
       - working-directory: ${{ github.workspace }}/source/control
-        env: {ADW_SOURCE_ARTIFACT: "${{ github.workspace }}/source", ADW_SNAPSHOT_ARTIFACT: "${{ github.workspace }}/transport/adw-snapshot", ADW_DECISION_ARTIFACT: "${{ github.workspace }}/transport/adw-decision", ADW_VERIFICATION_ARTIFACT: "${{ github.workspace }}/output", ADW_TARGET_DIRECTORY: "${{ github.workspace }}/target", ADW_TEMPORARY_DIRECTORY: "${{ runner.temp }}", ADW_GIT_PATH: /usr/bin/git, ADW_CONTROL_SHA: "${{ inputs.control_sha || github.sha }}"}
+        env: {ADW_SOURCE_ARTIFACT: "${{ github.workspace }}/source", ADW_SNAPSHOT_ARTIFACT: "${{ github.workspace }}/transport/adw-snapshot", ADW_DECISION_ARTIFACT: "${{ github.workspace }}/transport/adw-decision", ADW_VERIFICATION_ARTIFACT: "${{ github.workspace }}/output", ADW_TARGET_DIRECTORY: "${{ github.workspace }}/target", ADW_TEMPORARY_DIRECTORY: "${{ runner.temp }}", ADW_GIT_PATH: /usr/bin/git, ADW_CONTROL_SHA: "${{ inputs.control_sha || github.workflow_sha }}"}
         run: node adw/main.mjs verify
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -226,7 +238,7 @@ jobs:
   apply:
     needs: [prepare, reduce, reconcile, audit, verify]
     runs-on: ubuntu-24.04
-    if: vars.ADW_CUTOVER_HOLD != 'true' && always()
+    if: vars.ADW_CUTOVER_HOLD != 'true' && always() && needs.prepare.result == 'success'
     permissions:
       contents: read
     concurrency: {group: adw-write, cancel-in-progress: false}
@@ -266,7 +278,7 @@ jobs:
           ADW_PREVIOUS_APPLY_RESULTS_ROOT: ${{ github.workspace }}/previous-apply-results
           ADW_RUN_ATTEMPT: ${{ github.run_attempt }}
           ADW_REPOSITORY: ${{ github.repository }}
-          ADW_CONTROL_SHA: ${{ inputs.control_sha || github.sha }}
+          ADW_CONTROL_SHA: ${{ inputs.control_sha || github.workflow_sha }}
           ADW_TARGET_DIRECTORY: ${{ github.workspace }}/target
           ADW_TEMPORARY_DIRECTORY: ${{ runner.temp }}
           ADW_GIT_PATH: /usr/bin/git
@@ -284,9 +296,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with: {name: "adw-apply-result-${{ github.run_attempt }}", path: "${{ github.workspace }}/output", if-no-files-found: ignore, retention-days: 1, include-hidden-files: true}
   evidence:
-    needs: apply
+    needs: [prepare, apply]
     runs-on: ubuntu-24.04
-    if: vars.ADW_CUTOVER_HOLD != 'true' && always()
+    if: vars.ADW_CUTOVER_HOLD != 'true' && always() && needs.prepare.result == 'success' && needs.apply.result != 'skipped'
     permissions: {}
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
