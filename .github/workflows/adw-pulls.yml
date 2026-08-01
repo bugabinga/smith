@@ -1,0 +1,38 @@
+name: ADW pull and reconcile triggers
+run-name: "${{ github.event_name == 'repository_dispatch' && github.event.client_payload.smith_operation_digest || format('ADW pull #{0}', github.event.pull_request.number || github.event.check_run.pull_requests[0].number || github.event.check_suite.pull_requests[0].number) }}"
+on:
+  repository_dispatch:
+    types: [run_review]
+  pull_request_target:
+    types: [opened, reopened, synchronize, labeled, closed]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+  check_run:
+    types: [completed]
+  check_suite:
+    types: [completed]
+permissions: {}
+jobs:
+  pull-event-lane:
+    name: pull provider or reconcile-only lane
+    if: vars.ADW_CUTOVER_HOLD != 'true' && (github.event_name != 'repository_dispatch' || (github.event.sender.id == fromJSON(vars.APP_BOT_USER_ID) && github.event.sender.login == vars.APP_BOT_LOGIN && github.event.sender.type == 'Bot'))
+    permissions:
+      contents: read
+    uses: ./.github/workflows/adw-issues.yml
+    with:
+      lane: ${{ github.event_name == 'repository_dispatch' && 'pull-internal' || (github.event_name == 'pull_request_review_comment' || startsWith(github.event_name, 'check_') || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name != 'changes-requested' && github.event.label.name != 'reviewed') || (github.event_name == 'pull_request_target' && github.event.action == 'closed' && github.event.pull_request.merged != true)) && 'pull-reconcile' || github.event_name == 'pull_request_review' && 'pull-revision' || 'pull-provider' }}
+      role: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.role || (github.event_name == 'pull_request_review_comment' || startsWith(github.event_name, 'check_') || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name != 'changes-requested' && github.event.label.name != 'reviewed') || (github.event_name == 'pull_request_target' && github.event.action == 'closed' && github.event.pull_request.merged != true)) && 'reconciler' || github.event_name == 'pull_request_review' && 'reviser' || (github.event.action == 'closed' && github.event.pull_request.merged == true) && 'docs-writer' || github.event.label.name == 'changes-requested' && 'reviser' || github.event.label.name == 'reviewed' && 'security-reviewer' || 'reviewer' }}
+      primary: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.provider || (github.event_name == 'pull_request_review_comment' || startsWith(github.event_name, 'check_') || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name != 'changes-requested' && github.event.label.name != 'reviewed') || (github.event_name == 'pull_request_target' && github.event.action == 'closed' && github.event.pull_request.merged != true)) && 'none' || (github.event.action == 'closed' && github.event.pull_request.merged == true) && 'codex' || 'claude' }}
+      fallback: ${{ github.event_name == 'repository_dispatch' && 'none' || (github.event_name == 'pull_request_review_comment' || startsWith(github.event_name, 'check_') || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name != 'changes-requested' && github.event.label.name != 'reviewed') || (github.event_name == 'pull_request_target' && github.event.action == 'closed' && github.event.pull_request.merged != true)) && 'none' || (github.event.action == 'closed' && github.event.pull_request.merged == true) && 'claude' || 'codex' }}
+      decision: ${{ (github.event_name == 'pull_request_review_comment' || startsWith(github.event_name, 'check_') || (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name != 'changes-requested' && github.event.label.name != 'reviewed') || (github.event_name == 'pull_request_target' && github.event.action == 'closed' && github.event.pull_request.merged != true)) && 'reconcile' || 'reduce' }}
+      read_class: prepare-pull
+      control_sha: ${{ github.event_name == 'repository_dispatch' && github.sha || github.event.pull_request.base.sha || github.event.check_run.pull_requests[0].base.sha || github.event.check_suite.pull_requests[0].base.sha || github.sha }}
+      target_sha: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.headSha || (github.event.action == 'closed' && github.event.pull_request.merged == true) && github.event.pull_request.merge_commit_sha || github.event.pull_request.head.sha || github.event.check_run.head_sha || github.event.check_suite.head_sha }}
+      target_repository: ${{ github.event_name == 'repository_dispatch' && github.repository || github.event.pull_request.head.repo.full_name || github.event.check_run.pull_requests[0].head.repo.full_name || github.event.check_suite.pull_requests[0].head.repo.full_name || github.repository }}
+    secrets:
+      APP_ID: ${{ secrets.APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}

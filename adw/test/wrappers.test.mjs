@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { controlSnapshotPlan, roleSnapshotPlan } from "../github.mjs";
@@ -9,6 +9,14 @@ import { listRoles, role } from "../roles.mjs";
 const wrapperDirectory = new URL("../../prototypes/p38-adw-disposable/wrappers/", import.meta.url);
 const names = ["adw-issues.yml", "adw-pulls.yml", "adw-maintenance.yml"];
 const paths = Object.fromEntries(names.map(name => [name, new URL(name, wrapperDirectory)]));
+const productionDirectory = new URL("../../.github/workflows/", import.meta.url);
+const productionInventory = [
+  ".github/workflows/adw-issues.yml",
+  ".github/workflows/adw-maintenance.yml",
+  ".github/workflows/adw-pulls.yml",
+  ".github/workflows/adw-selftest.yml",
+];
+const operationalNames = new Set(names);
 const ACTIONS = Object.freeze({
   checkout: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
   upload: "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
@@ -234,14 +242,53 @@ test("active charters enforce the assessment-only boundary and exclude release-m
   assert.doesNotMatch(Object.values(await sources()).join("\n"), /release-manager/i);
 });
 
-test("candidate wrappers are inactive, complete, and physically below 400 lines", async () => {
+test("canonical wrappers are complete and physically below 400 lines", async () => {
   const values = await sources();
-  for (const name of names) {
-    await access(paths[name]);
-    await assert.rejects(() => access(new URL(`../../.github/workflows/${name}`, import.meta.url)));
-  }
+  for (const name of names) await access(paths[name]);
   const lineCount = Object.values(values).reduce((sum, source) => sum + sourceLines(source).length - 1, 0);
   assert.ok(lineCount < 400, `combined candidate YAML is ${lineCount} lines`);
+});
+
+test("production inventory contains only three wrappers and selftest", async () => {
+  const inventory = (await readdir(productionDirectory))
+    .filter(name => /^adw-.*\.yml$/.test(name))
+    .map(name => `.github/workflows/${name}`)
+    .sort();
+  assert.deepEqual(inventory, productionInventory);
+});
+
+test("promoted wrappers are byte-identical to canonical candidates", async () => {
+  for (const name of names) {
+    const [candidate, production] = await Promise.all([
+      readFile(paths[name]),
+      readFile(new URL(name, productionDirectory)),
+    ]);
+    assert.deepEqual(production, candidate, `${name} production bytes differ from canonical bytes`);
+  }
+});
+
+test("three operational wrappers are sole writers and selftest is non-writing", async () => {
+  const production = Object.fromEntries(await Promise.all(productionInventory.map(async path => {
+    const name = path.slice(path.lastIndexOf("/") + 1);
+    return [name, await readFile(new URL(name, productionDirectory), "utf8")];
+  })));
+  assert.deepEqual(Object.keys(production).filter(name => name !== "adw-selftest.yml").sort(), [...operationalNames].sort());
+  for (const [name, source] of Object.entries(production)) {
+    if (/actions\/create-github-app-token@|node adw\/main\.mjs apply/.test(source)) {
+      assert.ok(operationalNames.has(name), `${name} is an unexpected writer`);
+    }
+  }
+  assert.match(production["adw-issues.yml"], /actions\/create-github-app-token@/);
+  assert.match(production["adw-issues.yml"], /node adw\/main\.mjs apply/);
+
+  const selftest = production["adw-selftest.yml"];
+  assert.deepEqual(actionUses(selftest), [ACTIONS.checkout]);
+  assert.deepEqual(runCommands(selftest), ["node --test adw/test/*.test.mjs"]);
+  assert.match(selftest, /^permissions:\n  contents: read$/m);
+  assert.doesNotMatch(selftest, /\bsecrets(?:\.|:)|actions\/create-github-app-token@/);
+  assert.doesNotMatch(selftest, /^\s+(?:actions|checks|contents|issues|pull-requests|security-events):\s*write\s*$/m);
+  assert.doesNotMatch(selftest, /node adw\/main\.mjs (?:assess|apply)|(?:^|\s)(?:claude|codex)\s+/m);
+  assert.doesNotMatch(selftest, /adw-write/);
 });
 
 test("wrappers expose only exact triggers and semantically named lanes", async () => {

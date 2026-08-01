@@ -558,7 +558,7 @@ git commit -S \
 - Delete: all legacy workflow and `.github/adw/` files listed in the file map
 - Modify: `adw/test/wrappers.test.mjs`
 
-- [ ] **Step 1: Write failing exact-promotion and sole-writer tests**
+- [x] **Step 1: Write failing exact-promotion and sole-writer tests**
 
 Require byte equality between each prototype candidate and production path. Require exact production ADW inventory:
 
@@ -571,7 +571,7 @@ Require byte equality between each prototype candidate and production path. Requ
 
 Require only the three operational wrappers to contain App token minting or `node adw/main.mjs apply`; require self-test to have no secrets, writes, provider command, or `adw-write` job.
 
-- [ ] **Step 2: Run the inventory test to verify failure**
+- [x] **Step 2: Run the inventory test to verify failure**
 
 ```bash
 node --test --test-name-pattern='production inventory|byte-identical|sole writer' \
@@ -580,7 +580,7 @@ node --test --test-name-pattern='production inventory|byte-identical|sole writer
 
 Expected: FAIL because candidates are inactive and legacy workflows still exist.
 
-- [ ] **Step 3: Promote exact bytes**
+- [x] **Step 3: Promote exact bytes**
 
 ```bash
 cp prototypes/p38-adw-disposable/wrappers/adw-issues.yml \
@@ -599,7 +599,7 @@ cmp prototypes/p38-adw-disposable/wrappers/adw-maintenance.yml \
 
 Expected: all `cmp` commands exit 0.
 
-- [ ] **Step 4: Reduce self-test to the retained non-writer**
+- [x] **Step 4: Reduce self-test to the retained non-writer**
 
 Pin checkout to `actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1`, keep `permissions: contents: read`, and run only:
 
@@ -610,7 +610,7 @@ Pin checkout to `actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1`, kee
 
 Remove legacy shell-test steps and references to deleted `.github/adw/` files.
 
-- [ ] **Step 5: Delete superseded workflow and shell files**
+- [x] **Step 5: Delete superseded workflow and shell files**
 
 ```bash
 git rm \
@@ -644,7 +644,7 @@ git rm \
 
 Expected: `adw-release.yml` is deleted with no replacement; release-manager remains deferred.
 
-- [ ] **Step 6: Run production inventory tests**
+- [x] **Step 6: Run production inventory tests**
 
 ```bash
 node --test adw/test/wrappers.test.mjs
@@ -653,7 +653,7 @@ find .github/workflows -maxdepth 1 -type f -name 'adw-*.yml' -print | sort
 
 Expected: tests PASS and inventory is exactly the four paths above.
 
-- [ ] **Step 7: Commit the atomic tree transition**
+- [x] **Step 7: Commit the atomic tree transition**
 
 ```bash
 git add .github/workflows adw/test/wrappers.test.mjs
