@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 import { AdwError, canonicalBytes, digestBytes, digestJson } from "../core.mjs";
-import { execute, readBounded, run, writeTransportArtifact } from "../main.mjs";
+import { execute, operationPermissionOutputs, readBounded, readPreviousApplyResult, run, writeTransportArtifact } from "../main.mjs";
 
 const controlSha = "a".repeat(40);
 const headSha = "b".repeat(40);
@@ -118,6 +118,29 @@ test("reduce binds patch sidecar bytes before emitting patch decision", async ()
   assert.equal((await invoke(["reduce"], JSON.stringify({ snapshot: buildSnapshot, assessments: [buildAssessment] }))).code, 6);
 });
 
+test("operation permission outputs are exact for the reduced decision", () => {
+  const scopedSnapshot = {
+    ...snapshot,
+    revisions: [
+      { resource: "repository", kind: "repository", token: "r1" },
+      { resource: "trusted:.claude/agents/reviewer.md", kind: "control", token: "r2" },
+      { resource: "pull:42:checks", kind: "checks", token: "r3" },
+    ],
+  };
+  const decision = {
+    schemaVersion: 1, controlSha, snapshotDigest: digestJson(scopedSnapshot), assessmentDigests: [], kind: "state", patch: null,
+    operations: [
+      { type: "publish_check", headSha, name: "reviewer", conclusion: "success", summary: "approved", externalId: "review" },
+      { type: "add_label", entityId: "42", label: "reviewed" },
+    ],
+  };
+  assert.deepEqual(operationPermissionOutputs(decision, scopedSnapshot), {
+    applyClass: "checks:read+checks:write+contents:read+issues:write+pulls:read+repository:read",
+    capabilities: ["checks:read", "checks:write", "contents:read", "issues:write", "pulls:read", "repository:read"],
+    permissions: { checks: "write", contents: "read", issues: "write", metadata: "read", pull_requests: "read" },
+  });
+});
+
 test("reconcile accepts normalized state", async () => {
   const scheduled = {
     ...snapshot,
@@ -135,6 +158,60 @@ test("reconcile accepts normalized state", async () => {
   assert.deepEqual(JSON.parse(result.out), []);
 });
 
+test("operational reduce closes after the one declared fallback attempt", async t => {
+  const fixture = await operationalFixture(t, snapshot, {
+    ".claude/agents/reviewer.md": "Review.\n",
+    "adw/schemas/role-payloads/review.schema.json": "{}\n",
+  });
+  await writeTransportArtifact("snapshot", fixture.snapshotArtifact, snapshot);
+  const env = {
+    ADW_SOURCE_ARTIFACT: fixture.source, ADW_SNAPSHOT_ARTIFACT: fixture.snapshotArtifact,
+    ADW_PRIMARY_ASSESSMENT_ARTIFACT: join(fixture.root, "missing-primary"),
+    ADW_FALLBACK_ASSESSMENT_ARTIFACT: join(fixture.root, "missing-fallback"),
+    ADW_DECISION_ARTIFACT: fixture.decisionArtifact, ADW_CONTROL_SHA: controlSha,
+    ADW_FALLBACK_ATTEMPTED: "true",
+  };
+  const result = await invoke(["reduce"], "", {}, env, { executablePath: fixture.executablePath });
+  assert.equal(result.code, 4, result.err);
+  assert.deepEqual(JSON.parse(result.out), { status: "terminal", provider: null, reason: "providers_unavailable" });
+  const decision = JSON.parse(await readFile(join(fixture.decisionArtifact, "decision.json")));
+  assert.equal(decision.operations[0].type, "publish_check");
+  assert.equal(decision.operations[0].conclusion, "failure");
+});
+
+test("operational assess writes unable evidence before exit 4 while negative and noop remain successful", async t => {
+  const fixture = await operationalFixture(t, snapshot, {
+    ".claude/agents/reviewer.md": "Review.\n",
+    "adw/schemas/role-payloads/review.schema.json": "{}\n",
+  });
+  await writeTransportArtifact("snapshot", fixture.snapshotArtifact, snapshot);
+  const runnerTemporary = join(fixture.root, "runner");
+  await mkdir(runnerTemporary);
+  const cases = [
+    ["unable", payload, 4],
+    ["negative", { verdict: "reject", risk: "high", findings: [] }, 0],
+    ["noop", { verdict: "noop", reason: "nothing to do" }, 0],
+  ];
+  for (const [outcome, resultPayload, expectedCode] of cases) {
+    const assessmentArtifact = join(fixture.root, `assessment-${outcome}`);
+    const record = {
+      ...assessment, outcome, payload: resultPayload, payloadDigest: digestJson(resultPayload), cliVersion: "2.1.220",
+      run: { id: "run", job: "claude", attempt: 1 },
+    };
+    const env = {
+      ADW_SOURCE_ARTIFACT: fixture.source, ADW_SNAPSHOT_ARTIFACT: fixture.snapshotArtifact,
+      ADW_ASSESSMENT_ARTIFACT: assessmentArtifact, ADW_TARGET_DIRECTORY: join(fixture.root, `target-${outcome}`),
+      ADW_RUNNER_TEMP: runnerTemporary, ADW_NPM_PATH: process.execPath, ADW_CONTROL_SHA: controlSha,
+      ADW_PROVIDER_CREDENTIAL: "provider-secret", ADW_RUN_ID: "run", ADW_JOB_ID: "claude",
+      ADW_RUN_ATTEMPT: "1", ADW_IDEMPOTENCY_KEY: assessment.idempotencyKey,
+    };
+    const provider = { install: async () => ({ executable: process.execPath, version: "2.1.220" }), invoke: async () => ({ assessment: record, patchBytes: null }) };
+    const result = await invoke(["assess", "--provider", "claude"], "", {}, env, { executablePath: fixture.executablePath, adapters: { provider } });
+    assert.equal(result.code, expectedCode, result.err);
+    assert.equal(JSON.parse(await readFile(join(assessmentArtifact, "envelope.json"))).outcome, outcome);
+  }
+});
+
 test("operational reconcile consumes only canonical snapshot/source and writes a decision", async t => {
   const authoritySnapshot = {
     schemaVersion: 1, controlSha,
@@ -149,13 +226,24 @@ test("operational reconcile consumes only canonical snapshot/source and writes a
   };
   const fixture = await operationalFixture(t, authoritySnapshot, { ".github/labels.yml": "" });
   await writeTransportArtifact("snapshot", fixture.snapshotArtifact, authoritySnapshot);
-  const env = { ADW_SOURCE_ARTIFACT: fixture.source, ADW_SNAPSHOT_ARTIFACT: fixture.snapshotArtifact, ADW_DECISION_ARTIFACT: fixture.decisionArtifact, ADW_CONTROL_SHA: controlSha };
+  const githubOutput = join(fixture.root, "github-output");
+  await writeFile(githubOutput, "");
+  const env = {
+    ADW_SOURCE_ARTIFACT: fixture.source, ADW_SNAPSHOT_ARTIFACT: fixture.snapshotArtifact, ADW_DECISION_ARTIFACT: fixture.decisionArtifact,
+    ADW_CONTROL_SHA: controlSha, ADW_EMIT_GITHUB_OUTPUT: "exact-permissions-v1", GITHUB_OUTPUT: githubOutput,
+  };
   const result = await invoke(["reconcile"], "", {}, env, { executablePath: fixture.executablePath });
   assert.equal(result.code, 0, result.err);
   const decision = JSON.parse(await readFile(join(fixture.decisionArtifact, "decision.json")));
   assert.equal(decision.operations[0].type, "dispatch_workflow");
   assert.equal(decision.operations[0].inputs.kind, "retry_route");
   assert.equal(decision.assessmentDigests.length, 0);
+  const outputs = await readFile(githubOutput, "utf8");
+  assert.match(outputs, /^apply_class=actions:write\+checks:write$/m);
+  assert.match(outputs, /^apply_capabilities=\["actions:write","checks:write"\]$/m);
+  assert.match(outputs, /^apply_permissions=\{"actions":"write","checks":"write"\}$/m);
+  assert.match(outputs, /^permission_actions=write$/m);
+  assert.match(outputs, /^permission_issues=$/m);
 });
 
 test("operational audit consumes full settings/labels/rulesets state and writes only a decision", async t => {
@@ -195,14 +283,38 @@ test("operational apply consumes exact artifacts and emits canonical apply resul
   const env = {
     ADW_SOURCE_ARTIFACT: fixture.source, ADW_SNAPSHOT_ARTIFACT: fixture.snapshotArtifact, ADW_DECISION_ARTIFACT: fixture.decisionArtifact,
     ADW_VERIFICATION_ARTIFACT: fixture.verificationArtifact, ADW_APPLY_RESULT_ARTIFACT: fixture.resultArtifact,
-    ADW_REPOSITORY: "bugabinga/smith", ADW_CONTROL_SHA: controlSha,
+    ADW_REPOSITORY: "bugabinga/smith", ADW_CONTROL_SHA: controlSha, ADW_GITHUB_TOKEN_EXPIRES_AT: "job-scoped",
   };
+  const before = Date.now();
   const result = await invoke(["apply"], "", {}, env, { executablePath: fixture.executablePath, adapters: { github } });
   assert.equal(result.code, 0, result.err);
+  const expiry = Date.parse(env.ADW_GITHUB_TOKEN_EXPIRES_AT);
+  assert.ok(expiry >= before + 2_699_000 && expiry <= Date.now() + 2_700_000);
   const receipt = JSON.parse(await readFile(join(fixture.resultArtifact, "result.json")));
   assert.equal(receipt.status, "complete");
   assert.equal(receipt.operations[0].receipts[0].projection, "github_state");
   assert.equal(await readFile(join(fixture.resultArtifact, "result.sha256"), "utf8"), `${digestBytes(canonicalBytes(receipt))}\n`);
+});
+
+test("prior apply reader selects only the latest bounded canonical prior attempt", async t => {
+  const root = await mkdtemp(join(tmpdir(), "smith-adw-prior-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const receipts = join(root, "receipts");
+  await mkdir(receipts);
+  await writeTransportArtifact("applyResult", join(receipts, "adw-apply-result-1"), { attempt: 1 });
+  await writeTransportArtifact("applyResult", join(receipts, "adw-apply-result-2"), { attempt: 2 });
+  assert.deepEqual(await readPreviousApplyResult(receipts, 3), { attempt: 2 });
+  assert.equal(await readPreviousApplyResult(join(root, "missing"), 2), null);
+
+  const invalid = join(root, "invalid");
+  await mkdir(invalid);
+  await mkdir(join(invalid, "adw-apply-result-latest"));
+  await assert.rejects(() => readPreviousApplyResult(invalid, 2), error => error?.code === "input");
+
+  const oversized = join(root, "oversized");
+  await mkdir(oversized);
+  await Promise.all(Array.from({ length: 101 }, (_, index) => mkdir(join(oversized, `adw-apply-result-${index + 1}`))));
+  await assert.rejects(() => readPreviousApplyResult(oversized, 102), error => error?.code === "input");
 });
 
 test("operational apply always emits a sanitized partial-failure artifact", async t => {

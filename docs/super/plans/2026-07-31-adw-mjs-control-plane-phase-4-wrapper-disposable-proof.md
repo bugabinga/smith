@@ -163,15 +163,15 @@ adw-source/{control/**,target.bundle,manifest.json,manifest.sha256}
 - Create: `prototypes/p38-adw-disposable/wrappers/adw-pulls.yml`
 - Create: `prototypes/p38-adw-disposable/wrappers/adw-maintenance.yml`
 
-- [ ] Write failing structural tests for triggers, trusted refs, job graph, `adw-write`, token permissions, provider isolation, artifact names/hashes, `persist-credentials:false`, `if:always()` failure paths, and exact `node adw/main.mjs <command>` calls.
-- [ ] Encode three canonical layers in `adw/permissions.json`: the disposable/production App installation permission union, exact minted-token scopes per apply class, and job-level `GITHUB_TOKEN` permissions. Provider/reduce/verify jobs use `permissions:{}` and only artifact service transport; prepare/reconcile use read-only job/App scopes; apply has read-only job permissions and passes only its minted App token to the MJS process. Tests reject any layer conflation or superset.
-- [ ] Issue wrapper: issue/issue-comment/backlog triggers; trusted default-branch control SHA; prepare → conditional primary/fallback → reduce → verify → serialized apply.
-- [ ] Pull wrapper: pull/review events follow the provider path; review-comment/check events run prepare → reconcile → verify → serialized apply only. Trusted control code comes from PR base SHA.
-- [ ] Maintenance wrapper: default-branch push, schedules, alerts, manual dispatch, reconciliation, spec planning, settings audit, and label sync; no release/tag automation.
-- [ ] All three wrappers contain no `gh`, `git`, jq, npm/provider commands, inline prompts, policy shell, target execution, generic token, or checkout credential persistence. Combined operational YAML remains below 400 lines.
-- [ ] Assert production `.github/workflows/` contains none of the candidate filenames, so Phase 4 cannot become a second writer.
-- [ ] Run `node --test adw/test/wrappers.test.mjs`; expect PASS.
-- [ ] Commit: `Encode inactive thin ADW wrappers`.
+- [x] Write failing structural tests for triggers, trusted refs, job graph, `adw-write`, token permissions, provider isolation, artifact names/hashes, `persist-credentials:false`, `if:always()` failure paths, and exact `node adw/main.mjs <command>` calls.
+- [x] Encode three canonical layers in `adw/permissions.json`: the disposable/production App installation permission union, exact minted-token scopes per apply class, and job-level `GITHUB_TOKEN` permissions. Provider/reduce/verify jobs use `permissions:{}` and only artifact service transport; prepare/reconcile use read-only job/App scopes; apply has read-only job permissions and passes only its minted App token to the MJS process. Tests reject any layer conflation or superset.
+- [x] Issue wrapper: issue/issue-comment/backlog triggers; trusted default-branch control SHA; prepare → conditional primary/fallback → reduce → verify → serialized apply.
+- [x] Pull wrapper: pull/review events follow the provider path; review-comment/check events run prepare → reconcile → verify → serialized apply only. Trusted control code comes from PR base SHA.
+- [x] Maintenance wrapper: default-branch push, schedules, alerts, manual dispatch, reconciliation, spec planning, settings audit, and label sync; no release/tag automation.
+- [x] All three wrappers contain no `gh`, `git`, jq, npm/provider commands, inline prompts, policy shell, target execution, generic token, or checkout credential persistence. Combined operational YAML remains below 400 lines.
+- [x] Assert production `.github/workflows/` contains none of the candidate filenames, so Phase 4 cannot become a second writer.
+- [x] Run `node --test adw/test/wrappers.test.mjs`; expect PASS.
+- [x] Commit: `Encode inactive thin ADW wrappers`.
 
 ### Task 7: Disposable-repository harness and failure matrix
 

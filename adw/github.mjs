@@ -1757,7 +1757,8 @@ export function createDefaultGitHub(repository) {
   const scopedPermissions = process.env.ADW_GITHUB_TOKEN_PERMISSIONS;
   const scopedExpiresAt = process.env.ADW_GITHUB_TOKEN_EXPIRES_AT;
   let token = null;
-  if (scopedToken !== undefined || scopedRepository !== undefined || scopedPermissions !== undefined || scopedExpiresAt !== undefined) {
+  const tokenFields = [scopedToken, scopedRepository, scopedPermissions, scopedExpiresAt];
+  if (!tokenFields.every(value => value === undefined || value === "")) {
     contract(typeof scopedToken === "string" && scopedToken.length > 0 && scopedRepository === repository && typeof scopedPermissions === "string" && typeof scopedExpiresAt === "string" && Number.isFinite(Date.parse(scopedExpiresAt)), "operation-scoped GitHub App token is unavailable");
     let permissions;
     try { permissions = JSON.parse(scopedPermissions); } catch { throw new AdwError("contract", "operation-scoped GitHub App permissions are invalid"); }

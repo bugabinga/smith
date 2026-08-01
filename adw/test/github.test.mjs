@@ -77,7 +77,7 @@ test("adapter rejects repository traversal segments", () => {
 });
 
 test("default adapter requires split App and bot identity environment", () => {
-  const keys = ["ADW_GH_PATH", "ADW_APP_ID", "ADW_APP_SLUG", "ADW_BOT_USER_ID", "ADW_BOT_LOGIN", "ADW_APP_LOGIN", "ADW_GITHUB_TOKEN", "ADW_GITHUB_TOKEN_REPOSITORY", "ADW_GITHUB_TOKEN_PERMISSIONS"];
+  const keys = ["ADW_GH_PATH", "ADW_APP_ID", "ADW_APP_SLUG", "ADW_BOT_USER_ID", "ADW_BOT_LOGIN", "ADW_APP_LOGIN", "ADW_GITHUB_TOKEN", "ADW_GITHUB_TOKEN_REPOSITORY", "ADW_GITHUB_TOKEN_PERMISSIONS", "ADW_GITHUB_TOKEN_EXPIRES_AT"];
   const previous = new Map(keys.map(key => [key, process.env[key]]));
   try {
     for (const key of keys) delete process.env[key];
@@ -91,6 +91,8 @@ test("default adapter requires split App and bot identity environment", () => {
     const github = createDefaultGitHub("bugabinga/smith");
     github.record({ type: "noop", reason: "unchanged" });
     assert.equal(github.intents().length, 1);
+    Object.assign(process.env, { ADW_GITHUB_TOKEN: "", ADW_GITHUB_TOKEN_REPOSITORY: "", ADW_GITHUB_TOKEN_PERMISSIONS: "", ADW_GITHUB_TOKEN_EXPIRES_AT: "" });
+    assert.equal(createDefaultGitHub("bugabinga/smith").operationTokenCapabilities(), null);
     delete process.env.ADW_BOT_LOGIN;
     process.env.ADW_APP_LOGIN = appIdentity.login;
     assert.throws(() => createDefaultGitHub("bugabinga/smith"), error => error?.code === "contract" && error.message === "App identity is unavailable");

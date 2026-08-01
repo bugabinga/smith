@@ -307,6 +307,34 @@ async function createArtifactFile(claim, relative, bytes, mode = 0o600) {
   await assertOutputDirectory(claim);
 }
 
+const MAX_PRIOR_APPLY_RESULTS = 100;
+
+export async function readPreviousApplyResult(root, currentAttempt) {
+  if (!isAbsolute(root) || resolve(root) !== root || !Number.isSafeInteger(currentAttempt) || currentAttempt < 1) inputError("prior apply result request is invalid");
+  let info;
+  try { info = await lstat(root); }
+  catch (error) {
+    if (error?.code === "ENOENT") return null;
+    inputError("prior apply results root is invalid");
+  }
+  if (!info.isDirectory() || info.isSymbolicLink()) inputError("prior apply results root is invalid");
+  const claim = await directoryIdentity(root, "prior apply results root is invalid");
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => inputError("prior apply results root cannot be read"));
+  if (entries.length > MAX_PRIOR_APPLY_RESULTS) inputError("prior apply results are oversized");
+  const candidates = [];
+  for (const entry of entries) {
+    const match = /^adw-apply-result-([1-9][0-9]*)$/.exec(entry.name);
+    const attempt = match ? Number(match[1]) : NaN;
+    if (!entry.isDirectory() || entry.isSymbolicLink() || !Number.isSafeInteger(attempt) || attempt >= currentAttempt) inputError("prior apply result entry is invalid");
+    candidates.push({ attempt, directory: join(root, entry.name) });
+  }
+  if (candidates.length === 0) return null;
+  candidates.sort((left, right) => right.attempt - left.attempt);
+  const result = (await readTransportArtifact("applyResult", candidates[0].directory)).value;
+  await assertDirectoryIdentity(claim);
+  return result;
+}
+
 export async function writeTransportArtifact(type, directory, value, patchBytes) {
   const document = documentNames(type);
   if (!document || type === "source") inputError("artifact type is invalid");
@@ -550,6 +578,69 @@ function applyCapabilities(decision, snapshot) {
   return Object.freeze({ github: capabilities, all: capabilities });
 }
 
+const APP_PERMISSION_FOR_CAPABILITY = Object.freeze({
+  actions: Object.freeze(["actions"]),
+  alerts: Object.freeze(["security_events", "vulnerability_alerts"]),
+  checks: Object.freeze(["checks"]),
+  contents: Object.freeze(["contents"]),
+  issues: Object.freeze(["issues"]),
+  pulls: Object.freeze(["pull_requests"]),
+  repository: Object.freeze(["metadata"]),
+  settings: Object.freeze(["administration"]),
+});
+const APP_PERMISSION_OUTPUTS = Object.freeze([
+  "actions", "administration", "checks", "contents", "issues", "metadata",
+  "pull_requests", "security_events", "vulnerability_alerts",
+]);
+
+export function operationPermissionOutputs(decision, snapshot) {
+  const trustedSnapshot = validateSnapshot(snapshot);
+  const canonicalDecision = validateDecision(decision);
+  if (canonicalDecision.controlSha !== trustedSnapshot.controlSha || canonicalDecision.snapshotDigest !== digestJson(trustedSnapshot)) inputError("permission output binding is invalid");
+  const authority = canonicalAuthority(trustedSnapshot);
+  for (const operation of canonicalDecision.operations) validateOperation(operation, authority);
+  const capabilities = applyCapabilities(canonicalDecision, trustedSnapshot).all;
+  validateAuthorityCapabilities(authority, capabilities);
+  const rank = { read: 1, write: 2 };
+  const permissions = {};
+  for (const capability of capabilities) {
+    const [name, level] = capability.split(":");
+    const mapped = APP_PERMISSION_FOR_CAPABILITY[name];
+    if (!mapped || !Object.hasOwn(rank, level)) inputError("operation capability has no App permission");
+    for (const permission of mapped) if (!permissions[permission] || rank[level] > rank[permissions[permission]]) permissions[permission] = level;
+  }
+  const ordered = Object.freeze(Object.fromEntries(Object.entries(permissions).sort(([left], [right]) => left.localeCompare(right))));
+  return Object.freeze({ applyClass: capabilities.length === 0 ? "none" : capabilities.join("+"), capabilities, permissions: ordered });
+}
+
+async function emitOperationPermissionOutputs(env, decision, snapshot) {
+  if (env?.ADW_EMIT_GITHUB_OUTPUT === undefined) return;
+  if (env.ADW_EMIT_GITHUB_OUTPUT !== "exact-permissions-v1") inputError("permission output mode is invalid");
+  const path = environmentPath(env, "GITHUB_OUTPUT");
+  const output = operationPermissionOutputs(decision, snapshot);
+  const values = {
+    apply_class: output.applyClass,
+    apply_capabilities: canonicalBytes(output.capabilities).toString("utf8"),
+    apply_permissions: canonicalBytes(output.permissions).toString("utf8"),
+    ...Object.fromEntries(APP_PERMISSION_OUTPUTS.map(name => [`permission_${name}`, output.permissions[name] ?? ""])),
+  };
+  const bytes = Buffer.from(`${Object.entries(values).map(([name, value]) => `${name}=${value}`).join("\n")}\n`);
+  let handle;
+  try {
+    const before = await lstat(path);
+    if (!before.isFile() || before.isSymbolicLink() || before.size > MAX_INPUT) inputError("permission output file is invalid");
+    handle = await open(path, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
+    const current = await handle.stat();
+    if (!current.isFile() || !sameInode(before, current)) inputError("permission output file changed");
+    await handle.writeFile(bytes);
+    const after = await handle.stat();
+    if (!sameInode(current, after) || after.size !== current.size + bytes.length || after.size > MAX_INPUT) inputError("permission output file changed");
+  } catch (error) {
+    if (error instanceof AdwError) throw error;
+    inputError("permission output file is invalid");
+  } finally { await handle?.close(); }
+}
+
 function applyReceipt(raw, projection, operationDigest) {
   if (!raw || Array.isArray(raw) || Object.getPrototypeOf(raw) !== Object.prototype) inputError("apply subreceipt is invalid");
   const vcs = projection === "vcs_head";
@@ -754,7 +845,13 @@ export async function composeApply({ sourceDigest, snapshot, decision, verificat
   }
 }
 
+function bindJobScopedTokenExpiry(env) {
+  if (env?.ADW_GITHUB_TOKEN_EXPIRES_AT !== "job-scoped") return;
+  env.ADW_GITHUB_TOKEN_EXPIRES_AT = new Date(Date.now() + 2_700_000).toISOString();
+}
+
 async function prepareCommand(env, adapters) {
+  bindJobScopedTokenExpiry(env);
   const controlCheckout = environmentPath(env, "ADW_CONTROL_CHECKOUT");
   const targetCheckout = environmentPath(env, "ADW_TARGET_CHECKOUT");
   const sourceDirectory = environmentPath(env, "ADW_SOURCE_ARTIFACT");
@@ -907,6 +1004,10 @@ async function optionalAssessment(directory, provider = null) {
 }
 
 async function reduceCommand(env, executablePath) {
+  const fallbackAttempted = env?.ADW_FALLBACK_ATTEMPTED === undefined ? false
+    : env.ADW_FALLBACK_ATTEMPTED === "true" ? true
+      : env.ADW_FALLBACK_ATTEMPTED === "false" ? false
+        : inputError("ADW_FALLBACK_ATTEMPTED is invalid");
   const sourceDirectory = environmentPath(env, "ADW_SOURCE_ARTIFACT");
   await requireTransportExecutable(executablePath, sourceDirectory);
   const snapshotDirectory = environmentPath(env, "ADW_SNAPSHOT_ARTIFACT");
@@ -933,6 +1034,7 @@ async function reduceCommand(env, executablePath) {
     if (primaryReduction.status === "artifact") {
       const decision = reduceRoleArtifact({ snapshot, rolePolicy, reduction: primaryReduction, assessments: primaryAssessments });
       await writeTransportArtifact("decision", decisionDirectory, decision, primary?.patchBytes);
+      await emitOperationPermissionOutputs(env, decision, snapshot);
       return decision;
     }
     if (rolePolicy.fallback) {
@@ -941,11 +1043,13 @@ async function reduceCommand(env, executablePath) {
     }
   }
   const assessments = records.map(record => record.patchBytes === undefined ? record.value : { assessment: record.value, patchBytes: record.patchBytes });
-  const reduction = reduceAssessments({ snapshot, rolePolicy, assessments });
+  let reduction = reduceAssessments({ snapshot, rolePolicy, assessments });
+  if (reduction.status === "fallback" && fallbackAttempted) reduction = Object.freeze({ status: "terminal", provider: null, reason: "providers_unavailable" });
   if (reduction.status !== "artifact") {
     if (reduction.status === "terminal") {
       const decision = reduceStatusArtifact({ snapshot, rolePolicy, reduction, assessments });
       await writeTransportArtifact("decision", decisionDirectory, decision);
+      await emitOperationPermissionOutputs(env, decision, snapshot);
     }
     return reduction;
   }
@@ -957,6 +1061,7 @@ async function reduceCommand(env, executablePath) {
     if (!Buffer.isBuffer(patchBytes)) inputError("selected patch sidecar is missing");
   }
   await writeTransportArtifact("decision", decisionDirectory, decision, patchBytes);
+  await emitOperationPermissionOutputs(env, decision, snapshot);
   return decision;
 }
 
@@ -988,6 +1093,7 @@ async function controlDecisionCommand(name, env, executablePath) {
     decision = planAudit(snapshot);
   } else inputError("control decision command is unsupported");
   await writeTransportArtifact("decision", decisionDirectory, decision);
+  await emitOperationPermissionOutputs(env, decision, snapshot);
   return decision;
 }
 
@@ -1109,16 +1215,22 @@ async function dryRunCommand(env, adapters, executablePath) {
 }
 
 async function applyCommand(env, adapters, executablePath) {
+  bindJobScopedTokenExpiry(env);
   const sourceDirectory = environmentPath(env, "ADW_SOURCE_ARTIFACT");
   await requireTransportExecutable(executablePath, sourceDirectory);
   const snapshotDirectory = environmentPath(env, "ADW_SNAPSHOT_ARTIFACT");
   const decisionDirectory = environmentPath(env, "ADW_DECISION_ARTIFACT");
   const verificationDirectory = environmentPath(env, "ADW_VERIFICATION_ARTIFACT");
   const resultDirectory = environmentPath(env, "ADW_APPLY_RESULT_ARTIFACT");
-  const previousDirectory = env.ADW_PREVIOUS_APPLY_RESULT_ARTIFACT === undefined ? null : environmentPath(env, "ADW_PREVIOUS_APPLY_RESULT_ARTIFACT");
+  const hasPreviousRoot = env.ADW_PREVIOUS_APPLY_RESULTS_ROOT !== undefined;
+  const hasRunAttempt = env.ADW_RUN_ATTEMPT !== undefined;
+  if (hasPreviousRoot !== hasRunAttempt) inputError("prior apply result environment is incomplete");
+  const previousRoot = hasPreviousRoot ? environmentPath(env, "ADW_PREVIOUS_APPLY_RESULTS_ROOT") : null;
+  const runAttempt = hasRunAttempt ? Number(environmentId(env, "ADW_RUN_ATTEMPT", /^[1-9][0-9]*$/)) : 1;
+  if (!Number.isSafeInteger(runAttempt)) inputError("run attempt is invalid");
   const repositoryName = environmentId(env, "ADW_REPOSITORY", /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
   const controlSha = environmentId(env, "ADW_CONTROL_SHA", SHA);
-  const paths = [sourceDirectory, snapshotDirectory, decisionDirectory, verificationDirectory, resultDirectory, ...(previousDirectory ? [previousDirectory] : [])];
+  const paths = [sourceDirectory, snapshotDirectory, decisionDirectory, verificationDirectory, resultDirectory, ...(previousRoot ? [previousRoot] : [])];
   await separated(paths);
 
   const snapshot = (await readTransportArtifact("snapshot", snapshotDirectory)).value;
@@ -1133,13 +1245,13 @@ async function applyCommand(env, adapters, executablePath) {
   const patchBytes = decisionRecord.patchBytes;
   if ((patchBytes === undefined) !== (verificationRecord.patchBytes === undefined) || (patchBytes && !patchBytes.equals(verificationRecord.patchBytes))) inputError("apply patch artifacts do not match");
   const capabilities = applyCapabilities(decision, snapshot);
-  const previousReceipt = previousDirectory === null ? null : (await readTransportArtifact("applyResult", previousDirectory)).value;
+  const previousReceipt = previousRoot === null ? null : await readPreviousApplyResult(previousRoot, runAttempt);
   const githubFactory = adapters?.githubFactory ?? createDefaultGitHub;
   const github = adapters?.github ?? githubFactory(repositoryName);
   if (!github || typeof github.apply !== "function") inputError("GitHub writer is unavailable");
   const declared = github.operationTokenCapabilities?.() ?? adapters?.githubCapabilities ?? null;
   if (declared !== null && digestJson(sortedCapabilities(declared, "declared GitHub capabilities")) !== digestJson(capabilities.github)) inputError("operation-scoped GitHub capabilities do not match decision");
-  if (declared === null && !adapters) inputError("operation-scoped GitHub capabilities are missing");
+  if (declared === null && !adapters && capabilities.github.length > 0) inputError("operation-scoped GitHub capabilities are missing");
 
   let vcs = null;
   let vcsRequest = null;
@@ -1198,6 +1310,7 @@ export async function run({ argv, env = {}, stdin, stdout, stderr, readFixture, 
       else if (operation === "dry-run") operationalResult = await dryRunCommand(env, adapters, executablePath);
       else operationalResult = await verifyCommand(env, adapters, executablePath);
       stdout.write(`${canonicalBytes(operationalResult).toString()}\n`);
+      if (operation === "assess" && operationalResult?.outcome === "unable") return 4;
       if (operationalResult?.status === "fallback") return 4;
       if (operationalResult?.status === "terminal") return new Set(["provider_unavailable", "providers_unavailable", "quorum_incomplete", "advisory_unavailable"]).has(operationalResult.reason) ? 4 : 6;
       return 0;
