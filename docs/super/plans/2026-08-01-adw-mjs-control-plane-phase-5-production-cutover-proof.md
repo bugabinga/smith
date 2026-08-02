@@ -954,9 +954,13 @@ Every registered merged-pull obligation role—currently `docs-writer`—appends
 
 Operational stdout now emits only a bounded non-sensitive status while artifact files retain complete transport data. Provider-auth canaries remain transport-only: any credential echoed into a semantic payload or captured patch is rejected before an assessment can become operations. The attack and disclosure regressions cover both findings.
 
-- [ ] **Step 3: Verify focused Node, full Node, read-only live recovery/reconcile snapshots, diff, and signatures**
+- [x] **Step 3: Verify focused Node, full Node, read-only live recovery/reconcile snapshots, diff, and signatures**
 
-Run focused Node and full Node, then capture a read-only live reconciler snapshot that exercises the bounded completed operational queries and a read-only reconciliation reduction. Verify `git diff --check`, changed-file scope, and every signed commit signature. Record exact counts, snapshot bytes/digests/intents, and any remaining blocker without guessing. No GitHub mutation or push is permitted.
+The focused nine-file Node run passed 239/239 and the full Node run passed 263/263. `git diff --check`, `git show --check`, Node syntax checks, the changed fixture JSON parse, and the 16-file implementation scope all passed.
+
+A guarded read-only live reconciliation at main `491a42a3cc8848853e4ccd6cedc5695d9bd06e8c` made 86 API requests and produced 192865 snapshot bytes with digest `d0d190cee178ba8daa102ddd8fef4ea9018727d500b86dbd427a88adf8a9789a`. It recovered exactly run `30713540804`, attempt 1, overall `failure`, cancelled apply job `91405160611`, pull #167, and the same control SHA. The read-only reduction produced 30 intents: 21 held, one cancelled-apply retry, three first-time missing obligations for #146/#147/#148, four reviews, and one label sync. Mapping produced one `sync_labels`, one `rerun_check`, and seven `dispatch_repository` operations; none was applied. The three historical obligations remain expected first executions because production has no finalization markers yet; after each exact marker lands, later control SHAs do not redispatch it.
+
+Signed implementation commit `b9d379efebe8e19a8b8be1a25d383be268d8706e` verifies as Good under ED25519 key `SHA256:/hKgUDV+nKK77+MpfPjoTPym4qiOGZIsa8D1/mTrh5Y`. No GitHub object was mutated and nothing was pushed.
 
 ### Task 8: Push the owner-authored protected PR and record owner approval on its exact head
 
