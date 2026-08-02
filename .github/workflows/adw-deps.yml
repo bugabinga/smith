@@ -1,0 +1,51 @@
+# ADW deps — the dependency-manager shepherds Dependabot bump PRs through the
+# gates. Runs on Codex (gpt-5.6-terra, medium effort), authenticated as the App;
+# charter injected from .claude/agents/dependency-manager.md. A bump is
+# maintenance; a semver-incompatible / MSRV-raising / budget-tripping bump
+# escalates like a new dependency (PROJECT-INVARIANTS §5).
+name: adw-deps
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: adw-deps-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  deps:
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+      - name: Codex auth + config
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          mkdir -p ~/.codex
+          printf '%s' "$CODEX_AUTH_JSON" > ~/.codex/auth.json
+          chmod 600 ~/.codex/auth.json
+          printf 'project_doc_fallback_filenames = ["CLAUDE.md"]\n' > ~/.codex/config.toml
+      - run: npm install -g @openai/codex@0.145.0
+      - name: dependency-manager shepherds the bump
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          codex exec -m gpt-5.6-terra -c model_reasoning_effort="medium" --sandbox danger-full-access "$(awk 'f>=2{print} /^---$/{f++}' .claude/agents/dependency-manager.md)
+
+          You are dependency-manager running headless in CI for ${REPO} (the gh CLI is configured via GH_TOKEN). Follow the charter above. Handle Dependabot PR #${PR}: read its diff and changelog. A clean semver-compatible bump is merge-eligible — pass it through the gates. A semver-incompatible / MSRV-raising / budget-tripping bump escalates: open ONE needs:security or needs:spec issue for the owner with gh, and leave the PR held. Never add a crate; never merge a risky bump."

@@ -1,0 +1,268 @@
+# ADW jam detector — the pipeline's dead-man's switch. Every ADW gate is
+# fail-closed by design: an unexpected failure in the required merge-gate is
+# correct for ONE bad PR but catastrophic when the break is systemic. Then
+# nothing merges and no single PR is "wrong" — the jam is invisible from any
+# one PR's vantage. This job watches the whole board and rings a bell.
+#
+# Deterministic, no LLM: a shell/jq scan reduces each check name to its latest
+# run, then tallies how many distinct open non-draft PRs carry an active
+# `merge-gate` failure. Red is its normal waiting/held state, so it counts only
+# when the verdict/blocking labels say it should be green and the gate attempt
+# started after the last gate-relevant label transition. Same unexpected failure
+# on >= 2 PRs = a systemic jam, not one bad branch. It is the only check tallied,
+# because the ruleset makes it the sole required one — anything that genuinely
+# blocks a merge lands as a red gate. The LLM (adw-doctor) is dispatched only
+# AFTER a jam is confirmed, and only on the transition into jam — never on a
+# steady-state re-scan, so it can't spam.
+#
+# Escalation lands as an ISSUE, not a PR — issues have no merge gate, so the
+# alert reaches the owner even when every merge lane is wedged. The issue is
+# idempotent (one open `pipeline-jammed` issue at a time) and auto-closes the
+# instant a scan comes back clean.
+#
+# Triggers: failure-completions of the gate workflow and check-suites give a
+# fast edge (seconds after the break), and a 30-minute schedule is the
+# deterministic floor — GitHub suppresses some self-triggered check events, so
+# the cron is what guarantees the jam is caught even if every edge is missed.
+name: adw-jam-detector
+
+on:
+  workflow_run:
+    workflows: ["adw-review", "adw-gate", "adw-build"]
+    types: [completed]
+  check_suite:
+    types: [completed]
+  schedule:
+    - cron: "*/30 * * * *"      # deterministic floor — the edge triggers are best-effort
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  actions: write               # dispatch adw-doctor on a confirmed jam
+
+concurrency:
+  group: adw-jam-detector
+  cancel-in-progress: false    # let a running scan finish; don't drop the alert
+
+jobs:
+  detect:
+    # A green check can never jam the pipeline — only look when something failed
+    # (or on the schedule / a manual poke). This keeps the scan off the hot path
+    # of every successful run.
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure') ||
+      (github.event_name == 'check_suite' && github.event.check_suite.conclusion == 'failure')
+    runs-on: ubuntu-latest
+    steps:
+      - id: token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      # The gate's label sets, shared verbatim. Predicting the gate's verdict
+      # from a stale copy is how an expected red becomes a false jam.
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: .github/adw
+          sparse-checkout-cone-mode: false
+
+      - id: scan
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+          THRESHOLD: "2"        # a check red on this many PRs = systemic jam
+        run: |
+          set -euo pipefail
+
+          # Open, non-draft PRs — drafts are works-in-progress and can't jam the
+          # merge lane.
+          prs=$(gh pr list --repo "$REPO" --state open --json number,isDraft \
+                  --jq '.[] | select(.isDraft==false) | .number')
+
+          # (PR, actively-failing-check) pairs, one line each, tab-separated.
+          # statusCheckRollup retains older attempts after a re-run, so reduce
+          # each check name to its latest start before deciding its state.
+          # Legacy StatusContext entries provide createdAt instead of CheckRun
+          # times.
+          #
+          # merge-gate is deliberately red while verdicts are missing or a
+          # blocking label holds the PR. Count it only when both verdicts are
+          # in, no blocker remains, and the attempt began after the last label
+          # transition that adw-gate reads. This rejects the ordinary red
+          # attempt that a label change supersedes before its gate run appears,
+          # without treating comments or unrelated labels as a fresh PR state.
+          : > fails.tsv
+          # BOOTSTRAP FALLBACK — keep in sync with .github/adw/gate-labels.sh;
+          # .github/adw/gate-labels.test.sh fails if these two ever disagree.
+          # The detector must survive a checkout without the shared file for the
+          # same reason the gate must: dying on `source` would take out the
+          # dead-man's switch itself, which is the one thing that must not fail
+          # silently.
+          if [ -f .github/adw/gate-labels.sh ]; then
+            . .github/adw/gate-labels.sh
+          else
+            echo "::warning::checkout lacks .github/adw/gate-labels.sh — using bootstrap defaults"
+            REQUIRED_GATE_LABELS="reviewed security-cleared"
+            BLOCKING_GATE_LABELS="risk:high blocked changes-requested needs:info needs:spec needs:prototype"
+          fi
+          read -r -a required_gate_labels <<< "$REQUIRED_GATE_LABELS"
+          read -r -a blocking_gate_labels <<< "$BLOCKING_GATE_LABELS"
+
+          has_label() {
+            case $'\n'"$1"$'\n' in *$'\n'"$2"$'\n'*) return 0 ;; esac
+            return 1
+          }
+
+          is_gate_label() {
+            local label=$1
+            local gate_label
+            for gate_label in "${required_gate_labels[@]}" "${blocking_gate_labels[@]}"; do
+              [ "$label" = "$gate_label" ] && return 0
+            done
+            return 1
+          }
+
+          gate_should_be_green() {
+            local labels=$1
+            local gate_label
+            for gate_label in "${required_gate_labels[@]}"; do
+              has_label "$labels" "$gate_label" || return 1
+            done
+            for gate_label in "${blocking_gate_labels[@]}"; do
+              has_label "$labels" "$gate_label" && return 1
+            done
+            return 0
+          }
+
+          last_gate_label_transition() {
+            gh api --paginate "repos/$REPO/issues/$1/events" \
+              --jq '.[] | select(.event == "labeled" or .event == "unlabeled") | [.label.name, .created_at] | @tsv' \
+            | while IFS=$'\t' read -r label changed_at; do
+                if is_gate_label "$label"; then
+                  printf '%s\n' "$changed_at"
+                fi
+              done \
+            | sort \
+            | tail -n 1
+          }
+
+          for n in $prs; do
+            pr=$(gh pr view "$n" --repo "$REPO" --json labels,statusCheckRollup,commits)
+            labels=$(printf '%s' "$pr" | jq -r '.labels[].name')
+
+            if ! gate_should_be_green "$labels"; then
+              continue
+            fi
+
+            gate_label_transition=$(last_gate_label_transition "$n")
+            if [ -z "$gate_label_transition" ]; then
+              continue
+            fi
+
+            # Labels older than the head are not a verdict on the head. adw-gate
+            # refuses on a push, and for the moments between that push and the
+            # reset stripping the previous verdicts, the PR reads as "should be
+            # green" while being correctly red. Counting that window would let a
+            # burst of pushes across two approved PRs raise a jam out of the
+            # machinery working — the exact false alarm this scan exists to stop.
+            head_committed=$(printf '%s' "$pr" | jq -r '.commits[-1].committedDate // ""')
+            if [ -n "$head_committed" ] && [ "$head_committed" \> "$gate_label_transition" ]; then
+              continue
+            fi
+
+            printf '%s' "$pr" | jq -r --arg gate_label_transition "$gate_label_transition" '
+              ((.statusCheckRollup // [])
+                 | group_by(.name // .context)
+                 | map(
+                     max_by(.startedAt // .completedAt // .createdAt // "")
+                   )[])
+              | (.startedAt // .completedAt // .createdAt // "") as $attempt_at
+              | ((.conclusion // .state)) as $c
+              | select($c=="FAILURE" or $c=="ERROR" or $c=="TIMED_OUT"
+                       or $c=="STARTUP_FAILURE" or $c=="CANCELLED")
+              | (.name // .context) as $check
+              | select(
+                  $check == "merge-gate"
+                  and $attempt_at >= $gate_label_transition
+                )
+              | $check' | sort -u \
+            | while IFS= read -r chk; do printf '%s\t%s\n' "$n" "$chk"; done >> fails.tsv
+          done
+
+          # Most-failing check and the distinct-PR count behind it. Each check
+          # appears at most once per PR in fails.tsv, so occurrences == #PRs.
+          top=$(cut -f2 fails.tsv | sort | uniq -c | sort -rn | head -1 || true)
+          count=$(printf '%s' "$top" | awk '{print $1+0}')
+          name=$(printf '%s'  "$top" | sed -E 's/^[[:space:]]*[0-9]+[[:space:]]+//')
+
+          jammed=false
+          affected=""
+          if [ "${count:-0}" -ge "$THRESHOLD" ]; then
+            jammed=true
+            affected=$(awk -F'\t' -v c="$name" '$2==c {print $1}' fails.tsv | sort -un | sed 's/^/#/' | paste -sd',' - | sed 's/,/, /g')
+          fi
+
+          echo "jammed=$jammed"            >> "$GITHUB_OUTPUT"
+          echo "culprit=$name"             >> "$GITHUB_OUTPUT"
+          echo "count=${count:-0}"         >> "$GITHUB_OUTPUT"
+          echo "affected=$affected"        >> "$GITHUB_OUTPUT"
+          echo "Scan: jammed=$jammed culprit='$name' count=${count:-0} affected='$affected'"
+
+      - id: escalate
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          REPO: ${{ github.repository }}
+          JAMMED: ${{ steps.scan.outputs.jammed }}
+          CULPRIT: ${{ steps.scan.outputs.culprit }}
+          COUNT: ${{ steps.scan.outputs.count }}
+          AFFECTED: ${{ steps.scan.outputs.affected }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # At most one open jam issue — the idempotency key.
+          existing=$(gh issue list --repo "$REPO" --label pipeline-jammed --state open \
+                       --json number --jq '.[0].number // empty')
+
+          if [ "$JAMMED" = "true" ]; then
+            body=$(cat <<EOF
+          The pipeline is jammed: the merge-critical check **\`$CULPRIT\`** has an
+          active, unexpected failure on **$COUNT** open PRs, so merges may be wedged.
+
+          Affected PRs: $AFFECTED
+
+          This is a *systemic* failure — the same current check attempt is red
+          across multiple unrelated PRs, so it is the check (or its config), not
+          any one branch.
+          Detector run: $RUN_URL
+
+          The adw-doctor has been dispatched to diagnose. This issue auto-closes
+          when a scan finds the jam cleared.
+          EOF
+          )
+            if [ -n "$existing" ]; then
+              # Already alerting — refresh the state, do NOT re-dispatch the doctor.
+              gh issue comment "$existing" --repo "$REPO" --body "Still jammed on \`$CULPRIT\` ($COUNT PRs: $AFFECTED). $RUN_URL"
+              echo "Updated existing jam issue #$existing (no re-dispatch)."
+            else
+              # Transition into jam — open the alert and wake the doctor once.
+              gh issue create --repo "$REPO" \
+                --title "Pipeline jammed: \`$CULPRIT\` failing across $COUNT PRs" \
+                --label pipeline-jammed --body "$body"
+              gh workflow run adw-doctor.yml -R "$REPO" || echo "doctor dispatch failed (non-fatal)"
+              echo "Opened jam issue and dispatched adw-doctor."
+            fi
+          else
+            if [ -n "$existing" ]; then
+              gh issue close "$existing" --repo "$REPO" \
+                --comment "Scan is clean — no required check is failing across multiple PRs. Jam resolved. $RUN_URL"
+              echo "Closed stale jam issue #$existing."
+            else
+              echo "No jam, nothing open. Quiet."
+            fi
+          fi
