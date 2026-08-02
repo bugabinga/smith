@@ -4,7 +4,7 @@
 
 **Goal:** Atomically make the three MJS wrappers the sole production ADW writers and prove their positive behavior on production without destructive failure injection.
 
-**Architecture:** The final protected PR carries the already-completed Phase 4 control plane, production-adapted byte-identical wrappers, assessment-only charters, and removal of every legacy writer. Before the squash merge, the owner seeds the existing App identity, disables and drains legacy workflows, and rehearses a signed rollback; after merge, all writes pass through operation-scoped App tokens and the `adw-write` repository-wide lock while production evidence is captured from positive runs only. GitHub concurrency is not a FIFO queue, so cancelled pending apply is recovered by reconciliation and never treated as success.
+**Architecture:** The final protected PR carries the already-completed Phase 4 control plane, production-adapted byte-identical wrappers, assessment-only charters, and removal of every legacy writer. Before the squash merge, the owner seeds the existing App identity, disables and drains legacy workflows, and rehearses a signed rollback; after merge, all writes pass through operation-scoped App tokens and the `adw-write` repository-wide lock while production evidence is captured from positive runs only. The prepared rollback is usable only while `main` remains at the cutover SHA; rollback after later main movement creates a new signed child of current main by applying the exact reverse cutover patch without rewriting history. GitHub concurrency is not a FIFO queue, so cancelled pending apply is recovered by reconciliation and never treated as success.
 
 **Tech Stack:** Node.js ESM/`node:test`, GitHub Actions, pinned Actions, `gh`, `git`, `jq`, `yq`, exact-pinned Claude/Codex CLIs.
 
@@ -37,7 +37,7 @@ On 2026-08-01, the owner approved the first offered authorization route: current
 - Settings/rulesets remain read-only. Audit may report their existing drift but may not mutate it. Label sync may repair only checked-in label definitions through the closed `sync_labels` operation.
 - `pull_request_review_comment` and `check_run`/`check_suite` remain reconcile-only. Their proof runs contain no provider assessment artifact and no provider job execution.
 - No legacy and MJS operational writer may be enabled simultaneously. `adw-selftest` is non-writing and remains enabled. `adw-release` is disabled and receives no replacement because release automation remains deferred.
-- The owner keeps main otherwise quiet from the final head check until both scheduled cycles finish. Any unrelated main movement invalidates current-head evidence and pauses proof.
+- The owner keeps main otherwise quiet from the final head check until both scheduled cycles finish. Any unexpected main movement invalidates current-head evidence, stops proof, and triggers rollback from the new current main; it never authorizes force-push or reset.
 - Every branch commit is signed when the executor can sign. The protected PR still lands as one GitHub-verified squash commit, satisfying `docs/PROJECT-INVARIANTS.md` §7.
 
 ## Production baseline to revalidate, not manufacture
@@ -897,6 +897,41 @@ Focused Node passed 182/182; full Node passed 258/258. `git diff --check`, `git 
 
 Signed commit `468afb79b33668959d9687e043d1f5e01f51e61d` verifies as Good under ED25519 key `SHA256:/hKgUDV+nKK77+MpfPjoTPym4qiOGZIsa8D1/mTrh5Y`. No GitHub object was mutated and nothing was pushed.
 
+### Task 7G: Make rollback executable after unexpected main movement
+
+**Files:**
+
+- Modify: `docs/super/plans/2026-08-01-adw-mjs-control-plane-phase-5-production-cutover-proof.md`
+
+- [x] **Step 1: Bind rollback to the current main parent**
+
+Keep the prepared signed rollback as the fast-forward path only while `main == MERGE_SHA`. If main advances, disable and drain MJS first, create a new detached worktree at the newly fetched current main, apply the exact hashed reverse cutover patch with `--3way --index`, and abort without commit or push on conflict. Prove the resulting index changes only cutover-owned paths, every cutover-owned path equals `CUTOVER_BASE`, unrelated later paths remain from current main, and the new signed commit has current main as its sole parent.
+
+Expected: later unrelated commits survive rollback; neither path uses force-push or reset.
+
+- [x] **Step 2: Verify rollback plan searches and shell syntax**
+
+```bash
+set -euo pipefail
+PLAN=docs/super/plans/2026-08-01-adw-mjs-control-plane-phase-5-production-cutover-proof.md
+ROLLBACK_SCRIPT=$(mktemp)
+trap 'rm -f "$ROLLBACK_SCRIPT"' EXIT
+awk '
+  /^Rollback from the owner shell:$/ { found=1; next }
+  found && /^```bash$/ { code=1; next }
+  code && /^```$/ { exit }
+  code { print }
+' "$PLAN" > "$ROLLBACK_SCRIPT"
+test -s "$ROLLBACK_SCRIPT"
+bash -n "$ROLLBACK_SCRIPT"
+rg -n 'CURRENT_MAIN|apply --3way --index|cutover-owned|verify-commit|current_user_can_bypass' \
+  "$ROLLBACK_SCRIPT"
+! rg -n -- 'git reset|git push .*--force|git push -f' "$ROLLBACK_SCRIPT"
+test "$(rg -c '^[[:space:]]+-m "Anchor:' "$ROLLBACK_SCRIPT")" = 1
+```
+
+Expected: the owner-shell block parses as Bash, contains both current-parent paths and exactly one signed-commit anchor, and contains no force-push/reset command.
+
 ### Task 8: Push the owner-authored protected PR and record owner approval on its exact head
 
 **Files:** none
@@ -1052,7 +1087,7 @@ git worktree add --detach "$REHEARSAL_WT" "$PR_HEAD"
 git -C "$REHEARSAL_WT" apply --index "$ROLLBACK_ROOT/rollback.patch"
 git -C "$REHEARSAL_WT" commit -S \
   -m "Restore legacy ADW control plane" \
-  -m "Cutover rollback must stop new MJS writes before restoring legacy authority; a force push was dropped because the prepared commit can remain a signed fast-forward child." \
+  -m "Cutover rollback must stop new MJS writes before restoring legacy authority; history rewriting was dropped because rollback is modeled as a signed child of the protected tip." \
   -m "Anchor: .github/workflows/adw-*.yml restores the pre-cutover authority boundary."
 REHEARSAL_SHA=$(git -C "$REHEARSAL_WT" rev-parse HEAD)
 git -C "$REHEARSAL_WT" verify-commit "$REHEARSAL_SHA"
@@ -1144,7 +1179,7 @@ test "$(gh variable get ADW_CUTOVER_HOLD --repo bugabinga/smith)" = true
 
 Expected: zero active legacy runs, all legacy workflows disabled, self-test active, production MJS wrappers not yet present on main, and the non-secret global cutover hold armed. If any new legacy run appears, cancel it and restart the zero-active observation; do not merge until stable.
 
-### Task 11: Atomically squash-merge and materialize parent-correct rollback
+### Task 11: Atomically squash-merge and materialize the cutover-child rollback
 
 **Files:** none
 
@@ -1219,7 +1254,7 @@ gh workflow list --repo bugabinga/smith --all --json path,state \
 
 Expected: `verified:true`; active paths are exactly `adw-issues.yml`, `adw-maintenance.yml`, `adw-pulls.yml`, and `adw-selftest.yml`. Removed `adw-release` has no active replacement.
 
-- [ ] **Step 4: Materialize the parent-correct signed rollback before proof writes**
+- [ ] **Step 4: Materialize the cutover-child signed rollback before proof writes**
 
 ```bash
 ROLLBACK_WT=$(mktemp -d "$ROLLBACK_ROOT/parent-correct.XXXXXX")
@@ -1227,7 +1262,7 @@ git worktree add --detach "$ROLLBACK_WT" "$MERGE_SHA"
 git -C "$ROLLBACK_WT" apply --index "$ROLLBACK_ROOT/rollback.patch"
 git -C "$ROLLBACK_WT" commit -S \
   -m "Restore legacy ADW control plane" \
-  -m "Cutover rollback must stop new MJS writes before restoring legacy authority; a force push was dropped because the prepared commit can remain a signed fast-forward child." \
+  -m "Cutover rollback must stop new MJS writes before restoring legacy authority; history rewriting was dropped because this prepared commit is a signed fast-forward child while main remains at the cutover SHA." \
   -m "Anchor: .github/workflows/adw-*.yml restores the pre-cutover authority boundary."
 ROLLBACK_SHA=$(git -C "$ROLLBACK_WT" rev-parse HEAD)
 test "$(git -C "$ROLLBACK_WT" rev-parse HEAD^)" = "$MERGE_SHA"
@@ -1260,7 +1295,7 @@ while read -r run; do
 done < "$ROLLBACK_ROOT/held-mjs-runs"
 ```
 
-Expected: signed rollback is a direct child of the cutover squash, restores the exact pre-cutover tree, and is available at `fix/rollback-adw-mjs-phase5` plus the private bundle. Every MJS run created before rollback readiness has only skipped jobs and zero artifacts; the hold is deleted only afterward.
+Expected: prepared signed rollback is a direct child of the cutover squash, restores the exact pre-cutover tree, and is available at `fix/rollback-adw-mjs-phase5` plus the private bundle. It is executable only while current main equals `MERGE_SHA`; later main movement requires the new-current-main procedure below. Every MJS run created before rollback readiness has only skipped jobs and zero artifacts; the hold is deleted only afterward.
 
 - [ ] **Step 5: Verify only MJS can write**
 
@@ -1752,7 +1787,7 @@ Post one owner comment containing:
 
 ```text
 cutover squash SHA and Verified result
-signed rollback SHA/branch and verify-commit result
+prepared signed rollback SHA/branch, its `MERGE_SHA` parent, and verify-commit result; if rollback ran after main movement, also record the new rollback SHA/current-main parent, cutover-owned path proof, and GitHub verification
 legacy disabled/drained count (21 workflows, zero active runs)
 active ADW inventory (three MJS wrappers plus self-test)
 manual audit and reconcile run URLs
@@ -1789,43 +1824,136 @@ Trigger rollback immediately on any of:
 - settings/ruleset mutation;
 - unbounded provider recursion from label/App comments;
 - either required schedule cycle missing, failing, cancelling, or running on unexpected control SHA;
+- any unexpected movement of `main` after cutover and before Phase 5 acceptance;
 - any need to rotate a production secret or manufacture a failure to continue proof.
 
 Rollback from the owner shell:
 
 ```bash
 set -euo pipefail
-for workflow in adw-issues.yml adw-pulls.yml adw-maintenance.yml; do
-  gh workflow disable "$workflow" --repo bugabinga/smith
+REPO=bugabinga/smith
+PR=167
+ROLLBACK_ROOT="$HOME/.local/state/smith-adw-phase5-rollback"
+mjs=(adw-issues.yml adw-pulls.yml adw-maintenance.yml)
+
+# Contain first: no rollback ref or main-head inspection precedes MJS disable/drain.
+for workflow in "${mjs[@]}"; do
+  gh workflow disable "$workflow" --repo "$REPO"
 done
-for workflow in adw-issues.yml adw-pulls.yml adw-maintenance.yml; do
-  gh api --paginate \
-    "repos/bugabinga/smith/actions/workflows/$workflow/runs?per_page=100" \
-    --jq '.workflow_runs[] | select(.status != "completed") | .id'
-done | sort -u |
-while read -r run; do test -z "$run" || gh run cancel "$run" --repo bugabinga/smith; done
-while gh run list --repo bugabinga/smith --limit 100 \
-  --json workflowName,status \
-  --jq '[.[] | select((.workflowName | startswith("ADW")) and .status != "completed")] | length' \
-  | grep -qv '^0$'; do sleep 15; done
-git fetch origin main fix/rollback-adw-mjs-phase5
-ROLLBACK_SHA=$(git rev-parse origin/fix/rollback-adw-mjs-phase5)
-test "$(git rev-parse "$ROLLBACK_SHA^")" = "$(git rev-parse origin/main)"
+while :; do
+  active=$(
+    for workflow in "${mjs[@]}"; do
+      gh api --paginate \
+        "repos/$REPO/actions/workflows/$workflow/runs?per_page=100" \
+        --jq '.workflow_runs[] | select(.status != "completed") | .id'
+    done | sort -u
+  )
+  if test -z "$active"; then
+    break
+  fi
+  while read -r run; do
+    test -z "$run" && continue
+    if ! gh run cancel "$run" --repo "$REPO"; then
+      test "$(gh run view "$run" --repo "$REPO" --json status --jq .status)" = completed
+    fi
+  done <<<"$active"
+  sleep 15
+done
+workflow_states=$(gh workflow list --repo "$REPO" --all --json path,state)
+for workflow in "${mjs[@]}"; do
+  jq -e --arg path ".github/workflows/$workflow" '
+    [.[] | select(.path == $path and .state == "disabled_manually")] | length == 1
+  ' <<<"$workflow_states" >/dev/null
+done
+
+# Bind artifacts and both candidate commits only after containment.
+git fetch --no-tags origin
+MERGE_SHA=$(gh pr view "$PR" --repo "$REPO" --json mergeCommit --jq .mergeCommit.oid)
+CUTOVER_BASE=$(git rev-parse "$MERGE_SHA^")
+CURRENT_MAIN=$(git rev-parse origin/main)
+test "$CURRENT_MAIN" = "$(gh api "repos/$REPO/commits/main" --jq .sha)"
+git merge-base --is-ancestor "$MERGE_SHA" "$CURRENT_MAIN"
+sha256sum --check "$ROLLBACK_ROOT/SHA256SUMS"
+PREPARED_ROLLBACK_SHA=$(git rev-parse origin/fix/rollback-adw-mjs-phase5)
+test "$(git rev-parse "$PREPARED_ROLLBACK_SHA^")" = "$MERGE_SHA"
+test "$(git rev-parse "$PREPARED_ROLLBACK_SHA^{tree}")" = \
+  "$(git rev-parse "$CUTOVER_BASE^{tree}")"
+git verify-commit "$PREPARED_ROLLBACK_SHA"
+CUTOVER_OWNED="$ROLLBACK_ROOT/cutover-owned.paths"
+APPLIED_PATHS="$ROLLBACK_ROOT/applied.paths"
+UNEXPECTED_PATHS="$ROLLBACK_ROOT/unexpected.paths"
+git diff --no-renames --name-only -z "$CUTOVER_BASE" "$MERGE_SHA" -- |
+  sort -z > "$CUTOVER_OWNED"
+test -s "$CUTOVER_OWNED"
+
+if test "$CURRENT_MAIN" = "$MERGE_SHA"; then
+  # The prepared signed child is valid only for this unchanged-main case.
+  ROLLBACK_SHA=$PREPARED_ROLLBACK_SHA
+else
+  # Preserve later commits by making a new signed child of current main.
+  ROLLBACK_WT=$(mktemp -d "$ROLLBACK_ROOT/current-main.XXXXXX")
+  git worktree add --detach "$ROLLBACK_WT" "$CURRENT_MAIN"
+  if ! git -C "$ROLLBACK_WT" apply --3way --index \
+    "$ROLLBACK_ROOT/rollback.patch"; then
+    printf 'rollback patch conflicted; leave worktree for inspection and abort\n' >&2
+    exit 1
+  fi
+  test -z "$(git -C "$ROLLBACK_WT" ls-files --unmerged)"
+  git -C "$ROLLBACK_WT" diff --quiet --
+  git -C "$ROLLBACK_WT" diff --cached --check
+  git -C "$ROLLBACK_WT" diff --cached --no-renames --name-only -z \
+    "$CURRENT_MAIN" -- | sort -z > "$APPLIED_PATHS"
+  test -s "$APPLIED_PATHS"
+  comm -z -13 "$CUTOVER_OWNED" "$APPLIED_PATHS" > "$UNEXPECTED_PATHS"
+  test ! -s "$UNEXPECTED_PATHS"
+  while IFS= read -r -d '' path; do
+    git -C "$ROLLBACK_WT" diff --cached --quiet "$CUTOVER_BASE" -- "$path"
+  done < "$CUTOVER_OWNED"
+  git -C "$ROLLBACK_WT" commit -S \
+    -m "Restore legacy ADW control plane" \
+    -m "Main advanced after cutover, so reusing the prepared child would not fast-forward. Reversing only cutover-owned paths preserves unrelated later commits while restoring pre-cutover authority." \
+    -m "Anchor: .github/workflows/adw-*.yml restores the pre-cutover authority boundary."
+  ROLLBACK_SHA=$(git -C "$ROLLBACK_WT" rev-parse HEAD)
+  test "$(git -C "$ROLLBACK_WT" rev-parse HEAD^)" = "$CURRENT_MAIN"
+  git -C "$ROLLBACK_WT" diff --no-renames --name-only -z \
+    "$CURRENT_MAIN" "$ROLLBACK_SHA" -- | sort -z > "$APPLIED_PATHS"
+  comm -z -13 "$CUTOVER_OWNED" "$APPLIED_PATHS" > "$UNEXPECTED_PATHS"
+  test ! -s "$UNEXPECTED_PATHS"
+  while IFS= read -r -d '' path; do
+    git -C "$ROLLBACK_WT" diff --quiet "$CUTOVER_BASE" "$ROLLBACK_SHA" -- "$path"
+  done < "$CUTOVER_OWNED"
+  git -C "$ROLLBACK_WT" verify-commit "$ROLLBACK_SHA"
+fi
+
+# Recheck parent, owner bypass, and remote main immediately before a plain push.
+test "$(git rev-parse "$ROLLBACK_SHA^")" = "$CURRENT_MAIN"
 git verify-commit "$ROLLBACK_SHA"
+gh api user | jq -e '.id == 876467 and .login == "bugabinga"' >/dev/null
+test "$(gh api repos/bugabinga/smith/rulesets/19155559 \
+  --jq .current_user_can_bypass)" = always
+test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$CURRENT_MAIN"
 git push origin "$ROLLBACK_SHA:refs/heads/main"
+test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$ROLLBACK_SHA"
+test "$(gh api "repos/$REPO/commits/$ROLLBACK_SHA" \
+  --jq .commit.verification.verified)" = true
+if test -n "${ROLLBACK_WT:-}"; then
+  git worktree remove "$ROLLBACK_WT"
+fi
+
+# Restore legacy authority only after the rollback commit is remote and verified.
 for workflow in \
   adw-alerts.yml adw-automerge.yml adw-build.yml adw-codex-build.yml \
   adw-codex-review.yml adw-comment.yml adw-deps.yml adw-docs.yml \
   adw-doctor.yml adw-gate.yml adw-intake.yml adw-jam-detector.yml \
   adw-labels.yml adw-pioneer.yml adw-plan.yml adw-review.yml \
   adw-revise.yml adw-settings-audit.yml adw-survey.yml adw-sweep.yml; do
-  gh workflow enable "$workflow" --repo bugabinga/smith
+  gh workflow enable "$workflow" --repo "$REPO"
 done
-gh workflow disable adw-release.yml --repo bugabinga/smith
+gh workflow disable adw-release.yml --repo "$REPO"
 ```
 
-Expected: signed fast-forward rollback lands directly through owner bypass; MJS is disabled/drained first; restored legacy writers are enabled only afterward; `adw-release` remains disabled because replacement is deferred. Record irreversible forge effects honestly; rollback prevents new MJS writes and legacy reconciliation repairs compatible state.
+Expected: MJS is disabled and drained before rollback selection. Unchanged main receives the prepared verified child; advanced main receives a newly signed, verified direct child whose staged paths are a subset of cutover-owned paths, whose cutover-owned paths equal `CUTOVER_BASE`, and whose other paths retain current-main state. A conflict, unexpected path, signature failure, lost bypass, or main race aborts before push. The plain fast-forward push uses confirmed owner bypass; no force-push or reset occurs. Legacy writers are enabled only after the remote rollback verifies; `adw-release` remains disabled. Record irreversible forge effects honestly.
 
 ## Phase boundary
 
-Phase 5 ends with one GitHub-verified squash decision on main, three MJS operational wrappers plus self-test, no legacy writer or shell reducer, release automation still deferred, signed rollback available, positive production receipts captured, explicit behind/dirty candidates still fail-closed, blocked-only state delegated without circularity, and two consecutive scheduled reconciliation cycles green. Legacy marker compatibility, long-term docs, rollback-branch retirement, and backlog cleanup remain Phase 6.
+Phase 5 ends with one GitHub-verified squash decision on main, three MJS operational wrappers plus self-test, no legacy writer or shell reducer, release automation still deferred, the prepared cutover child plus current-main rollback procedure available, positive production receipts captured, explicit behind/dirty candidates still fail-closed, blocked-only state delegated without circularity, and two consecutive scheduled reconciliation cycles green. Legacy marker compatibility, long-term docs, rollback-branch retirement, and backlog cleanup remain Phase 6.
