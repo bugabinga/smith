@@ -475,15 +475,16 @@ test("trusted workflow SHA controls orchestration while entity head remains the 
   assert.doesNotMatch(inputLine(pullLane, "target_sha"), /workflow_sha|pull_request\.base\.sha/);
 });
 
-test("Phase 5 plan preserves pre-hold history and keeps retry deployment unchecked", async () => {
+test("Phase 5 plan preserves pre-hold history and keeps third-attempt deployment unchecked", async () => {
   const plan = await readFile(phase5Plan, "utf8");
   assert.match(plan, /`ADW_CUTOVER_HOLD=true` must be armed before the first branch push/);
   for (const run of ["30713498516", "30713534731", "30713534847", "30713540804", "30713540946"]) assert.match(plan, new RegExp(run));
   assert.match(plan, /four pull runs minted App read tokens, then prepare failed on old control/i);
   assert.match(plan, /zero artifacts and zero writes/i);
   assert.match(plan, /Current `origin\/main` is the signed second rollback `2f3d9c98b9f678139b0f8cd2e671afde16ffbc98`/);
+  assert.match(plan, /`ADW_CUTOVER_HOLD=true` remains armed, and legacy writers remain active except deferred `adw-release`/);
   const task8 = plan.slice(plan.indexOf("### Task 8:"), plan.indexOf("### Task 9:"));
-  assert.match(task8, /PR #168 and branch `adw\/mjs-phase5-retry` already exist/);
+  assert.match(task8, /PR #170 and branch `adw\/mjs-phase5-retry2` already exist/);
   assert.match(task8, /- \[ \] \*\*Step 2: Revalidate the already-armed hold immediately before push\*\*/);
   assert.match(task8, /- \[ \] \*\*Step 3: Push the signed plan commit and bind the retry head\*\*/);
   assert.doesNotMatch(task8, /- \[x\]/);
@@ -565,15 +566,17 @@ test("Phase 5 records both rolled-back cutovers and blocks completion claims", a
   assert.doesNotMatch(plan, /Expected: Phase 5 complete/);
 });
 
-test("Phase 5 records PR 168 rollback material and its superseded checked head", async () => {
+test("Phase 5 preserves PR 168 history and binds PR 170 rollback material", async () => {
   const plan = await readFile(phase5Plan, "utf8");
   const retry = plan.slice(plan.indexOf("## Current post-rollback baseline"));
   assert.match(retry, /PR #168.*`adw\/mjs-phase5-retry`/s);
   assert.match(retry, /d4dd6c6d0e828c876aab5470e8e80524b6cd7e84/);
   assert.match(retry, /f79462666647a0c504479f68fe4083050d9e5f9d/);
   assert.match(retry, /4cd78089db44306f8a7f9c6855accff0ae5c8c29/);
-  assert.match(retry, /2f3d9c98b9f678139b0f8cd2e671afde16ffbc98/);
-  assert.match(retry, /CUTOVER_BASE=d4dd6c6d0e828c876aab5470e8e80524b6cd7e84/);
+  assert.match(retry, /PR #170.*`adw\/mjs-phase5-retry2`/s);
+  assert.match(retry, /273dda4cd2a9dc77fc2193498886a5badc389895/);
+  assert.match(retry, /BASE=2f3d9c98b9f678139b0f8cd2e671afde16ffbc98/);
+  assert.match(retry, /CUTOVER_BASE=2f3d9c98b9f678139b0f8cd2e671afde16ffbc98/);
   assert.match(retry, /git diff --binary "\$CUTOVER_BASE" "\$PR_HEAD"/);
   assert.match(retry, /git diff --binary -R "\$CUTOVER_BASE" "\$PR_HEAD"/);
   assert.match(retry, /Only after push and checks, record the exact-head owner approval marker/);
