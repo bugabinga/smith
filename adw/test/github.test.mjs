@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { AdwError, digestJson, planReconciliation } from "../core.mjs";
+import { AdwError, canonicalBytes, digestJson, planReconciliation } from "../core.mjs";
 import { controlSnapshotPlan, createDefaultGitHub, createGitHub, deterministicSnapshotPlan, normalizeEvent, roleSnapshotPlan } from "../github.mjs";
 import { deriveDeterministicArtifacts, role } from "../roles.mjs";
 
@@ -242,6 +242,71 @@ test("paginated reads keep REST IDs stable across webhook and API payloads", asy
     "/repos/bugabinga/smith/issues/1/comments?per_page=20&page=1",
     "/repos/bugabinga/smith/issues/1/comments?per_page=20&page=2",
   ]);
+});
+
+test("scheduled alert reads use one supported bounded Dependabot request", async () => {
+  const fixture = JSON.parse(await readFile(new URL("./fixtures/github/blockers.json", import.meta.url)));
+  const endpoints = [];
+  let alerts = fixture.dependabotAlerts;
+  const github = adapter(async request => {
+    const endpoint = request.args.at(-1);
+    endpoints.push(endpoint);
+    const reply = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
+    if (endpoint === "/repos/bugabinga/smith") return reply(repository);
+    if (endpoint.includes("/contents/.claude/agents/security-reviewer.md?ref=")) return reply({ encoding: "base64", content: Buffer.from("charter").toString("base64"), sha: "c".repeat(40) });
+    if (endpoint.includes("/contents/adw/schemas/role-payloads/alert.schema.json?ref=")) return reply({ encoding: "base64", content: Buffer.from("{}").toString("base64"), sha: "d".repeat(40) });
+    if (endpoint.startsWith("/repos/bugabinga/smith/issues?state=open")) return reply([]);
+    if (endpoint.startsWith("/repos/bugabinga/smith/pulls?state=all")) return reply([]);
+    if (endpoint === "/repos/bugabinga/smith/dependabot/alerts?state=open&per_page=100") return reply(alerts);
+    if (endpoint === "/repos/bugabinga/smith/code-scanning/alerts?state=open&per_page=100&page=1") return reply([]);
+    throw new Error(`unexpected ${endpoint}`);
+  });
+  const event = normalizeEvent("schedule", { schedule: "57 2 * * *", repository, sender });
+  const snapshot = await github.readRoleSnapshot(event, role("alert-triager"), { controlSha: "a".repeat(40), appId: appIdentity.appId });
+  assert.deepEqual(snapshot.state.resources.alerts.map(alert => alert.id), ["31", "28"]);
+  assert.equal(endpoints.some(endpoint => endpoint.includes("dependabot/alerts") && new URL(`https://github.invalid${endpoint}`).searchParams.has("page")), false);
+
+  alerts = Array.from({ length: 100 }, (_, index) => ({ ...fixture.dependabotAlerts[0], number: index + 1 }));
+  await assert.rejects(
+    () => github.readRoleSnapshot(event, role("alert-triager"), { controlSha: "a".repeat(40), appId: appIdentity.appId }),
+    error => error?.code === "forge" && error.message === "overflow",
+  );
+});
+
+test("comment snapshots retain full digests while bounding bodies and newest aggregate context", async () => {
+  const comments = Array.from({ length: 40 }, (_, index) => ({
+    id: index + 1,
+    user: { id: 7 },
+    created_at: new Date(Date.UTC(2026, 6, 28, 0, 0, index)).toISOString(),
+    updated_at: new Date(Date.UTC(2026, 6, 28, 0, 0, index)).toISOString(),
+    body: `${index}:` + "x".repeat(40_000),
+  }));
+  const github = adapter(async request => {
+    const endpoint = request.args.at(-1);
+    const reply = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
+    if (endpoint === "/repos/bugabinga/smith") return reply(repository);
+    if (endpoint.includes("/contents/.claude/agents/steerer.md?ref=")) return reply({ encoding: "base64", content: Buffer.from("charter").toString("base64"), sha: "c".repeat(40) });
+    if (endpoint.includes("/contents/adw/schemas/role-payloads/steering.schema.json?ref=")) return reply({ encoding: "base64", content: Buffer.from("{}").toString("base64"), sha: "d".repeat(40) });
+    if (endpoint === "/repos/bugabinga/smith/issues/1") return reply({ id: 1, number: 1, state: "open", updated_at: "2026-07-28T00:00:00.000Z", user: { id: 7 }, title: "Issue", body: "Body", labels: [] });
+    if (endpoint.startsWith("/repos/bugabinga/smith/issues/1/comments?")) {
+      const page = Number(new URL(`https://github.invalid${endpoint}`).searchParams.get("page"));
+      return reply(comments.slice((page - 1) * 20, page * 20));
+    }
+    if (endpoint.startsWith("/repos/bugabinga/smith/issues/1/timeline?")) return reply([]);
+    if (endpoint === "/repos/bugabinga/smith/issues/1/parent") throw new AdwError("provider", "exit", { httpStatus: 404 });
+    if (endpoint.startsWith("/repos/bugabinga/smith/issues/1/sub_issues?")) return reply([]);
+    throw new Error(`unexpected ${endpoint}`);
+  });
+  const source = comments[0];
+  const event = normalizeEvent("issue_comment", { action: "created", repository, sender, issue: { number: 1 }, comment: { id: source.id, updated_at: source.updated_at } });
+  const snapshot = await github.readRoleSnapshot(event, role("steerer"), { controlSha: "a".repeat(40), appId: appIdentity.appId });
+  const projected = snapshot.state.resources["issue:1:comments"];
+  assert.ok(projected.some(comment => comment.id === String(source.id)), "event source must survive newest-context projection");
+  assert.ok(projected.some(comment => comment.id === "40"), "newest context must survive projection");
+  assert.ok(projected.every(comment => comment.body.truncated === true));
+  assert.equal(projected.find(comment => comment.id === String(source.id)).body.digest, digestJson(source.body));
+  assert.ok(snapshot.state.truncations["issue:1:comments"].omittedItems > 0);
+  assert.ok(canonicalBytes(snapshot).length <= 262_144);
 });
 
 test("comment pagination fails closed at the explicit 1000-item maximum", async () => {
@@ -549,7 +614,8 @@ test("deterministic settings snapshot preserves full new rules and reports diges
   assert.match(audit.body, /Live digest: [0-9a-f]{64}/);
 });
 
-test("reconciliation derives pioneer states and exact cancelled-apply recovery from bounded forge evidence", async () => {
+test("reconciliation derives pioneer states and exact cancelled-apply recovery from bounded workflow evidence", async () => {
+  const fixture = JSON.parse(await readFile(new URL("./fixtures/github/blockers.json", import.meta.url)));
   const firstRevision = "2026-07-28T00:00:00.000Z";
   const secondRevision = "2026-07-28T00:00:01.000Z";
   const artifactDigest = "f".repeat(64);
@@ -561,16 +627,24 @@ test("reconciliation derives pioneer states and exact cancelled-apply recovery f
   const firstSource = sourceRevision(issues[0]);
   const secondSource = sourceRevision(issues[1]);
   const marker = `<!-- smith:pioneer/v1 issue=2 source=${secondSource} verdict=disproved artifact=${artifactDigest} -->`;
+  const retryPioneer = { type: "dispatch_repository", eventType: "retry_pioneer", clientPayload: { repositoryId: "42", issueId: "1", sourceRevision: firstSource, role: "pioneer", provider: "claude" } };
+  const failedDispatch = { ...fixture.failedDispatchRun, name: "ADW issue and reusable execution lanes", path: ".github/workflows/adw-issues.yml", display_title: digestJson(retryPioneer), actor: bot };
+  const endpoints = [];
   const github = adapter(async request => {
     const endpoint = request.args.at(-1);
+    endpoints.push(endpoint);
     const reply = value => ({ code: 0, signal: null, stdout: JSON.stringify(value), stderr: "" });
     if (endpoint === "/repos/bugabinga/smith") return reply({ id: 42, owner: { id: 7, login: "bugabinga" }, name: "smith", default_branch: "main" });
     if (endpoint.includes("/contents/.github/labels.yml?ref=")) return reply({ encoding: "base64", content: "", sha: "c".repeat(40) });
     if (endpoint.startsWith("/repos/bugabinga/smith/issues?state=open")) return reply(issues);
     if (endpoint.startsWith("/repos/bugabinga/smith/pulls?state=all")) return reply([]);
     if (endpoint.startsWith("/repos/bugabinga/smith/labels?")) return reply([]);
-    if (endpoint.startsWith("/repos/bugabinga/smith/actions/runs?")) return reply({ workflow_runs: [{ id: 99, name: "ADW issue and reusable execution lanes", path: ".github/workflows/adw-issues.yml", event: "issues", status: "completed", conclusion: "cancelled", head_sha: "a".repeat(40), head_branch: "main", run_attempt: 1 }] });
-    if (endpoint.startsWith("/repos/bugabinga/smith/actions/runs/99/jobs?")) return reply({ jobs: [
+    if (endpoint.startsWith("/repos/bugabinga/smith/actions/runs?")) return reply({ workflow_runs: Array.from({ length: 20 }, (_, index) => ({ id: index + 1, name: "unrelated", path: ".github/workflows/ci.yml", display_title: "CI", event: "push", status: "completed", conclusion: "success", head_sha: "9".repeat(40), head_branch: "main", run_attempt: 1, actor: { id: 7, login: "bugabinga", type: "User" }, pull_requests: [] })) });
+    if (endpoint === "/repos/bugabinga/smith/actions/workflows/adw-pulls.yml/runs?status=cancelled&per_page=100&page=1") return reply({ workflow_runs: [fixture.cancelledPullRun] });
+    if (/\/actions\/workflows\/adw-(?:issues|maintenance)\.yml\/runs\?status=cancelled&per_page=100&page=1$/.test(endpoint)) return reply({ workflow_runs: [] });
+    if (endpoint === "/repos/bugabinga/smith/actions/workflows/adw-issues.yml/runs?event=repository_dispatch&per_page=100&page=1") return reply({ workflow_runs: [failedDispatch] });
+    if (/\/actions\/workflows\/adw-(?:pulls|maintenance)\.yml\/runs\?event=repository_dispatch&per_page=100&page=1$/.test(endpoint)) return reply({ workflow_runs: [] });
+    if (endpoint.startsWith(`/repos/bugabinga/smith/actions/runs/${fixture.cancelledPullRun.id}/jobs?`)) return reply({ jobs: [
       { id: 1, name: "verify", status: "completed", conclusion: "success" },
       { id: 2, name: "apply", status: "completed", conclusion: "cancelled" },
       { id: 3, name: "evidence", status: "completed", conclusion: "skipped" },
@@ -585,8 +659,14 @@ test("reconciliation derives pioneer states and exact cancelled-apply recovery f
     { issueId: "1", sourceRevision: firstSource, verdict: "missing", artifactDigest: null, closingPrId: null },
     { issueId: "2", sourceRevision: secondSource, verdict: "disproved", artifactDigest, closingPrId: null },
   ]);
-  assert.deepEqual(snapshot.state.reconciliation.cancelledApplies, [{ runId: "99", headSha: "a".repeat(40), attempt: 1 }]);
-  assert.deepEqual(planReconciliation({ snapshot, ...snapshot.state.reconciliation }).map(intent => intent.kind).sort(), ["hold_spec", "retry_cancelled_apply", "retry_pioneer"]);
+  assert.deepEqual(snapshot.state.reconciliation.cancelledApplies, [{
+    runId: String(fixture.cancelledPullRun.id), workflowPath: fixture.cancelledPullRun.path,
+    event: fixture.cancelledPullRun.event, entityId: "167", headSha: fixture.cancelledPullRun.head_sha, attempt: 1,
+  }]);
+  assert.deepEqual(planReconciliation({ snapshot, ...snapshot.state.reconciliation }).map(intent => intent.kind).sort(), ["hold_spec", "retry_cancelled_apply", "retry_failed_dispatch"]);
+  assert.ok(endpoints.includes("/repos/bugabinga/smith/actions/workflows/adw-pulls.yml/runs?status=cancelled&per_page=100&page=1"));
+  assert.equal(snapshot.state.resources.runs.some(run => run.id === "20" && run.name === "unrelated"), true);
+  assert.equal(snapshot.state.resources.runs.some(run => run.id === String(fixture.cancelledPullRun.id) && run.headBranch === "adw/mjs-phase4"), true);
 });
 
 test("role snapshot rejects repository drift and untrusted App identity", async () => {

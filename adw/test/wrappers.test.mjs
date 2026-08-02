@@ -481,14 +481,16 @@ test("Phase 5 plan records the pre-hold runs and keeps the first-push gate incom
   assert.match(plan, /- \[x\] \*\*Step 3: Push the branch \(executed before the required hold\)\*\*/);
 });
 
-test("Phase 5 binds dispatch permission and child-run evidence to the corrected closed contract", async () => {
+test("Phase 5 binds dispatch preconditions, delivery, and failed-child recovery", async () => {
   const plan = await readFile(phase5Plan, "utf8");
-  assert.match(plan, /`dispatch_repository` mints only `contents:write` plus implicit `metadata:read`/);
-  assert.match(plan, /bounded polling.*event.*workflow path.*operation digest.*App actor.*control head.*created-after.*run attempt 1/is);
+  assert.match(plan, /`dispatch_repository`.*`contents:write`.*exact snapshot read permissions/is);
+  assert.match(plan, /reread.*source entity.*revisions.*`expectedBefore`.*before.*POST/is);
+  assert.match(plan, /bounded polling.*event.*workflow path.*operation digest.*App actor.*control head.*created-after.*attempt lineage/is);
   assert.match(plan, /delivery timeout is retryable/i);
   assert.match(plan, /duplicate exact runs fail closed/i);
+  assert.match(plan, /failed child.*separate.*attempt-bound rerun.*never.*duplicate dispatch/is);
   const capture = plan.slice(plan.indexOf("- [ ] **Step 6: Capture reconciliation and any child runs**"), plan.indexOf("### Task 13:"));
-  for (const field of ["event", "workflow path", "display title", "actor", "control head", "created-after", "run attempt 1"]) assert.match(capture, new RegExp(field, "i"));
+  for (const field of ["event", "workflow path", "display title", "actor", "control head", "created-after", "attempt lineage"]) assert.match(capture, new RegExp(field, "i"));
 });
 
 test("capture_run binds distinct expected run-head and control SHAs at every call", async () => {
@@ -524,7 +526,9 @@ test("Phase 5 treats adw-write as a lock, not FIFO, and recovers cancelled pendi
   assert.match(plan, /newer pending.*cancel.*older pending/i);
   assert.match(plan, /no FIFO/i);
   assert.match(plan, /cancelled.*apply.*never.*proof of success/is);
-  assert.match(plan, /reconciliation.*retry.*cancelled.*apply/is);
+  assert.match(plan, /bounded exact operational workflow queries.*entity.*run identity/is);
+  assert.match(plan, /pull events.*do not require.*head.*control.*branch.*main/is);
+  assert.match(plan, /reconciliation.*attempt-bound.*retry.*cancelled.*apply/is);
 });
 
 test("cutover hold guards every operational job before tokens, artifacts, or assessment", async () => {

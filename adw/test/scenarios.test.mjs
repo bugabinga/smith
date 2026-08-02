@@ -238,7 +238,7 @@ test("specialist decisions map every verdict to bounded operations", () => {
   const envelope = data => ({ trust: "untrusted", source: "pull:2", bytes: Buffer.byteLength(JSON.stringify(data)), digest: digestJson(data), data });
   assert.equal(roleDecision("docs-writer", { verdict: "patch", summary: "Docs", patch: docsPatch }, { entityId: "2", labels: [], headBranch: "docs/pr-2", baseBranch: "main", title: envelope("Docs"), body: envelope("Body") }, bytes).operations[0].type, "create_pr");
   assert.equal(roleDecision("adw-doctor", { verdict: "action", summary: "Drift", actions: [{ kind: "report", entityId: "repository", reason: "ruleset" }] }, { entityId: "repository", labels: [], actionTargets: ["repository"] }).operations[0].type, "report_drift");
-  assert.equal(roleDecision("sweeper", { verdict: "action", summary: "Retry", actions: [{ kind: "retry", entityId: "1", reason: "failed" }] }, { entityId: "repository", labels: [], actionTargets: ["1"], resources: { runs: [{ id: "1" }] } }).operations[0].type, "rerun_check");
+  assert.deepEqual(roleDecision("sweeper", { verdict: "action", summary: "Retry", actions: [{ kind: "retry", entityId: "1", reason: "failed" }] }, { entityId: "repository", labels: [], actionTargets: ["1"], resources: { runs: [{ id: "1", attempt: 1 }] } }).operations[0], { type: "rerun_check", runId: "1", attempt: 1 });
 });
 
 test("missed post-merge work remains retryable while holds suppress writes", () => {
@@ -258,23 +258,21 @@ test("missed post-merge work remains retryable while holds suppress writes", () 
 
 test("cancelled pending apply is deterministically retried instead of counted complete", () => {
   const authority = controlAuthority("reconciler");
+  const cancelled = { runId: "99", workflowPath: ".github/workflows/adw-pulls.yml", event: "pull_request_target", entityId: "167", headSha, attempt: 1 };
+  const run = { id: "99", name: "ADW pull and reconcile triggers", workflowPath: cancelled.workflowPath, displayTitle: "ADW pull #167", event: cancelled.event, entityId: cancelled.entityId, status: "completed", conclusion: "cancelled", headSha: cancelled.headSha, headBranch: "feature/167", attempt: 1, actorId: "7", actorLogin: "bugabinga", actorType: "User" };
   const snapshot = {
     ...snapshotFor("sweeper"),
     event: { kind: "schedule", action: "reconcile", entityId: "R_1" },
     routing: { role: authority.name, mode: "single", primary: null },
-    state: {
-      currentRevisions: {},
-      resources: { runs: [{ id: "99", name: "ADW pull and reconcile triggers", event: "pull_request_target", status: "completed", conclusion: "cancelled", headSha: controlSha, attempt: 1 }] },
-      reconciliation: { pulls: [] },
-    },
+    state: { currentRevisions: {}, resources: { runs: [run] }, reconciliation: { pulls: [], trust } },
   };
   const request = {
     snapshot, routes: [], pulls: [], labelSync: { wantedDigest: "1".repeat(64), liveDigest: "1".repeat(64) },
-    comments: [], trust, reviews: [], pioneers: [], holds: [], cancelledApplies: [{ runId: "99", headSha: controlSha, attempt: 1 }],
+    comments: [], trust, reviews: [], pioneers: [], holds: [], cancelledApplies: [cancelled],
   };
   const intents = planReconciliation(request);
-  assert.deepEqual(intents, [{ kind: "retry_cancelled_apply", runId: "99", headSha: controlSha, attempt: 1 }]);
-  assert.deepEqual(mapReconciliationIntents({ snapshot, intents }), [{ type: "rerun_check", runId: "99" }]);
+  assert.deepEqual(intents, [{ kind: "retry_cancelled_apply", ...cancelled }]);
+  assert.deepEqual(mapReconciliationIntents({ snapshot, intents }), [{ type: "rerun_check", runId: "99", attempt: 1 }]);
   const mixedSnapshot = structuredClone(snapshot);
   mixedSnapshot.state.reconciliation.pulls = [{ prId: "3", repositoryId: "R_1", headRepositoryId: "R_1", base: "main", closingIssues: [], headSha, merged: false, mergeSha: null, obligations: [] }];
   const mixed = [

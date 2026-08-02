@@ -443,7 +443,7 @@ const operationSamples = [
   { type: "create_pr", head: "feature/x", base: "main", title: "title", body: "body", marker: "m4" },
   { type: "update_pr", prId: "P_1", headSha },
   { type: "publish_check", headSha, name: "merge-gate", conclusion: "success", summary: "ok", externalId: "e1" },
-  { type: "rerun_check", runId: "R_1" },
+  { type: "rerun_check", runId: "R_1", attempt: 1 },
   { type: "dispatch_repository", eventType: "retry_route", clientPayload: { repositoryId: "42", issueId: "1", sourceRevision: "1".repeat(64), role: "builder", provider: "claude" } },
   { type: "arm_auto_merge", prId: "P_1", headSha, method: "squash" },
   { type: "sync_labels", definitionsDigest: "a".repeat(64) },
@@ -608,13 +608,46 @@ test("reconciliation emits only missing normalized obligations", () => {
 });
 
 test("cancelled pending apply is recoverable work, never successful reconciliation evidence", () => {
-  const request = {
-    snapshot: { ...snapshot, state: { currentRevisions: {}, resources: { runs: [{ id: "99", name: "ADW issue and reusable execution lanes", event: "issues", status: "completed", conclusion: "cancelled", headSha: controlSha, attempt: 1 }] } } },
-    routes: [], pulls: [], labelSync: { wantedDigest: "f".repeat(64), liveDigest: "f".repeat(64) },
-    comments: [], trust, reviews: [], pioneers: [], holds: [],
-    cancelledApplies: [{ runId: "99", headSha: controlSha, attempt: 1 }],
+  const cancelled = { runId: "99", workflowPath: ".github/workflows/adw-pulls.yml", event: "pull_request_review", entityId: "167", headSha, attempt: 1 };
+  const run = {
+    id: cancelled.runId, name: "ADW pull and reconcile triggers", workflowPath: cancelled.workflowPath, displayTitle: "ADW pull #167",
+    event: cancelled.event, entityId: cancelled.entityId, status: "completed", conclusion: "cancelled", headSha: cancelled.headSha, headBranch: "feature/167",
+    attempt: cancelled.attempt, actorId: "7", actorLogin: "bugabinga", actorType: "User",
   };
-  assert.deepEqual(planReconciliation(request), [{ kind: "retry_cancelled_apply", runId: "99", headSha: controlSha, attempt: 1 }]);
+  const request = {
+    snapshot: { ...snapshot, state: { currentRevisions: {}, resources: { runs: [run] } } },
+    routes: [], pulls: [], labelSync: { wantedDigest: "f".repeat(64), liveDigest: "f".repeat(64) },
+    comments: [], trust, reviews: [], pioneers: [], holds: [], cancelledApplies: [cancelled],
+  };
+  assert.deepEqual(planReconciliation(request), [{ kind: "retry_cancelled_apply", ...cancelled }]);
+});
+
+test("a failed dispatch child maps the missing parent intent to an attempt-bound rerun", () => {
+  const pull = reconcilePull({ merged: false, mergeSha: null, obligations: [] });
+  const parentIntent = { kind: "run_review", repositoryId: "R_1", prId: pull.prId, headSha: pull.headSha, role: "security-reviewer", provider: "claude" };
+  const clientPayload = Object.fromEntries(Object.entries(parentIntent).filter(([key]) => key !== "kind"));
+  const operationDigest = digestJson({ type: "dispatch_repository", eventType: parentIntent.kind, clientPayload });
+  const failed = {
+    id: "101", name: "ADW pull and reconcile triggers", workflowPath: ".github/workflows/adw-pulls.yml", displayTitle: operationDigest,
+    event: "repository_dispatch", entityId: pull.prId, status: "completed", conclusion: "failure", headSha: controlSha, headBranch: "main",
+    attempt: 2, actorId: trust.appId, actorLogin: "smith[bot]", actorType: "Bot",
+  };
+  const authoritySnapshot = {
+    ...snapshot,
+    routing: { role: "reconciler", mode: "single", primary: null },
+    state: { currentRevisions: {}, resources: { runs: [failed] }, reconciliation: { pulls: [pull], trust } },
+  };
+  const request = {
+    snapshot: authoritySnapshot, routes: [], pulls: [pull], labelSync: { wantedDigest: "f".repeat(64), liveDigest: "f".repeat(64) },
+    comments: [], trust, reviews: [{ prId: pull.prId, headSha: pull.headSha, evidence: [correctness], protectedInput: false }], pioneers: [], holds: [], cancelledApplies: [],
+  };
+  const expected = {
+    kind: "retry_failed_dispatch", runId: failed.id, workflowPath: failed.workflowPath, headSha: failed.headSha, attempt: failed.attempt,
+    operationDigest, eventType: parentIntent.kind, clientPayload,
+  };
+  const intents = planReconciliation(request);
+  assert.deepEqual(intents, [expected]);
+  assert.deepEqual(mapReconciliationIntents({ snapshot: authoritySnapshot, intents }), [{ type: "rerun_check", runId: failed.id, attempt: failed.attempt }]);
 });
 
 test("reconciliation derives reviews, holds, pioneer retries, and imported finalization", () => {

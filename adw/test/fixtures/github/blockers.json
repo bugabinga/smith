@@ -1,0 +1,99 @@
+{
+  "dependabotAlerts": [
+    {
+      "number": 31,
+      "state": "open",
+      "dependency": {
+        "package": {
+          "ecosystem": "cargo",
+          "name": "example"
+        },
+        "manifest_path": "Cargo.lock",
+        "scope": "runtime"
+      },
+      "security_advisory": {
+        "ghsa_id": "GHSA-aaaa-bbbb-cccc",
+        "severity": "high",
+        "summary": "Fixture advisory"
+      },
+      "security_vulnerability": {
+        "first_patched_version": {
+          "identifier": "2.0.0"
+        },
+        "vulnerable_version_range": "< 2.0.0"
+      },
+      "dismissed_reason": null,
+      "updated_at": "2026-08-01T20:00:00Z"
+    },
+    {
+      "number": 28,
+      "state": "open",
+      "dependency": {
+        "package": {
+          "ecosystem": "npm",
+          "name": "fixture-package"
+        },
+        "manifest_path": "package-lock.json",
+        "scope": "development"
+      },
+      "security_advisory": {
+        "ghsa_id": "GHSA-dddd-eeee-ffff",
+        "severity": "moderate",
+        "summary": "Second fixture advisory"
+      },
+      "security_vulnerability": {
+        "first_patched_version": null,
+        "vulnerable_version_range": "<= 1.0.0"
+      },
+      "dismissed_reason": null,
+      "updated_at": "2026-08-01T19:00:00Z"
+    }
+  ],
+  "cancelledPullRun": {
+    "id": 30713540946,
+    "name": "ADW pull and reconcile triggers",
+    "path": ".github/workflows/adw-pulls.yml",
+    "display_title": "ADW pull #167",
+    "event": "pull_request_review_comment",
+    "status": "completed",
+    "conclusion": "cancelled",
+    "head_branch": "adw/mjs-phase4",
+    "head_sha": "2baf202af878a5e18806056f5883b40c5a46addf",
+    "run_attempt": 1,
+    "actor": {
+      "id": 876467,
+      "login": "bugabinga",
+      "type": "User"
+    },
+    "pull_requests": [
+      {
+        "number": 167,
+        "head": {
+          "sha": "2baf202af878a5e18806056f5883b40c5a46addf",
+          "ref": "adw/mjs-phase4"
+        },
+        "base": {
+          "ref": "main"
+        }
+      }
+    ]
+  },
+  "failedDispatchRun": {
+    "id": 30720000001,
+    "name": "ADW pull and reconcile triggers",
+    "path": ".github/workflows/adw-pulls.yml",
+    "display_title": "operation-digest-placeholder",
+    "event": "repository_dispatch",
+    "status": "completed",
+    "conclusion": "failure",
+    "head_branch": "main",
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "run_attempt": 2,
+    "actor": {
+      "id": 67890,
+      "login": "smith[bot]",
+      "type": "Bot"
+    },
+    "pull_requests": []
+  }
+}

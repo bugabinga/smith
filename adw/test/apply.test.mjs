@@ -531,10 +531,10 @@ test("auto-merge accepts only App risk opens cleared by the authenticated owner"
 });
 
 test("rerun writes one action between control-commit marker transitions", async () => {
-  const operation = { type: "rerun_check", runId: "4" };
-  const original = { id: "4", name: "ci", event: "push", status: "completed", conclusion: "failure", headSha, attempt: 1 };
+  const operation = { type: "rerun_check", runId: "4", attempt: 1 };
+  const original = { id: "4", name: "ci", workflowPath: null, displayTitle: null, event: "push", status: "completed", conclusion: "failure", headSha, attempt: 1 };
   const value = snapshot([], { runs: [original] });
-  const authority = actionMarker(operation, value, { type: "rerun_check", runId: "4", name: "ci", event: "push", headSha, attempt: 1 });
+  const authority = actionMarker(operation, value, { type: "rerun_check", runId: "4", name: "ci", workflowPath: null, displayTitle: null, event: "push", headSha, status: "completed", conclusion: "failure", attempt: 1 });
   let markerBody = null;
   let markerStatus = null;
   let delivered = false;
@@ -563,9 +563,9 @@ test("rerun writes one action between control-commit marker transitions", async 
 });
 
 test("an exact bot-triggered increased rerun completes an in-progress marker without duplicate delivery", async () => {
-  const operation = { type: "rerun_check", runId: "4" };
-  const value = snapshot([], { runs: [{ id: "4", name: "ci", event: "push", status: "completed", conclusion: "failure", headSha, attempt: 1 }] });
-  const authority = actionMarker(operation, value, { type: "rerun_check", runId: "4", name: "ci", event: "push", headSha, attempt: 1 });
+  const operation = { type: "rerun_check", runId: "4", attempt: 1 };
+  const value = snapshot([], { runs: [{ id: "4", name: "ci", workflowPath: null, displayTitle: null, event: "push", status: "completed", conclusion: "failure", headSha, attempt: 1 }] });
+  const authority = actionMarker(operation, value, { type: "rerun_check", runId: "4", name: "ci", workflowPath: null, displayTitle: null, event: "push", headSha, status: "completed", conclusion: "failure", attempt: 1 });
   const marker = status => ({ id: 10, name: "smith/apply-action", head_sha: controlSha, status, conclusion: status === "completed" ? "success" : null, external_id: authority.externalId, output: { title: "smith/apply-action", summary: authority.summary }, app, created_at: "2026-01-01T00:00:00.000Z" });
   let markerValue = marker("in_progress");
   const { github, calls } = harness(request => {
@@ -587,10 +587,10 @@ test("an exact bot-triggered increased rerun completes an in-progress marker wit
   await assert.rejects(() => apply(github, operation, value), error => error?.code === "stale" && error.message === "conflicting action marker");
 });
 
-test("in-progress rerun recovery fails terminal on non-exact delivery evidence", async () => {
-  const operation = { type: "rerun_check", runId: "4" };
-  const value = snapshot([], { runs: [{ id: "4", name: "ci", event: "push", status: "completed", conclusion: "failure", headSha, attempt: 1 }] });
-  const authority = actionMarker(operation, value, { type: "rerun_check", runId: "4", name: "ci", event: "push", headSha, attempt: 1 });
+test("in-progress rerun recovery rejects a non-exact attempt lineage", async () => {
+  const operation = { type: "rerun_check", runId: "4", attempt: 1 };
+  const value = snapshot([], { runs: [{ id: "4", name: "ci", workflowPath: null, displayTitle: null, event: "push", status: "completed", conclusion: "failure", headSha, attempt: 1 }] });
+  const authority = actionMarker(operation, value, { type: "rerun_check", runId: "4", name: "ci", workflowPath: null, displayTitle: null, event: "push", headSha, status: "completed", conclusion: "failure", attempt: 1 });
   const marker = { id: 10, name: "smith/apply-action", head_sha: controlSha, status: "in_progress", conclusion: null, external_id: authority.externalId, output: { title: "smith/apply-action", summary: authority.summary }, app, created_at: "2026-01-01T00:00:00.000Z" };
   const { github, calls } = harness(request => {
     const path = endpoint(request);
@@ -598,7 +598,7 @@ test("in-progress rerun recovery fails terminal on non-exact delivery evidence",
     if (path.startsWith(`/repos/bugabinga/smith/commits/${controlSha}/check-runs?`)) return reply({ check_runs: [marker] });
     throw new Error(`unexpected ${path}`);
   });
-  await assert.rejects(() => apply(github, operation, value), error => error?.code === "terminal" && error.message === "action delivery cannot be proven; refusing retry");
+  await assert.rejects(() => apply(github, operation, value), error => error?.code === "contract" && error.message === "rerun source does not match snapshot");
   assert.equal(calls.some(call => call.args[2] !== "GET"), false);
 });
 
@@ -619,6 +619,8 @@ function dispatchFixture() {
     head_sha: controlSha,
     event: "repository_dispatch",
     display_title: digestJson(operation),
+    status: "queued",
+    conclusion: null,
     actor: bot,
     created_at: "2026-01-01T00:00:00.000Z",
     run_attempt: 1,
@@ -626,7 +628,50 @@ function dispatchFixture() {
   return { issue, operation, routing, value, exactRun };
 }
 
-test("repository dispatch uses contents write, then boundedly polls one exact first-attempt App run", async () => {
+test("repository dispatch rereads exact revisions and rejects drift before POST", async () => {
+  const { issue, operation, routing, exactRun } = dispatchFixture();
+  const originalRevision = issueSourceRevision(issue);
+  const value = {
+    ...snapshot([{ resource: "issue:1", kind: "issue", token: originalRevision }]),
+    routing,
+    state: { currentRevisions: { "issue:1": originalRevision }, reconciliation: { pulls: [] } },
+  };
+  let issueReads = 0;
+  let dispatched = false;
+  const { github, calls } = harness(request => {
+    const path = endpoint(request);
+    if (path === "/repos/bugabinga/smith/issues/1") {
+      issueReads++;
+      return reply(issueReads < 4 ? issue : { ...issue, body: "drifted immediately before dispatch" });
+    }
+    if (path === "/repos/bugabinga/smith/git/ref/heads/main") return reply({ object: { sha: controlSha } });
+    if (request.args[2] === "POST" && path === "/repos/bugabinga/smith/dispatches") { dispatched = true; return reply(null); }
+    if (path.startsWith("/repos/bugabinga/smith/actions/workflows/adw-issues.yml/runs?")) return reply({ workflow_runs: dispatched ? [exactRun] : [] });
+    throw new Error(`unexpected ${request.args[2]} ${path}`);
+  }, { now: () => "2026-01-01T00:00:00.000Z", sleep: async () => {} });
+  await assert.rejects(
+    () => apply(github, operation, value, { routing }),
+    error => error?.code === "stale" && error.message === "precondition changed",
+  );
+  assert.ok(issueReads >= 2);
+  assert.equal(calls.some(call => endpoint(call) === "/repos/bugabinga/smith/dispatches"), false);
+});
+
+test("an existing failed dispatch child proves delivery and is never redispatched", async () => {
+  const { issue, operation, routing, value, exactRun } = dispatchFixture();
+  const failed = { ...exactRun, status: "completed", conclusion: "failure", run_attempt: 2 };
+  const { github, calls } = harness(request => {
+    const path = endpoint(request);
+    if (path === "/repos/bugabinga/smith/issues/1") return reply(issue);
+    if (path === "/repos/bugabinga/smith/git/ref/heads/main") return reply({ object: { sha: controlSha } });
+    if (path.startsWith("/repos/bugabinga/smith/actions/workflows/adw-issues.yml/runs?")) return reply({ workflow_runs: [failed] });
+    throw new Error(`unexpected ${request.args[2]} ${path}`);
+  });
+  assert.equal((await apply(github, operation, value, { routing })).status, "complete");
+  assert.equal(calls.some(call => endpoint(call) === "/repos/bugabinga/smith/dispatches"), false);
+});
+
+test("repository dispatch uses contents write, then boundedly polls one exact App run", async () => {
   const { issue, operation, routing, value, exactRun } = dispatchFixture();
   let delivered = false;
   let deliveryReads = 0;
@@ -669,7 +714,7 @@ test("repository dispatch run proof binds every identity field and times out ret
     { head_branch: "feature" },
     { head_sha: headSha },
     { created_at: "2025-12-31T23:59:59.999Z" },
-    { run_attempt: 2 },
+    { status: "completed", conclusion: null },
   ];
   for (const mismatch of mismatches) {
     let delivered = false;
@@ -685,11 +730,11 @@ test("repository dispatch run proof binds every identity field and times out ret
     }, { now: () => "2026-01-01T00:00:00.000Z", sleep: async milliseconds => { waits.push(milliseconds); } });
     await assert.rejects(
       () => apply(github, operation, value, { routing }),
-      error => error?.code === "forge" && error.message === "repository dispatch delivery timed out",
+      error => error?.code === "forge" && error.message === (Object.hasOwn(mismatch, "status") ? "malformed" : "repository dispatch delivery timed out"),
       JSON.stringify(mismatch),
     );
     assert.equal(writes, 1);
-    assert.equal(waits.length, 11);
+    assert.equal(waits.length, Object.hasOwn(mismatch, "status") ? 0 : 11);
     assert.ok(waits.every(milliseconds => milliseconds === 5000));
   }
 });
@@ -802,7 +847,7 @@ test("auto-merge may arm while GitHub reports blocked by its missing gate, but n
 test("operation capabilities are exact, operation-scoped, and exclude settings writes", () => {
   assert.deepEqual(operationCapabilities({ type: "comment" }), ["issues:write"]);
   assert.deepEqual(operationCapabilities({ type: "publish_check" }), ["checks:write"]);
-  assert.deepEqual(operationCapabilities({ type: "rerun_check" }), ["actions:write", "checks:write"]);
+  assert.deepEqual(operationCapabilities({ type: "rerun_check", runId: "4", attempt: 1 }), ["actions:write", "checks:write"]);
   assert.deepEqual(operationCapabilities({ type: "dispatch_repository" }), ["contents:write", "repository:read"]);
   const reconciliationSnapshot = snapshot([
     { resource: "issues", kind: "issues", token: "r" },
@@ -811,7 +856,7 @@ test("operation capabilities are exact, operation-scoped, and exclude settings w
     { resource: "trusted:.github/labels.yml", kind: "control", token: controlSha },
     { resource: "repository", kind: "repository", token: "r" },
   ]);
-  assert.deepEqual(operationCapabilities({ type: "dispatch_repository" }, reconciliationSnapshot), ["contents:write", "repository:read"]);
+  assert.deepEqual(operationCapabilities({ type: "dispatch_repository" }, reconciliationSnapshot), ["actions:read", "checks:read", "contents:write", "issues:read", "pulls:read", "repository:read"]);
   assert.deepEqual(operationCapabilities({ type: "add_label" }, reconciliationSnapshot), ["actions:read", "checks:read", "contents:read", "issues:write", "pulls:read", "repository:read"]);
   assert.deepEqual(operationCapabilities({ type: "create_pr" }), ["pulls:write"]);
   assert.deepEqual(operationCapabilities({ type: "arm_auto_merge" }), ["checks:read", "issues:read", "pulls:write"]);
@@ -1131,7 +1176,7 @@ test("dry-run record writer performs identical stale reads without mutation", as
 });
 
 test("injected E2E: product-check rerun remains a canonical provider decision operation", async () => {
-  const operation = { type: "rerun_check", runId: "4" };
+  const operation = { type: "rerun_check", runId: "4", attempt: 1 };
   const value = { ...snapshot(), routing: { role: "sweeper", mode: "single", primary: "codex" } };
   const canonicalDecision = decision(value, [operation]);
   const proof = verification(value, canonicalDecision);

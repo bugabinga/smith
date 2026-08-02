@@ -47,6 +47,13 @@ export const REPOSITORY_DISPATCH_WORKFLOWS = Object.freeze({
 });
 const REPOSITORY_DISPATCH_TYPES = new Set(Object.keys(REPOSITORY_DISPATCH_WORKFLOWS));
 const ROUTE_PROVIDER_ROLES = Object.freeze({ claude: "builder", codex: "codex-builder" });
+const OPERATIONAL_WORKFLOW_EVENTS = Object.freeze({
+  ".github/workflows/adw-issues.yml": Object.freeze(["issue_comment", "issues"]),
+  ".github/workflows/adw-maintenance.yml": Object.freeze(["push", "schedule", "workflow_dispatch"]),
+  ".github/workflows/adw-pulls.yml": Object.freeze(["check_run", "check_suite", "pull_request_review", "pull_request_review_comment", "pull_request_target"]),
+});
+const OPERATIONAL_WORKFLOW_PATHS = new Set(Object.keys(OPERATIONAL_WORKFLOW_EVENTS));
+const RETRYABLE_RUN_CONCLUSIONS = new Set(["action_required", "cancelled", "failure", "stale", "startup_failure", "timed_out"]);
 
 function fail(message) {
   throw new AdwError("contract", message);
@@ -545,7 +552,7 @@ const OPERATION_FIELDS = Object.freeze({
   create_pr: { required: ["type", "head", "base", "title", "body", "marker"] },
   update_pr: { required: ["type", "prId"], optional: ["title", "body", "headSha"] },
   publish_check: { required: ["type", "headSha", "name", "conclusion", "summary", "externalId"] },
-  rerun_check: { required: ["type", "runId"] },
+  rerun_check: { required: ["type", "runId", "attempt"] },
   dispatch_repository: { required: ["type", "eventType", "clientPayload"] },
   arm_auto_merge: { required: ["type", "prId", "headSha", "method"] },
   sync_labels: { required: ["type", "definitionsDigest"] },
@@ -580,6 +587,8 @@ function validateOperationShape(operation) {
       value.forEach(item => string(item, `operation.${key}[]`));
     } else if (key === "clientPayload") {
       validateRepositoryDispatchPayload(operation.eventType, value);
+    } else if (key === "attempt") {
+      if (!Number.isSafeInteger(value) || value < 1) fail("operation.attempt is invalid");
     } else {
       string(value, `operation.${key}`);
     }
@@ -688,8 +697,14 @@ export function parseLegacyMarkers({ comments, trust }) {
     exact(input, enveloped ? ["id", "actorId", "createdAt", "updatedAt", "body", "repositoryId", "entityId"] : ["id", "actorId", "createdAt", "body", "repositoryId", "entityId"], "marker comment");
     let body;
     if (enveloped) {
-      exact(input.body, ["trust", "source", "bytes", "digest", "data"], "marker comment body");
-      if (input.body.trust !== "untrusted" || typeof input.body.data !== "string" || input.body.bytes !== canonicalBytes(input.body.data).length || input.body.digest !== digestJson(input.body.data)) fail("marker comment body is invalid");
+      const projected = Object.hasOwn(input.body, "truncated");
+      exact(input.body, projected ? ["trust", "source", "bytes", "digest", "truncated", "data"] : ["trust", "source", "bytes", "digest", "data"], "marker comment body");
+      if (typeof input.body.data !== "string") fail("marker comment body is invalid");
+      const dataBytes = canonicalBytes(input.body.data).length;
+      const full = input.body.truncated === false;
+      if (input.body.trust !== "untrusted" || !Number.isSafeInteger(input.body.bytes) || input.body.bytes < dataBytes || !DIGEST.test(input.body.digest)
+          || (projected && typeof input.body.truncated !== "boolean") || (projected && full && (input.body.bytes !== dataBytes || input.body.digest !== digestJson(input.body.data)))
+          || (projected && input.body.truncated && input.body.bytes <= dataBytes) || (!projected && (input.body.bytes !== dataBytes || input.body.digest !== digestJson(input.body.data)))) fail("marker comment body is invalid");
       body = input.body.data;
       canonicalInstant(input.updatedAt, "marker comment.updatedAt");
     } else body = input.body;
@@ -736,14 +751,19 @@ export function planReconciliation(request) {
   array(cancelledApplies, "cancelled applies", 20);
   const cancelledRunIds = new Set();
   for (const cancelled of cancelledApplies) {
-    exact(cancelled, ["runId", "headSha", "attempt"], "cancelled apply");
+    exact(cancelled, ["runId", "workflowPath", "event", "entityId", "headSha", "attempt"], "cancelled apply");
     restId(cancelled.runId, "cancelled apply run");
+    string(cancelled.workflowPath, "cancelled apply workflow");
+    if (!OPERATIONAL_WORKFLOW_PATHS.has(cancelled.workflowPath)) fail("cancelled apply workflow is invalid");
+    string(cancelled.event, "cancelled apply event"); string(cancelled.entityId, "cancelled apply entity");
+    if (!OPERATIONAL_WORKFLOW_EVENTS[cancelled.workflowPath].includes(cancelled.event)) fail("cancelled apply event is invalid");
     sha(cancelled.headSha, "cancelled apply head");
     if (!Number.isSafeInteger(cancelled.attempt) || cancelled.attempt < 1) fail("cancelled apply attempt is invalid");
     if (cancelledRunIds.has(cancelled.runId)) fail("duplicate cancelled apply");
     cancelledRunIds.add(cancelled.runId);
     const run = snapshot.state?.resources?.runs?.find(candidate => candidate?.id === cancelled.runId);
-    if (!run || run.headSha !== cancelled.headSha || run.attempt !== cancelled.attempt || run.status !== "completed" || run.conclusion !== "cancelled") fail("cancelled apply is not snapshot-bound");
+    const expectedTitle = cancelled.workflowPath.endsWith("adw-issues.yml") ? `ADW issue #${cancelled.entityId}` : cancelled.workflowPath.endsWith("adw-pulls.yml") ? `ADW pull #${cancelled.entityId}` : null;
+    if (!run || run.workflowPath !== cancelled.workflowPath || run.event !== cancelled.event || run.entityId !== cancelled.entityId || (expectedTitle !== null && run.displayTitle !== expectedTitle) || (cancelled.workflowPath.endsWith("adw-maintenance.yml") && cancelled.entityId !== snapshot.repository.id) || run.headSha !== cancelled.headSha || run.attempt !== cancelled.attempt || run.status !== "completed" || run.conclusion !== "cancelled") fail("cancelled apply is not snapshot-bound");
   }
   const currentRevisions = snapshot.state.currentRevisions;
   if (!currentRevisions || Array.isArray(currentRevisions) || Object.getPrototypeOf(currentRevisions) !== Object.prototype) fail("snapshot current revisions are required");
@@ -855,7 +875,22 @@ export function planReconciliation(request) {
   digest(labelSync.wantedDigest, "labelSync.wantedDigest");
   digest(labelSync.liveDigest, "labelSync.liveDigest");
   if (labelSync.wantedDigest !== labelSync.liveDigest && !held.has("repository")) intents.push({ kind: "sync_labels", definitionsDigest: labelSync.wantedDigest });
-  const unique = new Map(intents.map(intent => [digestJson(intent), intent]));
+  const runs = snapshot.state?.resources?.runs ?? [];
+  const recovered = intents.map(intent => {
+    if (!REPOSITORY_DISPATCH_TYPES.has(intent.kind)) return intent;
+    const { kind: eventType, ...clientPayload } = intent;
+    const operationDigest = digestJson({ type: "dispatch_repository", eventType, clientPayload });
+    const workflowPath = `.github/workflows/${REPOSITORY_DISPATCH_WORKFLOWS[eventType]}`;
+    const matches = runs.filter(run => run?.workflowPath === workflowPath && run.event === "repository_dispatch" && run.displayTitle === operationDigest
+      && run.actorId === trust.appId && run.actorType === "Bot" && run.headBranch === snapshot.repository.defaultBranch && run.headSha === snapshot.controlSha);
+    if (matches.length > 1) fail("conflicting repository dispatch child runs");
+    const failedRun = matches.find(run => run.status === "completed" && RETRYABLE_RUN_CONCLUSIONS.has(run.conclusion));
+    if (failedRun === undefined) return intent;
+    restId(failedRun.id, "failed dispatch run");
+    if (!Number.isSafeInteger(failedRun.attempt) || failedRun.attempt < 1) fail("failed dispatch attempt is invalid");
+    return { kind: "retry_failed_dispatch", runId: failedRun.id, workflowPath, headSha: failedRun.headSha, attempt: failedRun.attempt, operationDigest, eventType, clientPayload };
+  });
+  const unique = new Map(recovered.map(intent => [digestJson(intent), intent]));
   return deepFreeze([...unique.values()].sort((a, b) => canonicalBytes(a).compare(canonicalBytes(b))));
 }
 
@@ -870,9 +905,15 @@ function validateReconciliationIntent(intent) {
     const { kind, ...clientPayload } = intent;
     validateRepositoryDispatchPayload(kind, clientPayload);
   } else if (intent.kind === "retry_cancelled_apply") {
-    exact(intent, ["kind", "runId", "headSha", "attempt"], "reconciliation intent");
+    exact(intent, ["kind", "runId", "workflowPath", "event", "entityId", "headSha", "attempt"], "reconciliation intent");
     restId(intent.runId, "reconciliation run"); sha(intent.headSha, "reconciliation run head");
-    if (!Number.isSafeInteger(intent.attempt) || intent.attempt < 1) fail("reconciliation run attempt is invalid");
+    string(intent.workflowPath, "reconciliation run workflow"); string(intent.event, "reconciliation run event"); string(intent.entityId, "reconciliation run entity");
+    if (!OPERATIONAL_WORKFLOW_PATHS.has(intent.workflowPath) || !OPERATIONAL_WORKFLOW_EVENTS[intent.workflowPath].includes(intent.event) || !Number.isSafeInteger(intent.attempt) || intent.attempt < 1) fail("reconciliation run attempt is invalid");
+  } else if (intent.kind === "retry_failed_dispatch") {
+    exact(intent, ["kind", "runId", "workflowPath", "headSha", "attempt", "operationDigest", "eventType", "clientPayload"], "reconciliation intent");
+    restId(intent.runId, "reconciliation run"); sha(intent.headSha, "reconciliation run head"); digest(intent.operationDigest, "reconciliation parent operation");
+    oneOf(intent.eventType, REPOSITORY_DISPATCH_TYPES, "reconciliation parent event"); validateRepositoryDispatchPayload(intent.eventType, intent.clientPayload);
+    if (intent.workflowPath !== `.github/workflows/${REPOSITORY_DISPATCH_WORKFLOWS[intent.eventType]}` || intent.operationDigest !== digestJson({ type: "dispatch_repository", eventType: intent.eventType, clientPayload: intent.clientPayload }) || !Number.isSafeInteger(intent.attempt) || intent.attempt < 1) fail("failed dispatch retry authority is invalid");
   } else if (intent.kind === "hold_spec") {
     exact(intent, ["kind", "issueId", "artifactDigest"], "reconciliation intent");
     restId(intent.issueId, "reconciliation issue"); digest(intent.artifactDigest, "reconciliation artifact");
@@ -914,8 +955,13 @@ export function mapReconciliationIntents({ snapshot, intents }) {
     if (intent.kind === "held") continue;
     if (intent.kind === "retry_cancelled_apply") {
       const run = trustedSnapshot.state?.resources?.runs?.find(candidate => candidate?.id === intent.runId);
-      if (!run || run.headSha !== intent.headSha || run.attempt !== intent.attempt || run.status !== "completed" || run.conclusion !== "cancelled") fail("cancelled apply retry is not current");
-      operations.push({ type: "rerun_check", runId: intent.runId });
+      const expectedTitle = intent.workflowPath.endsWith("adw-issues.yml") ? `ADW issue #${intent.entityId}` : intent.workflowPath.endsWith("adw-pulls.yml") ? `ADW pull #${intent.entityId}` : null;
+      if (!run || run.workflowPath !== intent.workflowPath || run.event !== intent.event || run.entityId !== intent.entityId || (expectedTitle !== null && run.displayTitle !== expectedTitle) || (intent.workflowPath.endsWith("adw-maintenance.yml") && intent.entityId !== trustedSnapshot.repository.id) || run.headSha !== intent.headSha || run.attempt !== intent.attempt || run.status !== "completed" || run.conclusion !== "cancelled") fail("cancelled apply retry is not current");
+      operations.push({ type: "rerun_check", runId: intent.runId, attempt: intent.attempt });
+    } else if (intent.kind === "retry_failed_dispatch") {
+      const run = trustedSnapshot.state?.resources?.runs?.find(candidate => candidate?.id === intent.runId);
+      if (!run || run.workflowPath !== intent.workflowPath || run.displayTitle !== intent.operationDigest || run.event !== "repository_dispatch" || run.headSha !== intent.headSha || run.attempt !== intent.attempt || run.status !== "completed" || !RETRYABLE_RUN_CONCLUSIONS.has(run.conclusion) || run.actorId !== trustedSnapshot.state?.reconciliation?.trust?.appId) fail("failed dispatch retry is not current");
+      operations.push({ type: "rerun_check", runId: intent.runId, attempt: intent.attempt });
     } else if (intent.kind === "hold_spec") {
       operations.push({ type: "add_label", entityId: intent.issueId, label: "needs:spec" });
     } else if (intent.kind === "sync_labels") {

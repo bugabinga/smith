@@ -12,21 +12,28 @@ const EVENTS = new Set([
 
 const ADAPTER_READ_CAPABILITIES = Object.freeze(["actions:read", "alerts:read", "checks:read", "issues:read", "pulls:read", "repository:read", "settings:read"]);
 const TRUSTED_TEXT_MAX_BYTES = 262_144;
+const UNTRUSTED_TEXT_MAX_BYTES = 65_536;
+const UNTRUSTED_TEXT_PREVIEW_BYTES = 4_096;
+const COMMENT_SNAPSHOT_MAX_BYTES = 65_536;
 const PULL_PAGE_SIZE = 10;
 const RUN_PAGE_SIZE = 20;
 const COMMENT_PAGE_SIZE = 20;
+const ALERT_PAGE_SIZE = 100;
+const RECOVERY_RUN_PAGE_SIZE = 100;
 const MAX_PULL_ITEMS = 10;
 const MAX_RUN_ITEMS = 20;
 const MAX_DISPATCH_RUN_ITEMS = 100;
+const MAX_RECOVERABLE_RUNS = 20;
 const MAX_COMMENT_ITEMS = 1_000;
 const MAX_COLLECTION_BYTES = 8_388_608;
 const DISPATCH_POLL_ATTEMPTS = 12;
 const DISPATCH_POLL_INTERVAL_MS = 5_000;
-const ADW_OPERATIONAL_WORKFLOW_PATHS = new Set([
-  ".github/workflows/adw-issues.yml",
-  ".github/workflows/adw-maintenance.yml",
-  ".github/workflows/adw-pulls.yml",
+const ADW_OPERATIONAL_WORKFLOWS = Object.freeze([
+  Object.freeze({ file: "adw-issues.yml", path: ".github/workflows/adw-issues.yml", events: Object.freeze(["issue_comment", "issues", "repository_dispatch"]) }),
+  Object.freeze({ file: "adw-maintenance.yml", path: ".github/workflows/adw-maintenance.yml", events: Object.freeze(["push", "repository_dispatch", "schedule", "workflow_dispatch"]) }),
+  Object.freeze({ file: "adw-pulls.yml", path: ".github/workflows/adw-pulls.yml", events: Object.freeze(["check_run", "check_suite", "pull_request_review", "pull_request_review_comment", "pull_request_target", "repository_dispatch"]) }),
 ]);
+const RETRYABLE_RUN_CONCLUSIONS = new Set(["action_required", "cancelled", "failure", "stale", "startup_failure", "timed_out"]);
 const GITHUB_WRITE_OPERATIONS = new Set([
   "comment", "add_label", "remove_label", "create_issue", "update_issue", "close_issue",
   "create_milestone", "update_milestone", "close_milestone", "assign_milestone", "link_sub_issue",
@@ -58,13 +65,12 @@ export function operationCapabilities(operation, snapshot = null) {
     if (resource === "issues" || resource === "labels" || resource === "milestones" || resource.startsWith("issue:")) return "issues:read";
     if (resource === "pulls") return ["checks:read", "issues:read", "pulls:read"];
     if (resource.startsWith("pull:")) return resource.endsWith(":checks") ? ["checks:read", "pulls:read"] : "pulls:read";
-    if (resource === "runs") return "actions:read";
+    if (resource === "runs" || resource.startsWith("run:")) return "actions:read";
     if (resource === "alerts") return "alerts:read";
     if (resource === "rulesets" || resource === "settings") return "settings:read";
     return null;
   };
   if (snapshot !== null) contract(Array.isArray(snapshot?.revisions), "snapshot revisions are invalid");
-  if (type === "dispatch_repository") return Object.freeze([...capabilities].sort());
   for (const revision of snapshot?.revisions ?? []) {
     contract(typeof revision?.resource === "string", "snapshot revision is invalid");
     const needed = readCapability(revision.resource);
@@ -308,13 +314,24 @@ export function normalizeEvent(name, payload) {
   return Object.freeze({ kind, action, entityId, repository, actor, revisionHints: Object.freeze(revisionHints) });
 }
 
-function contentEnvelope(data, trust, source, maxBytes = 65_536) {
+function utf8Prefix(value, maxBytes) {
+  const bytes = Buffer.from(value);
+  if (bytes.length <= maxBytes) return value;
+  for (let length = maxBytes; length >= Math.max(0, maxBytes - 3); length--) {
+    try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length)); } catch {}
+  }
+  throw new AdwError("forge", "malformed");
+}
+
+function contentEnvelope(data, trust, source, maxBytes = UNTRUSTED_TEXT_MAX_BYTES, previewBytes = maxBytes) {
   contract(trust === "trusted" || trust === "untrusted", "content trust is invalid");
   text(source, "content source");
   const bytes = canonicalBytes(data);
   const measuredBytes = typeof data === "string" ? Buffer.byteLength(data) : bytes.length;
   if (measuredBytes > maxBytes) throw new AdwError("forge", "overflow");
-  return Object.freeze({ trust, source, bytes: bytes.length, digest: digestJson(data), data });
+  if (trust === "trusted" || typeof data !== "string") return Object.freeze({ trust, source, bytes: bytes.length, digest: digestJson(data), data });
+  const projected = utf8Prefix(data, previewBytes);
+  return Object.freeze({ trust, source, bytes: bytes.length, digest: digestJson(data), truncated: projected !== data, data: projected });
 }
 
 function forgeReason(status) {
@@ -425,9 +442,34 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     throw new AdwError("forge", "overflow");
   }
 
+  async function boundedSinglePage(endpoint, key = null, pageSize = 100, maxBytes = MAX_COLLECTION_BYTES) {
+    contract(Number.isSafeInteger(pageSize) && pageSize > 0 && pageSize <= 100 && Number.isSafeInteger(maxBytes) && maxBytes > 0, "single-page limits are invalid");
+    const response = await page(endpoint);
+    const values = key === null ? response : response?.[key];
+    if (!Array.isArray(values) || values.length > pageSize) throw new AdwError("forge", "malformed");
+    if (Buffer.byteLength(JSON.stringify(values)) > maxBytes) throw new AdwError("forge", "overflow");
+    if (values.length === pageSize) throw new AdwError("forge", "overflow");
+    return values;
+  }
+
   const positiveInteger = value => {
     contract(Number.isSafeInteger(value) && value > 0, "number is invalid");
     return value;
+  };
+  const operationalRuns = async filter => {
+    contract(filter === "status=cancelled" || filter === "event=repository_dispatch", "operational run filter is invalid");
+    const records = [];
+    for (const workflow of ADW_OPERATIONAL_WORKFLOWS) {
+      const endpoint = `/repos/${owner}/${name}/actions/workflows/${workflow.file}/runs?${filter}&per_page=${RECOVERY_RUN_PAGE_SIZE}&page=1`;
+      let values;
+      try { values = await boundedSinglePage(endpoint, "workflow_runs", RECOVERY_RUN_PAGE_SIZE); }
+      catch (error) {
+        if (error?.code === "forge" && error.message === "not_found") continue;
+        throw error;
+      }
+      for (const value of values) records.push(Object.freeze({ workflow, value }));
+    }
+    return Object.freeze(records);
   };
   const policy = { operations: OPERATIONS };
   const methods = {
@@ -449,7 +491,8 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     },
     alerts: kind => {
       contract(kind === "dependabot_alert" || kind === "code_scanning_alert", "alert kind is invalid");
-      return request(`/repos/${owner}/${name}/${kind === "dependabot_alert" ? "dependabot/alerts" : "code-scanning/alerts"}?state=open`, true);
+      if (kind === "dependabot_alert") return boundedSinglePage(`/repos/${owner}/${name}/dependabot/alerts?state=open&per_page=${ALERT_PAGE_SIZE}`, null, ALERT_PAGE_SIZE);
+      return request(`/repos/${owner}/${name}/code-scanning/alerts?state=open`, true, { pageSize: ALERT_PAGE_SIZE, maxItems: ALERT_PAGE_SIZE, maxBytes: MAX_COLLECTION_BYTES });
     },
     comments: (kind, number) => {
       contract(kind === "issues" || kind === "pulls", "comment kind is invalid");
@@ -481,6 +524,8 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       return request(`/repos/${owner}/${name}/git/ref/heads/${branch.split("/").map(encodeURIComponent).join("/")}`);
     },
     runs: () => request(`/repos/${owner}/${name}/actions/runs`, "workflow_runs", { pageSize: RUN_PAGE_SIZE, maxItems: MAX_RUN_ITEMS, maxBytes: MAX_COLLECTION_BYTES, truncate: true }),
+    cancelledOperationalRuns: () => operationalRuns("status=cancelled"),
+    repositoryDispatchRuns: () => operationalRuns("event=repository_dispatch"),
   };
   const normalizeResource = value => {
     contract(value && typeof value === "object" && !Array.isArray(value), "resource is malformed");
@@ -501,7 +546,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       deleteBranchOnMerge: value.delete_branch_on_merge,
     });
   };
-  const normalizedContent = (value, source) => contentEnvelope(value ?? "", "untrusted", source);
+  const normalizedContent = (value, source) => contentEnvelope(value ?? "", "untrusted", source, UNTRUSTED_TEXT_MAX_BYTES, UNTRUSTED_TEXT_PREVIEW_BYTES);
   const normalizeLabels = value => {
     contract(Array.isArray(value), "labels are malformed");
     return value.map(label => text(typeof label === "string" ? label : label?.name, "label")).sort();
@@ -644,7 +689,30 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       conditions, rules, bypass_actors: bypass,
     }, "ruleset"));
   };
-  const normalizeRun = value => Object.freeze({ id: restId(value.id, "run id"), name: text(value.name, "run name"), event: text(value.event, "run event"), status: text(value.status, "run status"), conclusion: value.conclusion === null ? null : text(value.conclusion, "run conclusion"), headSha: text(value.head_sha, "run head"), attempt: Number(value.run_attempt ?? 1) });
+  const runEntityId = (value, repositoryId) => {
+    if (value?.event === "repository_dispatch") return null;
+    let match;
+    if (value?.path === ".github/workflows/adw-issues.yml" && (match = /^ADW issue #([1-9][0-9]*)$/.exec(value.display_title ?? ""))) return match[1];
+    if (value?.path === ".github/workflows/adw-pulls.yml" && (match = /^ADW pull #([1-9][0-9]*)$/.exec(value.display_title ?? ""))) return match[1];
+    if (value?.path === ".github/workflows/adw-maintenance.yml" && /^ADW maintenance (?:audit|push|reconcile|[^\s]+(?: [^\s]+){4})$/.test(value.display_title ?? "")) return repositoryId;
+    return null;
+  };
+  const normalizeRun = (value, repositoryId = null) => {
+    const attempt = Number(value.run_attempt ?? 1);
+    contract(Number.isSafeInteger(attempt) && attempt > 0, "run attempt is malformed");
+    const headSha = text(value.head_sha, "run head");
+    contract(/^[0-9a-f]{40}$/.test(headSha), "run head is malformed");
+    const actor = value.actor ?? null;
+    return Object.freeze({
+      id: restId(value.id, "run id"), name: text(value.name, "run name"),
+      workflowPath: typeof value.path === "string" && value.path.length > 0 ? value.path : null,
+      displayTitle: typeof value.display_title === "string" && value.display_title.length > 0 ? value.display_title : null,
+      event: text(value.event, "run event"), entityId: repositoryId === null ? null : runEntityId(value, repositoryId),
+      status: text(value.status, "run status"), conclusion: value.conclusion === null ? null : text(value.conclusion, "run conclusion"),
+      headSha, headBranch: value.head_branch === null || value.head_branch === undefined ? null : text(value.head_branch, "run head branch"), attempt,
+      actorId: actor === null ? null : restId(actor.id, "run actor"), actorLogin: actor === null ? null : text(actor.login, "run actor login"), actorType: actor === null ? null : text(actor.type, "run actor type"),
+    });
+  };
   const reviewEvidence = (comments, headSha, prId) => comments
     .map(comment => parsedReviewMarker(comment, headSha, prId, appIdentity) ?? parsedLegacyReviewMarker(comment, headSha, appIdentity))
     .filter(Boolean)
@@ -807,6 +875,27 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       const satisfied = new Set(["repository"]);
       const resources = {};
       const revisions = [];
+      const truncations = {};
+      const projectComments = (key, values, requiredIds = []) => {
+        contract(Array.isArray(values), "comments are malformed");
+        const required = new Set(requiredIds);
+        const selected = new Set();
+        let bytes = 2;
+        const newest = [...values].sort((left, right) => right.createdAt.localeCompare(left.createdAt) || numericId(right.id, "comment id") - numericId(left.id, "comment id"));
+        for (const comment of [...newest.filter(comment => required.has(comment.id)), ...newest.filter(comment => !required.has(comment.id))]) {
+          const size = canonicalBytes(comment).length + (selected.size === 0 ? 0 : 1);
+          if (bytes + size > COMMENT_SNAPSHOT_MAX_BYTES && !required.has(comment.id)) continue;
+          if (bytes + size > COMMENT_SNAPSHOT_MAX_BYTES) throw new AdwError("forge", "overflow");
+          selected.add(comment.id);
+          bytes += size;
+        }
+        const projected = values.filter(comment => selected.has(comment.id));
+        const truncatedBodies = values.filter(comment => comment.body?.truncated === true).length;
+        if (projected.length !== values.length || truncatedBodies > 0) truncations[key] = Object.freeze({
+          totalItems: values.length, retainedItems: projected.length, omittedItems: values.length - projected.length, truncatedBodies,
+        });
+        return Object.freeze(projected);
+      };
       const put = (key, kind, value, token) => {
         contract(!Object.hasOwn(resources, key), "duplicate snapshot resource");
         resources[key] = value;
@@ -837,11 +926,13 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       let qualifyingPioneerPulls = [];
       let fileValues = [];
       let rawRunValues = [];
+      let cancelledApplies = [];
       if (issueRelated && ["issue", "issues", "claim", "spec", "labels", "milestones", "comment", "entity", "owner"].some(field => fields.has(field))) {
         issueValue = normalizeIssue(await methods.issue(Number(event.entityId)));
         put(`issue:${event.entityId}`, "issue", issueValue, issueValue.sourceRevision);
-        const comments = (await methods.comments("issues", Number(event.entityId))).map(value => normalizeComment(value, event.entityId, normalizedRepository.id));
-        put(`issue:${event.entityId}:comments`, "comments", Object.freeze(comments), digestJson(comments));
+        const allComments = (await methods.comments("issues", Number(event.entityId))).map(value => normalizeComment(value, event.entityId, normalizedRepository.id));
+        const comments = projectComments(`issue:${event.entityId}:comments`, allComments, event.revisionHints.commentId ? [event.revisionHints.commentId] : []);
+        put(`issue:${event.entityId}:comments`, "comments", comments, digestJson(allComments));
         const timeline = (await methods.issueTimeline(Number(event.entityId))).map(value => Object.freeze({ id: restId(value.id, "timeline id"), event: text(value.event, "timeline event"), actorId: value.actor ? restId(value.actor.id, "timeline actor") : null, createdAt: text(value.created_at, "timeline createdAt"), label: value.label?.name ?? null, commitSha: value.commit_id ?? null }));
         put(`issue:${event.entityId}:timeline`, "timeline", Object.freeze(timeline), digestJson(timeline));
         const parentValue = await methods.issueParent(Number(event.entityId));
@@ -899,8 +990,9 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         put(`pull:${event.entityId}:files`, "files", Object.freeze(fileValues), digestJson(fileValues));
         const reviews = (await methods.pullReviews(Number(event.entityId))).map(value => normalizeReview(value, event.entityId));
         put(`pull:${event.entityId}:reviews`, "reviews", Object.freeze(reviews), digestJson(reviews));
-        const comments = (await methods.comments("issues", Number(event.entityId))).map(value => normalizeComment(value, event.entityId, normalizedRepository.id));
-        put(`pull:${event.entityId}:comments`, "comments", Object.freeze(comments), digestJson(comments));
+        const allComments = (await methods.comments("issues", Number(event.entityId))).map(value => normalizeComment(value, event.entityId, normalizedRepository.id));
+        const comments = projectComments(`pull:${event.entityId}:comments`, allComments, event.revisionHints.commentId ? [event.revisionHints.commentId] : []);
+        put(`pull:${event.entityId}:comments`, "comments", comments, digestJson(allComments));
         const checks = (await methods.commitChecks(pullValue.headSha)).map(normalizeCheck);
         put(`pull:${event.entityId}:checks`, "checks", Object.freeze(checks), digestJson(checks));
         for (const field of ["pull", "diff", "files", "reviews", "security", "changed_paths", "findings", "docs", "dependency"]) if (fields.has(field)) satisfied.add(field);
@@ -920,7 +1012,61 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       }
       if (fields.has("runs") || fields.has("routes")) {
         rawRunValues = await methods.runs();
-        const runs = rawRunValues.map(normalizeRun);
+        const runs = rawRunValues.map(value => normalizeRun(value, normalizedRepository.id));
+        if (control && rolePolicy.name === "reconciler") {
+          const recoveryRuns = [];
+          const calledJob = (job, jobName) => job?.name === jobName || (typeof job?.name === "string" && job.name.endsWith(` / ${jobName}`));
+          for (const { workflow, value } of await methods.cancelledOperationalRuns()) {
+            contract(value?.path === workflow.path && workflow.events.includes(value?.event) && Number.isSafeInteger(value?.run_attempt) && value.run_attempt > 0, "operational run identity is malformed");
+            const run = normalizeRun(value, normalizedRepository.id);
+            contract(run.status === "completed" && run.conclusion === "cancelled", "cancelled operational run is malformed");
+            if (run.event === "repository_dispatch") continue;
+            contract(run.entityId !== null, "operational run entity is malformed");
+            if (workflow.file === "adw-pulls.yml") {
+              contract(Array.isArray(value.pull_requests) && value.pull_requests.length === 1 && String(value.pull_requests[0]?.number ?? "") === run.entityId, "operational pull run entity is malformed");
+            }
+            const jobs = await methods.runJobs(Number(run.id));
+            const applyJobs = jobs.filter(job => calledJob(job, "apply"));
+            const verifyJobs = jobs.filter(job => calledJob(job, "verify"));
+            const evidenceJobs = jobs.filter(job => calledJob(job, "evidence"));
+            if (applyJobs.length !== 1 || applyJobs[0]?.status !== "completed" || applyJobs[0]?.conclusion !== "cancelled" || verifyJobs.length !== 1 || verifyJobs[0]?.status !== "completed" || verifyJobs[0]?.conclusion !== "success" || evidenceJobs.some(job => job?.conclusion === "success")) continue;
+            recoveryRuns.push(run);
+            cancelledApplies.push(Object.freeze({ runId: run.id, workflowPath: run.workflowPath, event: run.event, entityId: run.entityId, headSha: run.headSha, attempt: run.attempt }));
+          }
+          const dispatchParents = [];
+          for (const { workflow, value } of await methods.repositoryDispatchRuns()) {
+            if (value?.path !== workflow.path || value?.event !== "repository_dispatch" || !/^[0-9a-f]{64}$/.test(value?.display_title ?? "")) continue;
+            contract(Number.isSafeInteger(value.run_attempt) && value.run_attempt > 0, "repository dispatch run attempt is malformed");
+            const run = normalizeRun(value, normalizedRepository.id);
+            const exactParent = run.actorId === appIdentity.botUserId && run.actorLogin === appIdentity.login && run.actorType === "Bot"
+              && run.headBranch === normalizedRepository.defaultBranch && run.headSha === controlSha;
+            if (!exactParent) continue;
+            const pending = new Set(["in_progress", "pending", "queued", "requested", "waiting"]).has(run.status) && run.conclusion === null;
+            const completed = run.status === "completed" && typeof run.conclusion === "string";
+            contract(pending || completed, "repository dispatch run state is malformed");
+            dispatchParents.push(run);
+            if (completed && RETRYABLE_RUN_CONCLUSIONS.has(run.conclusion)) recoveryRuns.push(run);
+          }
+          const dispatchParentIds = new Set();
+          for (const run of dispatchParents) {
+            if (dispatchParentIds.has(run.displayTitle)) throw new AdwError("stale", "conflicting repository dispatch runs");
+            dispatchParentIds.add(run.displayTitle);
+          }
+          const uniqueRecovery = new Map();
+          for (const run of recoveryRuns) {
+            const previous = uniqueRecovery.get(run.id);
+            if (previous && digestJson(previous) !== digestJson(run)) throw new AdwError("forge", "malformed");
+            uniqueRecovery.set(run.id, run);
+          }
+          if (uniqueRecovery.size > MAX_RECOVERABLE_RUNS || cancelledApplies.length > MAX_RECOVERABLE_RUNS) throw new AdwError("forge", "overflow");
+          const byId = new Map(runs.map(run => [run.id, run]));
+          for (const run of [...uniqueRecovery.values()].sort((left, right) => Number(left.id) - Number(right.id))) {
+            const previous = byId.get(run.id);
+            if (previous && digestJson(previous) !== digestJson(run)) throw new AdwError("forge", "malformed");
+            if (!previous) { runs.push(run); byId.set(run.id, run); }
+          }
+          cancelledApplies = Object.freeze([...cancelledApplies].sort((left, right) => Number(left.runId) - Number(right.runId)));
+        }
         put("runs", "workflow_runs", Object.freeze(runs), digestJson(runs));
         if (fields.has("runs")) satisfied.add("runs");
         if (fields.has("routes")) satisfied.add("routes");
@@ -990,8 +1136,9 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
           const values = (await methods.comments("issues", Number(pull.number))).map(value => normalizeComment(value, pull.number, normalizedRepository.id));
           markerComments.push(...values);
         }
-        if (markerComments.length > 1000) throw new AdwError("forge", "overflow");
+        if (markerComments.length > MAX_COMMENT_ITEMS) throw new AdwError("forge", "overflow");
         markerComments.sort((left, right) => left.createdAt.localeCompare(right.createdAt) || numericId(left.id, "comment id") - numericId(right.id, "comment id"));
+        const projectedMarkerComments = projectComments("reconciliation:comments", markerComments);
         const routes = [];
         for (const issue of resources.issues ?? []) {
           const byAuthorityOrder = (left, right) => left.comment.createdAt.localeCompare(right.comment.createdAt) || numericId(left.comment.id, "comment id") - numericId(right.comment.id, "comment id");
@@ -1057,18 +1204,6 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
           const reasons = holdReasons(pull.labels);
           if (reasons.length > 0) holds.push(Object.freeze({ entityId: `pr:${pull.number}`, reasons }));
         }
-        const cancelledApplies = [];
-        const calledJob = (job, name) => job?.name === name || (typeof job?.name === "string" && job.name.endsWith(` / ${name}`));
-        for (const run of rawRunValues) {
-          if (run?.status !== "completed" || run.conclusion !== "cancelled" || !ADW_OPERATIONAL_WORKFLOW_PATHS.has(run.path) || run.head_branch !== normalizedRepository.defaultBranch || run.head_sha !== controlSha || !Number.isSafeInteger(run.id) || run.id < 1 || !Number.isSafeInteger(run.run_attempt) || run.run_attempt < 1) continue;
-          const jobs = await methods.runJobs(run.id);
-          const applyJobs = jobs.filter(job => calledJob(job, "apply"));
-          const verifyJobs = jobs.filter(job => calledJob(job, "verify"));
-          const evidenceJobs = jobs.filter(job => calledJob(job, "evidence"));
-          if (applyJobs.length !== 1 || applyJobs[0]?.status !== "completed" || applyJobs[0]?.conclusion !== "cancelled" || verifyJobs.length !== 1 || verifyJobs[0]?.status !== "completed" || verifyJobs[0]?.conclusion !== "success" || evidenceJobs.some(job => job?.conclusion === "success")) continue;
-          cancelledApplies.push(Object.freeze({ runId: String(run.id), headSha: run.head_sha, attempt: run.run_attempt }));
-        }
-        cancelledApplies.sort((left, right) => Number(left.runId) - Number(right.runId));
         const definitionSource = resources["trusted:.github/labels.yml"]?.data;
         const definitions = parseLabelDefinitions(definitionSource);
         const liveByName = new Map((resources.labels ?? []).map(label => [label.name.data, { name: label.name.data, color: label.color.data.toLowerCase(), description: label.description.data }]));
@@ -1077,12 +1212,12 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
           routes: Object.freeze(routes), pulls: Object.freeze(trustedPulls),
           labelSync: Object.freeze({ wantedDigest: digestJson(definitions), liveDigest: digestJson(projectedLabels) }),
           cancelledApplies: Object.freeze(cancelledApplies),
-          comments: Object.freeze(markerComments), trust: Object.freeze({ ownerIds: [repositoryOwnerId], appId: appIdentity.botUserId }),
+          comments: projectedMarkerComments, trust: Object.freeze({ ownerIds: [repositoryOwnerId], appId: appIdentity.botUserId }),
           reviews: Object.freeze(reviews), pioneers: Object.freeze(pioneers), holds: Object.freeze(holds),
         });
       }
       const state = {
-        entityId: event.entityId, labels, input: Object.freeze(input), resources: Object.freeze(resources),
+        entityId: event.entityId, labels, input: Object.freeze(input), resources: Object.freeze(resources), truncations: Object.freeze(truncations),
         actionTargets: Object.freeze([...new Set([
           event.entityId,
           ...(resources.runs?.map(run => run.id) ?? []),
@@ -1334,13 +1469,18 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         contract(binding !== null, "action operation binding is missing");
         const run = await get(`/repos/${owner}/${name}/actions/runs/${numericId(value.runId, "run number")}`);
         const original = trustedSnapshot.state.resources?.runs?.find(item => item.id === value.runId);
-        contract(original && Number.isSafeInteger(original.attempt) && original.attempt > 0 && String(run?.id ?? "") === value.runId && original.headSha === run.head_sha && original.name === run.name && original.event === run.event, "rerun source does not match snapshot");
-        const actionReady = original.attempt === run.run_attempt;
-        const target = Object.freeze({ type: "rerun_check", runId: value.runId, name: original.name, event: original.event, headSha: original.headSha, attempt: original.attempt });
+        const sourceIdentity = original && original.attempt === value.attempt && original.status === "completed" && RETRYABLE_RUN_CONCLUSIONS.has(original.conclusion)
+          && String(run?.id ?? "") === value.runId && original.headSha === run.head_sha && original.name === run.name && original.event === run.event
+          && (original.workflowPath === null || original.workflowPath === run.path) && (original.displayTitle === null || original.displayTitle === run.display_title);
+        const actionReady = sourceIdentity && value.attempt === run.run_attempt && original.status === run.status && original.conclusion === run.conclusion;
+        const actionDelivered = sourceIdentity && run.run_attempt === value.attempt + 1;
+        contract(actionReady || actionDelivered, "rerun source does not match snapshot");
+        const target = Object.freeze({ type: "rerun_check", runId: value.runId, name: original.name, workflowPath: original.workflowPath ?? null, displayTitle: original.displayTitle ?? null, event: original.event, headSha: original.headSha, status: original.status, conclusion: original.conclusion, attempt: value.attempt });
         const action = { method: "POST", endpoint: `/repos/${owner}/${name}/actions/runs/${numericId(value.runId, "run number")}/rerun`, body: {} };
         const delivered = async markerTime => {
           const fresh = await page(`/repos/${owner}/${name}/actions/runs/${numericId(value.runId, "run number")}`);
           return String(fresh?.id ?? "") === target.runId && fresh?.name === target.name && fresh?.event === target.event && fresh?.head_sha === target.headSha && fresh?.run_attempt === target.attempt + 1
+            && (target.workflowPath === null || fresh?.path === target.workflowPath) && (target.displayTitle === null || fresh?.display_title === target.displayTitle)
             && String(fresh?.triggering_actor?.id ?? "") === appIdentity.botUserId && fresh?.triggering_actor?.login === appIdentity.login && fresh?.triggering_actor?.type === "Bot"
             && validTime(fresh?.updated_at) && Date.parse(fresh.updated_at) >= Date.parse(markerTime);
         };
@@ -1410,10 +1550,17 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
             if (values.length < RUN_PAGE_SIZE) break;
             if (runs.length === MAX_DISPATCH_RUN_ITEMS) throw new AdwError("forge", "overflow");
           }
-          const matches = runs.filter(candidate => candidate?.path === target.path && candidate?.head_branch === "main" && candidate?.head_sha === target.headSha
-            && candidate?.event === "repository_dispatch" && candidate?.display_title === binding.operationDigest && candidate?.run_attempt === 1
-            && String(candidate?.actor?.id ?? "") === appIdentity.botUserId && candidate?.actor?.login === appIdentity.login && candidate?.actor?.type === "Bot"
-            && validTime(candidate?.created_at) && (createdAfter === null || Date.parse(candidate.created_at) >= Date.parse(createdAfter)));
+          const matches = [];
+          for (const candidate of runs) {
+            const identity = candidate?.path === target.path && candidate?.head_branch === "main" && candidate?.head_sha === target.headSha
+              && candidate?.event === "repository_dispatch" && candidate?.display_title === binding.operationDigest
+              && String(candidate?.actor?.id ?? "") === appIdentity.botUserId && candidate?.actor?.login === appIdentity.login && candidate?.actor?.type === "Bot";
+            if (!identity) continue;
+            const pending = new Set(["in_progress", "pending", "queued", "requested", "waiting"]).has(candidate?.status) && candidate?.conclusion === null;
+            const completed = candidate?.status === "completed" && typeof candidate?.conclusion === "string" && candidate.conclusion.length > 0;
+            if ((!pending && !completed) || !Number.isSafeInteger(candidate?.run_attempt) || candidate.run_attempt < 1 || !validTime(candidate?.created_at)) throw new AdwError("forge", "malformed");
+            if (createdAfter === null || Date.parse(candidate.created_at) >= Date.parse(createdAfter)) matches.push(candidate);
+          }
           if (matches.length > 1) throw new AdwError("stale", "conflicting repository dispatch runs");
           return matches;
         };
@@ -1559,7 +1706,16 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
           const values = (await allMilestones()).map(item => Object.freeze({ id: restId(item.id, "milestone id"), number: restId(item.number, "milestone number"), state: text(item.state, "milestone state"), dueOn: item.due_on ?? null, title: normalizedContent(item.title, `milestone:${item.number}:title`), description: normalizedContent(item.description ?? "", `milestone:${item.number}:description`) }));
           return digestJson(values);
         }
-        if (resource === "runs") return digestJson((await allRuns()).map(normalizeRun));
+        if (resource === "runs") {
+          const values = (await allRuns()).map(item => normalizeRun(item, trustedSnapshot.repository.id));
+          const recoveryIds = new Set([
+            ...(trustedSnapshot.state?.reconciliation?.cancelledApplies ?? []).map(item => item.runId),
+            ...(trustedSnapshot.state?.resources?.runs ?? []).filter(run => run.event === "repository_dispatch" && run.status === "completed" && RETRYABLE_RUN_CONCLUSIONS.has(run.conclusion) && run.actorId === appIdentity.botUserId).map(run => run.id),
+          ]);
+          const seen = new Set(values.map(run => run.id));
+          for (const runId of [...recoveryIds].sort((left, right) => Number(left) - Number(right))) if (!seen.has(runId)) values.push(normalizeRun(await get(`/repos/${owner}/${name}/actions/runs/${numericId(runId, "run number")}`), trustedSnapshot.repository.id));
+          return digestJson(values);
+        }
         if (resource === "alerts") {
           const expected = trustedSnapshot.state.resources?.alerts;
           contract(Array.isArray(expected), "alert revision is malformed");
@@ -1589,7 +1745,6 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         throw new AdwError("stale", "named revision is unsupported for apply");
       };
       const observeRevisions = async () => {
-        if (value.type === "dispatch_repository") return Object.freeze({ revisions: trustedSnapshot.revisions, digest: binding?.expectedBefore ?? proof.preconditionDigest });
         cache.clear();
         const observed = [];
         for (const revision of trustedSnapshot.revisions) observed.push({ ...revision, token: await revisionToken(revision) });
@@ -1685,7 +1840,11 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       } else {
         contract(prepared !== null, "operation writer is unavailable");
         if (typeof prepared.execute === "function") {
-          await prepared.execute(async () => { preparedRevision = (await observeRevisions()).digest; });
+          await prepared.execute(async () => {
+            const latest = await observeRevisions();
+            if (latest.digest !== currentRevision) throw new AdwError("stale", "precondition changed");
+            preparedRevision = latest.digest;
+          });
         } else await mutate(prepared.method, prepared.endpoint, prepared.body);
         currentRevision = (await observeRevisions()).digest;
         if (preparedRevision === null) preparedRevision = currentRevision;

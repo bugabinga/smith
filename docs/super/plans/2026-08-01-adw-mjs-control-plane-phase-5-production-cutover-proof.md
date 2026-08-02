@@ -31,7 +31,7 @@ On 2026-08-01, the owner approved the first offered authorization route: current
 - Existing secrets `APP_ID`, `APP_PRIVATE_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, and `CODEX_AUTH_JSON` are presence-checked only. Their values are never read, printed, copied, replaced, or rotated.
 - `ADW_CUTOVER_HOLD=true` must be armed before the first branch push that exposes candidate operational workflow records. It remains armed through every corrective push and the cutover until the parent-correct signed rollback exists; only then may it be deleted before positive proof.
 - Seed exact non-secret variables `APP_BOT_USER_ID=306488075` and `APP_BOT_LOGIN=agent-smith-bugabinga-adc[bot]` before cutover.
-- Internal App intents use only `repository_dispatch` event types `retry_route`, `fallback_route`, `retry_pioneer`, `run_review`, and `run_obligation`; manual `workflow_dispatch` exposes only owner choices `audit` and `reconcile`. `dispatch_repository` mints only `contents:write` plus implicit `metadata:read`; it never requests Actions or Checks write.
+- Internal App intents use only `repository_dispatch` event types `retry_route`, `fallback_route`, `retry_pioneer`, `run_review`, and `run_obligation`; manual `workflow_dispatch` exposes only owner choices `audit` and `reconcile`. `dispatch_repository` retains `contents:write` plus exact snapshot read permissions so every named precondition can be re-read immediately before delivery. Actions write is present only when the same closed decision contains a separate `rerun_check`; dispatch itself exposes no Actions mutation.
 - Production proof is positive-only. Never inject malformed artifacts, stale revisions, cancelled jobs, partial writes, invalid credentials, changed permissions, malformed events, provider outages, ruleset damage, or secret rotation.
 - Existing organic `BLOCKED`/`BEHIND` state on PRs #150, #163, #165, and #166 is observed, never created or worsened for this proof. `BLOCKED` is not independently disqualifying because a missing required `merge-gate` can cause it; only explicit `BEHIND`/`DIRTY`, draft, ADW holds/evidence, or native protection may block merge.
 - Settings/rulesets remain read-only. Audit may report their existing drift but may not mutate it. Label sync may repair only checked-in label definitions through the closed `sync_labels` operation.
@@ -152,7 +152,7 @@ Every accepted production run records its run ID and URL, event, expected run he
 - Evidence job must succeed by downloading the same `adw-apply-result-1`.
 - Every JSON/patch sidecar digest must match exact bytes.
 - Every `result.json` must have `schemaVersion:1`, `status:"complete"`, `failure:null`, all operations `status:"complete"`, and only complete receipts.
-- Every `dispatch_repository` receipt must be backed by one exact first-attempt child run: `repository_dispatch` event, closed workflow path, operation digest as display title, exact App actor, trusted control head on `main`, and creation at or after the dispatch boundary. A duplicate is conflicting evidence, not success.
+- Every `dispatch_repository` receipt must be backed by one exact child run lineage: `repository_dispatch` event, closed workflow path, operation digest as display title, exact App actor, trusted control head on `main`, creation at or after the dispatch boundary, and a positive attempt number. A duplicate run identity is conflicting evidence, not success; a failed child proves delivery only and must be recovered by a separate attempt-bound rerun.
 - `snapshot.json.controlSha`, `decision.json.controlSha`, `verification.json.controlSha`, and `result.json.controlSha` must equal the run's trusted control SHA.
 - Decision/snapshot/verification/result digest links must match the corresponding canonical artifact bytes, as additionally enforced by the runtime and offline tests.
 
@@ -392,7 +392,7 @@ Expected: a stale `run_review.headSha`, stale `run_obligation.mergeSha`, mismatc
 
 - [x] **Step 4: Keep dispatch reads and writes bounded**
 
-Use only existing closed `github.mjs` methods. The only new writer permitted is fixed `POST /repos/bugabinga/smith/dispatches` with a closed event type and exact `client_payload`; it must add the operation digest, bind the App identity and current `main` head, validate entity/revision authority, and prove one matching workflow delivery before completing its receipt. `dispatch_repository` uses only Contents write plus implicit Metadata read, never Actions or Checks write. After the 204 response, bounded polling binds event, workflow path, operation digest/display title, exact App actor, control head on `main`, created-after boundary, and run attempt 1. Delivery timeout is retryable; duplicate exact runs fail closed. Add no generic URL/method/GraphQL escape and no wrapper-side `gh`, `jq`, policy shell, or inline prompt.
+Use only existing closed `github.mjs` methods. The only new writer permitted is fixed `POST /repos/bugabinga/smith/dispatches` with a closed event type and exact `client_payload`; it must add the operation digest, bind the App identity and current `main` head, validate entity/revision authority, and prove one matching workflow delivery before completing its receipt. `dispatch_repository` uses Contents write plus only the exact reads needed to reconstruct every named snapshot revision. Any Actions write belongs to a separate `rerun_check` in the same closed decision, not to a dispatch endpoint. Before the 204 request it re-reads and compares `expectedBefore`; afterward bounded polling binds event, workflow path, operation digest/display title, exact App actor, control head on `main`, created-after boundary, status/conclusion, and attempt lineage. Delivery timeout is retryable; duplicate exact runs fail closed. Add no generic URL/method/GraphQL escape and no wrapper-side `gh`, `jq`, policy shell, or inline prompt.
 
 - [x] **Step 5: Run focused tests**
 
@@ -813,7 +813,7 @@ The initial focused run recorded 97 passes and 11 expected failures across 108 t
 
 - [x] **Step 2: Implement the minimum closed correction**
 
-Give `dispatch_repository` only Contents write plus implicit Metadata read, keep rerun Actions/Checks write in a separate permission class, remove dispatch check markers, and poll twelve times at fixed five-second intervals. Match only one first-attempt run by event, closed workflow path, digest display title, App actor, `main` control head, and floored created-after boundary; make timeout retryable and duplicates stale. Keep only open issues, the newest 10 pulls, and newest 20 runs; use 10/20/20-item pull/run/comment pages, fail comments above 1000, and ignore irrelevant non-`unlabeled` timeline shapes. Raise only trusted UTF-8 text to the exact 262144-byte ceiling.
+Keep rerun Actions/Checks write separate from dispatch delivery, remove dispatch check markers, and poll twelve times at fixed five-second intervals. Match one run lineage by event, closed workflow path, digest display title, App actor, `main` control head, and floored created-after boundary; make timeout retryable and duplicates stale. Dispatch also receives the exact snapshot reads required by Task 7F's immediate `expectedBefore` reconstruction. Keep only open issues, the newest 10 pulls, and newest 20 general runs; supplement recovery through exact bounded workflow queries, use 10/20/20-item pull/run/comment pages, fail comments at the defined total ceiling, and ignore irrelevant non-`unlabeled` timeline shapes. Raise only trusted UTF-8 text to the exact 262144-byte ceiling.
 
 - [x] **Step 3: Verify offline and read-only live behavior**
 
@@ -837,7 +837,7 @@ Natural completion now follows expected-before/current authority; only an exact 
 
 - [x] **Step 3: Preserve the lock without claiming queue order**
 
-`adw-write` remains the repository-wide lock with `cancel-in-progress:false`. GitHub permits one running and at most one pending job; a newer pending job can cancel the older pending job, so there is no FIFO guarantee. Exact current-control ADW runs with successful verify, cancelled apply, and no successful evidence are snapshot-bound as recoverable reconciliation work and retried idempotently. Revision-observing state repairs run before action reruns, and repository dispatches run last under their chained receipt authority. A cancelled apply result is never positive proof of success.
+`adw-write` remains the repository-wide lock with `cancel-in-progress:false`. GitHub permits one running and at most one pending job; a newer pending job can cancel the older pending job, so there is no FIFO guarantee. Exact operational-workflow runs with bound entity/run identity, successful verify, cancelled apply, and no successful evidence are snapshot-bound as recoverable reconciliation work and retried by attempt. Pull-event run heads and branches remain entity authority rather than being forced to control/`main`. Revision-observing state repairs run before action reruns, and repository dispatches run last under their chained receipt authority. A cancelled apply result is never positive proof of success.
 
 - [x] **Step 4: Re-run complete offline, read-only live, diff, and signature verification**
 
@@ -868,6 +868,32 @@ Merge holds remain unchanged. Execution filtering ignores only `needs:breakdown`
 - [x] **Step 3: Promote exact bytes and verify offline**
 
 Focused Node passed 71/71; full Node passed 253/253. Exact actionlint v1.7.7 passed all four production ADW workflows; `yq` v4.53.3 parsed the three canonical and four production workflows. All three canonical/production wrapper pairs are byte-equal, canonical operational YAML remains 383 physical lines, and `git diff --check` passes.
+
+### Task 7F: Close live pagination, recovery, dispatch, and snapshot ceilings
+
+**Files:**
+
+- Modify: `adw/{core,github,roles}.mjs`
+- Modify: `adw/schemas/decision.schema.json`
+- Modify: `adw/test/{apply,core,github,roles,scenarios,wrappers}.test.mjs`
+- Add: `adw/test/fixtures/github/blockers.json`
+- Modify: `docs/super/plans/2026-08-01-adw-mjs-control-plane-phase-5-production-cutover-proof.md`
+
+- [x] **Step 1: Record adversarial RED and read-only API evidence**
+
+The focused four-file RED run recorded 140 tests with 130 passes and 10 expected failures. Live-shaped fixtures exposed unsupported Dependabot `page`, global newest-20 cancellation discovery, pull-run control-head assumptions, fabricated dispatch revision digests, failed-child redispatch, and aggregate comment overflow. A read-only production probe confirmed `dependabot/alerts?...&page=1` returns HTTP 400 (`Pagination using the page parameter is not supported`), while one `per_page=100` request returned three current open alerts. No GitHub object was mutated.
+
+- [x] **Step 2: Implement bounded current-state and recovery authority**
+
+Dependabot uses one supported `per_page=100` request and treats a full page as explicitly incomplete. Cancelled apply discovery uses bounded exact operational workflow queries, then binds entity and run identity plus successful verify, cancelled apply, and absent successful evidence. Pull events do not require their run head to equal control or their branch to equal `main`; their exact workflow, event, display title, pull number, run ID, and attempt remain bound. Reconciliation emits an attempt-bound retry for each cancelled apply and never counts cancellation as success. GitHub's repository-wide concurrency lock is still not FIFO.
+
+`dispatch_repository` retains `contents:write` plus exact snapshot read permissions. Every dispatch apply must reread its exact source entity and all named revisions, compare the observed digest with `expectedBefore` before the POST, and never synthesize that digest. Bounded polling binds event, workflow path, operation digest, App actor, control head, created-after boundary, child status/conclusion, and attempt lineage. An existing child proves delivery only; a failed child produces a separate deterministic attempt-bound rerun and never a duplicate dispatch.
+
+Untrusted text retains full byte count and digest while exposing an explicit bounded preview. Comment collections retain the triggering comment and newest context under a fixed snapshot budget, record omitted-item/body truncation, and fail closed only when the defined 1000-comment or 8 MiB total-entity ceiling is incomplete. Final snapshots remain under 256 KiB before provider canonicalization.
+
+- [ ] **Step 3: Verify focused/full Node, read-only live snapshots, diff, and signatures**
+
+Record exact totals, live alert/reconciler bytes and digests, changed-file diff checks, and signed commit verification here. No GitHub mutation or push is permitted.
 
 ### Task 8: Push the owner-authored protected PR and record owner approval on its exact head
 
@@ -1390,9 +1416,9 @@ Expected: success; no provider job runs unless reconciliation positively dispatc
 
 - [ ] **Step 6: Capture reconciliation and any child runs**
 
-Run `capture_run "$RECONCILE_RUN" provider-free "$MERGE_SHA" "$MERGE_SHA"`. For each `dispatch_repository` receipt, require exactly one child run with event `repository_dispatch`, the closed workflow path for its event type, operation digest as display title, actor ID/login `306488075`/`agent-smith-bugabinga-adc[bot]`, `main` at the trusted control head, creation at or after the parent receipt's created-after boundary, and run attempt 1. Call `capture_run` with the intent's canonical provider lane, `"$MERGE_SHA"` as expected run head, and `"$MERGE_SHA"` as trusted control SHA.
+Run `capture_run "$RECONCILE_RUN" provider-free "$MERGE_SHA" "$MERGE_SHA"`. For each `dispatch_repository` receipt, require exactly one child run identity with event `repository_dispatch`, the closed workflow path for its event type, operation digest as display title, actor ID/login `306488075`/`agent-smith-bugabinga-adc[bot]`, `main` at the trusted control head, creation at or after the parent receipt's created-after boundary, and its complete attempt lineage. Call `capture_run` with the intent's canonical provider lane, `"$MERGE_SHA"` as expected run head, and `"$MERGE_SHA"` as trusted control SHA. A failed child proves delivery only and must have one separate attempt-bound rerun receipt.
 
-Expected: parent receipt and every natural child receipt complete; duplicate exact runs fail closed and no duplicate operation digest is accepted.
+Expected: parent receipt and every natural child receipt complete; duplicate exact runs fail closed, failed children never cause duplicate dispatch, and no duplicate operation digest is accepted.
 
 ### Task 13: Prove Codex triager and Claude owner steerer
 

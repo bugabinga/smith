@@ -537,7 +537,8 @@
           "additionalProperties": false,
           "required": [
             "type",
-            "runId"
+            "runId",
+            "attempt"
           ],
           "properties": {
             "type": {
@@ -545,6 +546,10 @@
             },
             "runId": {
               "$ref": "#/$defs/text"
+            },
+            "attempt": {
+              "type": "integer",
+              "minimum": 1
             }
           }
         },
