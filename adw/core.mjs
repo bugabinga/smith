@@ -47,6 +47,7 @@ export const REPOSITORY_DISPATCH_WORKFLOWS = Object.freeze({
 });
 const REPOSITORY_DISPATCH_TYPES = new Set(Object.keys(REPOSITORY_DISPATCH_WORKFLOWS));
 const ROUTE_PROVIDER_ROLES = Object.freeze({ claude: "builder", codex: "codex-builder" });
+export const MERGE_OBLIGATION_PROVIDERS = Object.freeze({ "docs-writer": "codex" });
 const OPERATIONAL_WORKFLOW_EVENTS = Object.freeze({
   ".github/workflows/adw-issues.yml": Object.freeze(["issue_comment", "issues"]),
   ".github/workflows/adw-maintenance.yml": Object.freeze(["push", "schedule", "workflow_dispatch"]),
@@ -150,7 +151,7 @@ export function validateRepositoryDispatchPayload(eventType, value, includeOpera
     string(value.repositoryId, "repository dispatch repository");
     restId(value.prId, "repository dispatch pull");
     sha(value.mergeSha, "repository dispatch merge SHA");
-    if (value.role !== "docs-writer" || value.provider !== "codex") fail("repository dispatch role/provider authority is invalid");
+    if (MERGE_OBLIGATION_PROVIDERS[value.role] !== value.provider) fail("repository dispatch role/provider authority is invalid");
   }
   if (includeOperationDigest) digest(value.smith_operation_digest, "repository dispatch operation digest");
   return copy(value);
@@ -674,6 +675,18 @@ function markerRecord(comment, kind, key, value) {
   return { kind, key, commentId: comment.id, createdAt: comment.createdAt, value };
 }
 
+const APPLY_MARKER = /^<!-- smith:apply\/v1 role=([a-z][a-z0-9-]*) decision=([0-9a-f]{64}) operation=(0|[1-9][0-9]*) digest=([0-9a-f]{64}) phase=complete -->$/;
+
+function semanticMarkerBody(comment) {
+  const lines = comment.body.split("\n");
+  if (lines.length !== 2 || !lines[0].startsWith("<!-- smith:")) return { body: comment.body, pairedRole: null };
+  const apply = APPLY_MARKER.exec(lines[1]);
+  if (apply === null) return null;
+  const operationDigest = digestJson({ type: "comment", entityId: comment.entityId, body: lines[0], marker: lines[0] });
+  if (apply[4] !== operationDigest || !Number.isSafeInteger(Number(apply[3]))) return null;
+  return { body: lines[0], pairedRole: apply[1] };
+}
+
 function latestMarkers(records) {
   const groups = new Map();
   for (const record of records) {
@@ -713,25 +726,27 @@ export function parseLegacyMarkers({ comments, trust }) {
     for (const key of ["id", "actorId", "body", "repositoryId", "entityId"]) string(comment[key], `marker comment.${key}`, key === "body" ? 65_536 : 4096);
     canonicalInstant(comment.createdAt, "marker comment.createdAt");
     if (comment.actorId !== trust.appId) continue;
+    const semantic = semanticMarkerBody(comment);
+    if (semantic === null) continue;
     let match;
-    if ((match = /^<!-- smith:claude-attempt\/v1 issue=([1-9][0-9]*) branch=claude\/issue-\1 head=([0-9a-f]{40}) outcome=(success|failure|cancelled|skipped) -->$/.exec(comment.body))) {
+    if ((match = /^<!-- smith:claude-attempt\/v1 issue=([1-9][0-9]*) branch=claude\/issue-\1 head=([0-9a-f]{40}) outcome=(success|failure|cancelled|skipped) -->$/.exec(semantic.body))) {
       records.push(markerRecord(comment, "attempt", match[1], { issueId: match[1], branch: `claude/issue-${match[1]}`, headSha: match[2], outcome: match[3] }));
-    } else if ((match = /^<!-- smith:builder-route\/v1 issue=([1-9][0-9]*) id=([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}) source=claude\/issue-\1 target=codex\/issue-\1 phase=(prepared|armed|completed|cancelled) -->$/.exec(comment.body))) {
+    } else if ((match = /^<!-- smith:builder-route\/v1 issue=([1-9][0-9]*) id=([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}) source=claude\/issue-\1 target=codex\/issue-\1 phase=(prepared|armed|completed|cancelled) -->$/.exec(semantic.body))) {
       records.push(markerRecord(comment, "route", match[1], { issueId: match[1], routeId: match[2], source: `claude/issue-${match[1]}`, target: `codex/issue-${match[1]}`, phase: match[3] }));
-    } else if ((match = /^(Review|Security review): ([0-9a-f]{40})\nVERDICT: (reviewed|changes-requested|security-cleared|risk-high)(?:\n|$)/.exec(comment.body))) {
+    } else if ((match = /^(Review|Security review): ([0-9a-f]{40})\nVERDICT: (reviewed|changes-requested|security-cleared|risk-high)(?:\n|$)/.exec(semantic.body))) {
       const kind = match[1] === "Review" ? "correctness" : "security";
       const allowed = kind === "correctness" ? new Set(["reviewed", "changes-requested"]) : new Set(["security-cleared", "risk-high"]);
       if (allowed.has(match[3])) records.push(markerRecord(comment, "review", `${comment.repositoryId}:${comment.entityId}:${kind}:${match[2]}`, { repositoryId: comment.repositoryId, prId: comment.entityId, kind, headSha: match[2], conclusion: new Set(["reviewed", "security-cleared"]).has(match[3]) ? "approve" : "reject", actorId: trust.appId, provider: "claude", authoritative: true, artifactDigest: digestJson({ commentId: comment.id, body: comment.body }) }));
-    } else if ((match = /^<!-- smith:review-evidence\/v1 kind=(correctness|security) head=([0-9a-f]{40}) conclusion=(approve|reject) provider=(claude|codex) authoritative=(true|false) artifact=([0-9a-f]{64}) -->$/.exec(comment.body))) {
+    } else if ((match = /^<!-- smith:review-evidence\/v1 kind=(correctness|security) head=([0-9a-f]{40}) conclusion=(approve|reject) provider=(claude|codex) authoritative=(true|false) artifact=([0-9a-f]{64}) -->$/.exec(semantic.body))) {
       records.push(markerRecord(comment, "review", `${comment.repositoryId}:${comment.entityId}:${match[1]}:${match[2]}`, { repositoryId: comment.repositoryId, prId: comment.entityId, kind: match[1], headSha: match[2], conclusion: match[3], actorId: trust.appId, provider: match[4], authoritative: match[5] === "true", artifactDigest: match[6] }));
-    } else if ((match = /^<!-- smith:risk\/v1 head=([0-9a-f]{40}) finding=([0-9a-f]{64}) status=(open|cleared) created=([^ ]+) cleared=([^ ]+) -->$/.exec(comment.body))) {
+    } else if ((match = /^<!-- smith:risk\/v1 head=([0-9a-f]{40}) finding=([0-9a-f]{64}) status=(open|cleared) created=([^ ]+) cleared=([^ ]+) -->$/.exec(semantic.body))) {
       if ((match[3] === "open" && match[5] !== "-") || (match[3] === "cleared" && match[5] === "-")) continue;
       try { canonicalInstant(match[4], "risk createdAt"); if (match[5] !== "-") canonicalInstant(match[5], "risk clearedAt"); } catch { continue; }
       records.push(markerRecord(comment, "risk", match[1], { headSha: match[1], findingDigest: match[2], status: match[3], createdAt: match[4], clearedAt: match[5] === "-" ? null : match[5] }));
-    } else if ((match = /^<!-- smith:jam\/v1 entity=([^ ]+) head=([0-9a-f]{40}) status=(open|cleared) artifact=([0-9a-f]{64}) -->$/.exec(comment.body))) {
+    } else if ((match = /^<!-- smith:jam\/v1 entity=([^ ]+) head=([0-9a-f]{40}) status=(open|cleared) artifact=([0-9a-f]{64}) -->$/.exec(semantic.body))) {
       records.push(markerRecord(comment, "jam", `${match[1]}:${match[2]}`, { entityId: match[1], headSha: match[2], status: match[3], artifactDigest: match[4] }));
-    } else if ((match = /^<!-- smith:merge-finalized\/v1 pr=([1-9][0-9]*) merge=([0-9a-f]{40}) role=([a-z][a-z0-9-]*) status=(complete|failed) artifact=([0-9a-f]{64}|-) -->$/.exec(comment.body))) {
-      if ((match[4] === "complete") !== (match[5] !== "-")) continue;
+    } else if ((match = /^<!-- smith:merge-finalized\/v1 pr=([1-9][0-9]*) merge=([0-9a-f]{40}) role=([a-z][a-z0-9-]*) status=(complete|failed) artifact=([0-9a-f]{64}|-) -->$/.exec(semantic.body))) {
+      if ((match[4] === "complete") !== (match[5] !== "-") || (semantic.pairedRole !== null && semantic.pairedRole !== match[3])) continue;
       records.push(markerRecord(comment, "finalization", `${comment.repositoryId}:${match[1]}:${match[3]}`, { repositoryId: comment.repositoryId, prId: match[1], mergeSha: match[2], role: match[3], status: match[4], artifactDigest: match[5] === "-" ? null : match[5] }));
     }
   }
@@ -751,19 +766,20 @@ export function planReconciliation(request) {
   array(cancelledApplies, "cancelled applies", 20);
   const cancelledRunIds = new Set();
   for (const cancelled of cancelledApplies) {
-    exact(cancelled, ["runId", "workflowPath", "event", "entityId", "headSha", "attempt"], "cancelled apply");
-    restId(cancelled.runId, "cancelled apply run");
+    exact(cancelled, ["runId", "workflowPath", "event", "entityId", "headSha", "controlSha", "attempt", "runConclusion", "applyJobId"], "cancelled apply");
+    restId(cancelled.runId, "cancelled apply run"); restId(cancelled.applyJobId, "cancelled apply job");
     string(cancelled.workflowPath, "cancelled apply workflow");
     if (!OPERATIONAL_WORKFLOW_PATHS.has(cancelled.workflowPath)) fail("cancelled apply workflow is invalid");
     string(cancelled.event, "cancelled apply event"); string(cancelled.entityId, "cancelled apply entity");
     if (!OPERATIONAL_WORKFLOW_EVENTS[cancelled.workflowPath].includes(cancelled.event)) fail("cancelled apply event is invalid");
-    sha(cancelled.headSha, "cancelled apply head");
+    sha(cancelled.headSha, "cancelled apply head"); sha(cancelled.controlSha, "cancelled apply control");
+    if (cancelled.controlSha !== snapshot.controlSha || !RETRYABLE_RUN_CONCLUSIONS.has(cancelled.runConclusion)) fail("cancelled apply control or conclusion is invalid");
     if (!Number.isSafeInteger(cancelled.attempt) || cancelled.attempt < 1) fail("cancelled apply attempt is invalid");
     if (cancelledRunIds.has(cancelled.runId)) fail("duplicate cancelled apply");
     cancelledRunIds.add(cancelled.runId);
     const run = snapshot.state?.resources?.runs?.find(candidate => candidate?.id === cancelled.runId);
     const expectedTitle = cancelled.workflowPath.endsWith("adw-issues.yml") ? `ADW issue #${cancelled.entityId}` : cancelled.workflowPath.endsWith("adw-pulls.yml") ? `ADW pull #${cancelled.entityId}` : null;
-    if (!run || run.workflowPath !== cancelled.workflowPath || run.event !== cancelled.event || run.entityId !== cancelled.entityId || (expectedTitle !== null && run.displayTitle !== expectedTitle) || (cancelled.workflowPath.endsWith("adw-maintenance.yml") && cancelled.entityId !== snapshot.repository.id) || run.headSha !== cancelled.headSha || run.attempt !== cancelled.attempt || run.status !== "completed" || run.conclusion !== "cancelled") fail("cancelled apply is not snapshot-bound");
+    if (!run || run.workflowPath !== cancelled.workflowPath || run.event !== cancelled.event || run.entityId !== cancelled.entityId || (expectedTitle !== null && run.displayTitle !== expectedTitle) || (cancelled.workflowPath.endsWith("adw-maintenance.yml") && cancelled.entityId !== snapshot.repository.id) || run.headSha !== cancelled.headSha || run.controlSha !== cancelled.controlSha || run.applyJobId !== cancelled.applyJobId || run.attempt !== cancelled.attempt || run.status !== "completed" || run.conclusion !== cancelled.runConclusion) fail("cancelled apply is not snapshot-bound");
   }
   const currentRevisions = snapshot.state.currentRevisions;
   if (!currentRevisions || Array.isArray(currentRevisions) || Object.getPrototypeOf(currentRevisions) !== Object.prototype) fail("snapshot current revisions are required");
@@ -831,7 +847,8 @@ export function planReconciliation(request) {
     for (const obligation of pull.obligations) {
       exact(obligation, ["role", "status", "artifactDigest", "expectedArtifactDigest"], "obligation");
       string(obligation.role, "obligation.role");
-      if (obligation.role !== "docs-writer") fail("pull obligation role is unsupported");
+      const obligationProvider = MERGE_OBLIGATION_PROVIDERS[obligation.role];
+      if (obligationProvider === undefined) fail("pull obligation role is unsupported");
       if (obligationRoles.has(obligation.role)) fail("duplicate pull obligation");
       obligationRoles.add(obligation.role);
       oneOf(obligation.status, new Set(["missing", "complete", "failed"]), "obligation.status");
@@ -840,7 +857,7 @@ export function planReconciliation(request) {
       if (obligation.status === "complete" && (obligation.artifactDigest === null || (obligation.expectedArtifactDigest !== null && obligation.artifactDigest !== obligation.expectedArtifactDigest))) fail("completed obligation lacks expected artifact");
       if (obligation.status !== "complete" && obligation.artifactDigest !== null) fail("incomplete obligation has artifact");
       const imported = markers.some(marker => marker.kind === "finalization" && marker.value.repositoryId === snapshot.repository.id && marker.value.prId === pull.prId && marker.value.mergeSha === pull.mergeSha && marker.value.role === obligation.role && marker.value.status === "complete" && marker.value.artifactDigest !== null && (obligation.expectedArtifactDigest === null || marker.value.artifactDigest === obligation.expectedArtifactDigest));
-      if ((obligation.status === "missing" || obligation.status === "failed") && !imported && !held.has(`pr:${pull.prId}`) && !held.has("repository")) intents.push({ kind: "run_obligation", repositoryId: snapshot.repository.id, prId: pull.prId, mergeSha: pull.mergeSha, role: obligation.role, provider: "codex" });
+      if ((obligation.status === "missing" || obligation.status === "failed") && !imported && !held.has(`pr:${pull.prId}`) && !held.has("repository")) intents.push({ kind: "run_obligation", repositoryId: snapshot.repository.id, prId: pull.prId, mergeSha: pull.mergeSha, role: obligation.role, provider: obligationProvider });
     }
   }
   for (const review of reviews) {
@@ -905,10 +922,11 @@ function validateReconciliationIntent(intent) {
     const { kind, ...clientPayload } = intent;
     validateRepositoryDispatchPayload(kind, clientPayload);
   } else if (intent.kind === "retry_cancelled_apply") {
-    exact(intent, ["kind", "runId", "workflowPath", "event", "entityId", "headSha", "attempt"], "reconciliation intent");
-    restId(intent.runId, "reconciliation run"); sha(intent.headSha, "reconciliation run head");
+    exact(intent, ["kind", "runId", "workflowPath", "event", "entityId", "headSha", "controlSha", "attempt", "runConclusion", "applyJobId"], "reconciliation intent");
+    restId(intent.runId, "reconciliation run"); restId(intent.applyJobId, "reconciliation apply job");
+    sha(intent.headSha, "reconciliation run head"); sha(intent.controlSha, "reconciliation control");
     string(intent.workflowPath, "reconciliation run workflow"); string(intent.event, "reconciliation run event"); string(intent.entityId, "reconciliation run entity");
-    if (!OPERATIONAL_WORKFLOW_PATHS.has(intent.workflowPath) || !OPERATIONAL_WORKFLOW_EVENTS[intent.workflowPath].includes(intent.event) || !Number.isSafeInteger(intent.attempt) || intent.attempt < 1) fail("reconciliation run attempt is invalid");
+    if (!OPERATIONAL_WORKFLOW_PATHS.has(intent.workflowPath) || !OPERATIONAL_WORKFLOW_EVENTS[intent.workflowPath].includes(intent.event) || !RETRYABLE_RUN_CONCLUSIONS.has(intent.runConclusion) || !Number.isSafeInteger(intent.attempt) || intent.attempt < 1) fail("reconciliation run attempt is invalid");
   } else if (intent.kind === "retry_failed_dispatch") {
     exact(intent, ["kind", "runId", "workflowPath", "headSha", "attempt", "operationDigest", "eventType", "clientPayload"], "reconciliation intent");
     restId(intent.runId, "reconciliation run"); sha(intent.headSha, "reconciliation run head"); digest(intent.operationDigest, "reconciliation parent operation");
@@ -956,7 +974,7 @@ export function mapReconciliationIntents({ snapshot, intents }) {
     if (intent.kind === "retry_cancelled_apply") {
       const run = trustedSnapshot.state?.resources?.runs?.find(candidate => candidate?.id === intent.runId);
       const expectedTitle = intent.workflowPath.endsWith("adw-issues.yml") ? `ADW issue #${intent.entityId}` : intent.workflowPath.endsWith("adw-pulls.yml") ? `ADW pull #${intent.entityId}` : null;
-      if (!run || run.workflowPath !== intent.workflowPath || run.event !== intent.event || run.entityId !== intent.entityId || (expectedTitle !== null && run.displayTitle !== expectedTitle) || (intent.workflowPath.endsWith("adw-maintenance.yml") && intent.entityId !== trustedSnapshot.repository.id) || run.headSha !== intent.headSha || run.attempt !== intent.attempt || run.status !== "completed" || run.conclusion !== "cancelled") fail("cancelled apply retry is not current");
+      if (!run || run.workflowPath !== intent.workflowPath || run.event !== intent.event || run.entityId !== intent.entityId || (expectedTitle !== null && run.displayTitle !== expectedTitle) || (intent.workflowPath.endsWith("adw-maintenance.yml") && intent.entityId !== trustedSnapshot.repository.id) || run.headSha !== intent.headSha || run.controlSha !== intent.controlSha || intent.controlSha !== trustedSnapshot.controlSha || run.applyJobId !== intent.applyJobId || run.attempt !== intent.attempt || run.status !== "completed" || run.conclusion !== intent.runConclusion || !RETRYABLE_RUN_CONCLUSIONS.has(intent.runConclusion)) fail("cancelled apply retry is not current");
       operations.push({ type: "rerun_check", runId: intent.runId, attempt: intent.attempt });
     } else if (intent.kind === "retry_failed_dispatch") {
       const run = trustedSnapshot.state?.resources?.runs?.find(candidate => candidate?.id === intent.runId);

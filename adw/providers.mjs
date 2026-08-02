@@ -258,6 +258,13 @@ function parsePayload(text) {
   return value;
 }
 
+function containsCredential(value, credential) {
+  if (typeof value === "string") return value.includes(credential);
+  if (Array.isArray(value)) return value.some(item => containsCredential(item, credential));
+  if (value && Object.getPrototypeOf(value) === Object.prototype) return Object.entries(value).some(([key, item]) => key.includes(credential) || containsCredential(item, credential));
+  return false;
+}
+
 export async function invokeProvider({
   provider, executable, cliVersion, rolePolicy, snapshot, idempotencyKey,
   home, repository, credential, runIdentity, baseEnv, now,
@@ -356,6 +363,7 @@ export async function invokeProvider({
       await assertClaim(codexClaim);
     }
     await assertClaim(homeClaim);
+    if (containsCredential(raw, auth.value)) rejectRequest("credential");
     if (!raw || Array.isArray(raw) || Object.keys(raw).sort().join(",") !== "outcome,patch,payload" || !rolePolicy.payload.outcomes.includes(raw.outcome) || typeof raw.payload !== "object" || raw.payload === null) rejectRequest("malformed");
     try { validateRolePayload(rolePolicy.name, raw.payload); } catch { rejectRequest("malformed"); }
     if (rolePolicy.payload.requiredKeys.some(key => !Object.hasOwn(raw.payload, key))) rejectRequest("malformed");
@@ -370,6 +378,7 @@ export async function invokeProvider({
       if (typeof capturePatch !== "function") rejectRequest("patch");
       const captured = await capturePatch(raw.patch);
       if (!captured || Object.keys(captured).sort().join(",") !== "manifest,patchBytes" || !Buffer.isBuffer(captured.patchBytes) || !canonicalBytes(captured.manifest).equals(canonicalBytes(raw.patch))) rejectRequest("patch");
+      if (captured.patchBytes.includes(Buffer.from(auth.value))) rejectRequest("credential");
       capturedPatchBytes = captured.patchBytes;
     }
     await assertClaim(homeClaim);

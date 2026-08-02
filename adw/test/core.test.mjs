@@ -607,11 +607,15 @@ test("reconciliation emits only missing normalized obligations", () => {
   ].sort((a, b) => canonicalBytes(a).compare(canonicalBytes(b))));
 });
 
-test("cancelled pending apply is recoverable work, never successful reconciliation evidence", () => {
-  const cancelled = { runId: "99", workflowPath: ".github/workflows/adw-pulls.yml", event: "pull_request_review", entityId: "167", headSha, attempt: 1 };
+test("cancelled apply recovery binds failed run, control, entity, attempt, and exact apply job", () => {
+  const cancelled = {
+    runId: "30713540804", workflowPath: ".github/workflows/adw-pulls.yml", event: "pull_request_review",
+    entityId: "167", headSha, controlSha, attempt: 1, runConclusion: "failure", applyJobId: "91405160611",
+  };
   const run = {
     id: cancelled.runId, name: "ADW pull and reconcile triggers", workflowPath: cancelled.workflowPath, displayTitle: "ADW pull #167",
-    event: cancelled.event, entityId: cancelled.entityId, status: "completed", conclusion: "cancelled", headSha: cancelled.headSha, headBranch: "feature/167",
+    event: cancelled.event, entityId: cancelled.entityId, status: "completed", conclusion: cancelled.runConclusion,
+    headSha: cancelled.headSha, headBranch: "feature/167", controlSha: cancelled.controlSha, applyJobId: cancelled.applyJobId,
     attempt: cancelled.attempt, actorId: "7", actorLogin: "bugabinga", actorType: "User",
   };
   const request = {
@@ -620,6 +624,12 @@ test("cancelled pending apply is recoverable work, never successful reconciliati
     comments: [], trust, reviews: [], pioneers: [], holds: [], cancelledApplies: [cancelled],
   };
   assert.deepEqual(planReconciliation(request), [{ kind: "retry_cancelled_apply", ...cancelled }]);
+  for (const drift of [
+    { controlSha: "e".repeat(40) }, { entityId: "168" }, { applyJobId: "91405160612" }, { runConclusion: "cancelled" },
+  ]) assert.throws(
+    () => planReconciliation({ ...request, cancelledApplies: [{ ...cancelled, ...drift }] }),
+    error => error?.code === "contract",
+  );
 });
 
 test("a failed dispatch child maps the missing parent intent to an attempt-bound rerun", () => {
@@ -648,6 +658,33 @@ test("a failed dispatch child maps the missing parent intent to an attempt-bound
   const intents = planReconciliation(request);
   assert.deepEqual(intents, [expected]);
   assert.deepEqual(mapReconciliationIntents({ snapshot: authoritySnapshot, intents }), [{ type: "rerun_check", runId: failed.id, attempt: failed.attempt }]);
+});
+
+test("paired merge finalizations persist #146/#147/#148 obligations across later control SHAs", () => {
+  const merges = new Map([
+    ["146", "0425d4ed2e001933c65ac8745ec44137f79acda1"],
+    ["147", "5b5eefbd333c7380a88a82170304fa5c8d8d9fa6"],
+    ["148", "491a42a3cc8848853e4ccd6cedc5695d9bd06e8c"],
+  ]);
+  const artifact = "d".repeat(64);
+  const pulls = [...merges].map(([prId, mergeSha]) => reconcilePull({
+    prId, mergeSha, obligations: [{ role: "docs-writer", status: "missing", artifactDigest: null, expectedArtifactDigest: null }],
+  }));
+  const comments = [...merges].map(([prId, mergeSha], index) => {
+    const semantic = `<!-- smith:merge-finalized/v1 pr=${prId} merge=${mergeSha} role=docs-writer status=complete artifact=${artifact} -->`;
+    const operationDigest = digestJson({ type: "comment", entityId: prId, body: semantic, marker: semantic });
+    return markerComment({
+      id: String(index + 20), entityId: prId,
+      body: `${semantic}\n<!-- smith:apply/v1 role=docs-writer decision=${"e".repeat(64)} operation=1 digest=${operationDigest} phase=complete -->`,
+    });
+  });
+  const request = {
+    snapshot: { ...snapshot, controlSha: "f".repeat(40), state: { currentRevisions: {} } },
+    routes: [], pulls, labelSync: { wantedDigest: artifact, liveDigest: artifact }, comments, trust,
+    reviews: [], pioneers: [], holds: [],
+  };
+  assert.deepEqual(parseLegacyMarkers({ comments, trust }).map(marker => marker.value.prId), ["146", "147", "148"]);
+  assert.equal(planReconciliation(request).some(intent => intent.kind === "run_obligation"), false);
 });
 
 test("reconciliation derives reviews, holds, pioneer retries, and imported finalization", () => {

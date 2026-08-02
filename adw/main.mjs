@@ -1281,6 +1281,15 @@ async function applyCommand(env, adapters, executablePath) {
 
 const REDUCE_ENV = new Set(["ADW_SOURCE_ARTIFACT", "ADW_SNAPSHOT_ARTIFACT", "ADW_PRIMARY_ASSESSMENT_ARTIFACT", "ADW_FALLBACK_ASSESSMENT_ARTIFACT", "ADW_DECISION_ARTIFACT", "ADW_CONTROL_SHA"]);
 
+function operationalStatus(command, result) {
+  const status = command === "assess" && result?.outcome === "unable"
+    ? "unable"
+    : result?.status === "fallback" || result?.status === "terminal"
+      ? result.status
+      : "complete";
+  return Object.freeze({ command, status });
+}
+
 function operationalCommand(argv, env) {
   if (argv[0] === "prepare") return argv.length === 1 ? "prepare" : "invalid";
   if (argv[0] === "assess") return argv.length === 3 && argv[1] === "--provider" ? "assess" : "invalid";
@@ -1309,7 +1318,7 @@ export async function run({ argv, env = {}, stdin, stdout, stderr, readFixture, 
       else if (operation === "apply") operationalResult = await applyCommand(env, adapters, executablePath);
       else if (operation === "dry-run") operationalResult = await dryRunCommand(env, adapters, executablePath);
       else operationalResult = await verifyCommand(env, adapters, executablePath);
-      stdout.write(`${canonicalBytes(operationalResult).toString()}\n`);
+      stdout.write(`${canonicalBytes(operationalStatus(operation, operationalResult)).toString()}\n`);
       if (operation === "assess" && operationalResult?.outcome === "unable") return 4;
       if (operationalResult?.status === "fallback") return 4;
       if (operationalResult?.status === "terminal") return new Set(["provider_unavailable", "providers_unavailable", "quorum_incomplete", "advisory_unavailable"]).has(operationalResult.reason) ? 4 : 6;

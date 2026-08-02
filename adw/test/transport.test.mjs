@@ -340,7 +340,7 @@ test("missing or semantically malformed primary reaches only canonical fallback"
     ADW_CONTROL_SHA: controlSha,
   });
   assert.equal(missing.code, 4, missing.err);
-  assert.deepEqual(JSON.parse(missing.out), { status: "fallback", provider: "codex", reason: "missing_artifact" });
+  assert.deepEqual(JSON.parse(missing.out), { command: "reduce", status: "fallback" });
 
   await mkdir(value.claudeArtifact);
   const malformed = canonicalBytes({ provider: "claude" });
@@ -355,7 +355,7 @@ test("missing or semantically malformed primary reaches only canonical fallback"
     ADW_CONTROL_SHA: controlSha,
   });
   assert.equal(result.code, 4, result.err);
-  assert.equal(JSON.parse(result.out).provider, "codex");
+  assert.deepEqual(JSON.parse(result.out), { command: "reduce", status: "fallback" });
 });
 
 test("transport rejects extras, symlinks, digest mismatch, bounds, and control drift", async t => {
@@ -486,7 +486,8 @@ test("role-semantic malformed primary yields exactly one valid fallback", async 
     ADW_DECISION_ARTIFACT: value.decisionArtifact, ADW_CONTROL_SHA: controlSha,
   });
   assert.equal(result.code, 0, result.err);
-  const decision = JSON.parse(result.out);
+  assert.deepEqual(JSON.parse(result.out), { command: "reduce", status: "complete" });
+  const decision = JSON.parse(await readFile(join(value.decisionArtifact, "decision.json")));
   assert.deepEqual(decision.assessmentDigests, [digestJson(assessment("codex"))]);
 });
 

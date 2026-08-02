@@ -493,13 +493,17 @@ test("Phase 5 binds dispatch preconditions, delivery, and failed-child recovery"
   for (const field of ["event", "workflow path", "display title", "actor", "control head", "created-after", "attempt lineage"]) assert.match(capture, new RegExp(field, "i"));
 });
 
-test("capture_run binds distinct expected run-head and control SHAs at every call", async () => {
+test("capture_run binds run head, control SHA, and explicit recovered attempt", async () => {
   const plan = await readFile(phase5Plan, "utf8");
   const fn = plan.slice(plan.indexOf("capture_run() ("), plan.indexOf("\n)\n```", plan.indexOf("capture_run() (") + 3));
-  assert.match(fn, /local run_id=\$1 lane=\$2 expected_run_head=\$3 control_sha=\$4 repo=bugabinga\/smith/);
+  assert.match(fn, /local run_id=\$1 lane=\$2 expected_run_head=\$3 control_sha=\$4 run_attempt=\$\{5:-1\} repo=bugabinga\/smith/);
   assert.match(fn, /\[\[ \$expected_run_head =~ \^\[0-9a-f\]\{40\}\$ \]\]/);
+  assert.match(fn, /\[\[ \$run_attempt =~ \^\[1-9\]\[0-9\]\*\$ \]\]/);
+  assert.match(fn, /adw-apply-result-\$run_attempt/);
   assert.match(fn, /--arg head "\$expected_run_head"/);
   assert.match(fn, /--arg control "\$control_sha"/);
+  assert.match(fn, /--argjson attempt "\$run_attempt"/);
+  assert.match(fn, /\.attempt == \$attempt/);
   for (const call of [
     'capture_run "$AUDIT_RUN" provider-free "$MERGE_SHA" "$MERGE_SHA"',
     'capture_run "$RECONCILE_RUN" provider-free "$MERGE_SHA" "$MERGE_SHA"',
@@ -507,7 +511,8 @@ test("capture_run binds distinct expected run-head and control SHAs at every cal
     'capture_run "$STEER_RUN" provider-claude "$MERGE_SHA" "$MERGE_SHA"',
     'capture_run "$REVIEW_COMMENT_RUN" provider-free "$REVIEW_HEAD" "$MERGE_SHA"',
     'capture_run "$CHECK_RUN" provider-free "$REVIEW_HEAD" "$MERGE_SHA"',
-  ]) assert.ok(plan.includes(call), `missing four-argument call: ${call}`);
+  ]) assert.ok(plan.includes(call), `missing default-attempt call: ${call}`);
+  assert.match(plan, /capture_run "\$RECOVERED_RUN" provider-free "\$RECOVERED_HEAD" "\$MERGE_SHA" "\$RECOVERED_ATTEMPT"/);
 });
 
 test("cutover plan treats legacy merge-gate absence as an explicit owner bypass", async () => {
@@ -517,6 +522,19 @@ test("cutover plan treats legacy merge-gate absence as an explicit owner bypass"
   assert.match(task8, /current_user_can_bypass.*always/s);
   assert.match(task8, /explicit owner bypass/i);
   assert.doesNotMatch(task8, /gh pr checks[^\n]*--required/);
+  const task11 = plan.slice(plan.indexOf("### Task 11:"), plan.indexOf("### Task 12:"));
+  assert.match(task11, /gh pr merge --admin --squash --delete-branch --match-head-commit "\$PR_HEAD" "\$PR" --repo bugabinga\/smith/);
+  assert.equal((task11.match(/gh pr merge/g) ?? []).length, 1);
+});
+
+test("Phase 5 records the final recovery, precondition, obligation, log, and provider-auth corrections", async () => {
+  const plan = await readFile(phase5Plan, "utf8");
+  const task = plan.slice(plan.indexOf("### Task 7H:"), plan.indexOf("### Task 8:"));
+  for (const phrase of [
+    "30713540804", "completed operational", "mutable pull metadata", "merge-finalized", "#146/#147/#148",
+    "explicit run attempt", "--match-head-commit", "bounded non-sensitive status", "provider-auth canary",
+  ]) assert.match(task, new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+  assert.match(task, /focused Node.*full Node.*read-only live.*diff.*signature/is);
 });
 
 test("Phase 5 treats adw-write as a lock, not FIFO, and recovers cancelled pending apply", async () => {

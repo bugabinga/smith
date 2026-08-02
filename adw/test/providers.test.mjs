@@ -173,6 +173,36 @@ test("Claude invocation receives only Claude credential and stamps envelope", as
   assert.match(providerPrompt, /"entityId":"42"/);
 });
 
+test("provider-auth canaries remain transport-only and cannot become semantic comment bodies", async t => {
+  const root = await mkdtemp(join(tmpdir(), "smith-adw-provider-auth-canary-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const policy = productionRole("steerer");
+  const schema = await readFile(policy.payloadSchema, "utf8");
+  const canary = "provider-auth-canary-do-not-publish-7d64f0b8";
+  const steeringSnapshot = {
+    ...snapshot,
+    event: { kind: "issue_comment", action: "created", entityId: "42" },
+    routing: { role: policy.name, mode: policy.mode, primary: policy.primary },
+    revisions: [
+      { resource: `trusted:${policy.charter}`, kind: "control", token: "c".repeat(40) },
+      { resource: `trusted:${policy.payloadSchema}`, kind: "control", token: "d".repeat(40) },
+    ],
+    state: { resources: {
+      [`trusted:${policy.charter}`]: trusted(policy.charter, "trusted steering charter"),
+      [`trusted:${policy.payloadSchema}`]: trusted(policy.payloadSchema, schema),
+    } },
+  };
+  await assert.rejects(
+    () => invokeProvider({
+      provider: "claude", executable: process.execPath, cliVersion: "2.1.220", rolePolicy: policy, snapshot: steeringSnapshot,
+      idempotencyKey: "steer:42", home: join(root, "home"), repository: process.cwd(), credential: { CLAUDE_CODE_OAUTH_TOKEN: canary },
+      runIdentity: { id: "run", job: "claude", attempt: 1 }, baseEnv: base.env, now: () => "2026-07-28T10:00:00.000Z",
+      run: async () => ({ code: 0, signal: null, stdout: JSON.stringify({ structured_output: { outcome: "positive", payload: { verdict: "comment", body: canary }, patch: null } }), stderr: "" }),
+    }),
+    error => error?.code === "provider" && error.message === "credential",
+  );
+});
+
 test("provider invocation enforces role payload keys", async t => {
   const root = await mkdtemp(join(tmpdir(), "smith-adw-payload-"));
   const home = join(root, "home");

@@ -248,10 +248,17 @@ test("patch update metadata accepts only the exact observed VCS head transition"
   const originalIssue = issueSourceRevision({ state: "open", title: "I", body: "", labels: [], milestone: null });
   const manifest = { baseSha: headSha, digest: digestBytes(bytes), size: bytes.length, files: [{ path: "smith/src/lib.rs", kind: "regular", oldMode: "100644", newMode: "100644" }] };
   const operation = { type: "update_pr", prId: "3", body: "Revised", headSha };
+  const envelope = (data, source) => ({ trust: "untrusted", source, bytes: canonicalBytes(data).length, digest: digestJson(data), truncated: false, data });
+  const originalPull = {
+    id: "3", number: "3", state: "open", draft: false, merged: false, mergeSha: null, mergeState: "clean", autoMergeRequest: null,
+    updatedAt: "2026-01-01T00:00:00.000Z", headSha, headBranch: "feature", base: "main",
+    actorId: "7", actorLogin: "bugabinga", actorType: "User", headRepository: repository,
+    title: envelope("P", "pull:3:title"), body: envelope("Old", "pull:3:body"), labels: [],
+  };
   const value = {
-    ...snapshot([{ resource: "issue:9", kind: "issue", token: originalIssue }, { resource: "pull:3", kind: "pull", token: headSha }, { resource: "ref:feature", kind: "git_ref", token: headSha }]),
+    ...snapshot([{ resource: "issue:9", kind: "issue", token: originalIssue }, { resource: "pull:3", kind: "pull", token: headSha }, { resource: "pull:3:metadata", kind: "pull_metadata", token: digestJson(originalPull) }, { resource: "ref:feature", kind: "git_ref", token: headSha }]),
     event: { kind: "pull_request", action: "synchronize", entityId: "3" }, routing: { role: "reviser", mode: "single", primary: "claude" },
-    state: { entityId: "3", headSha, headBranch: "feature", resources: { "pull:3": { headRepository: repository, headBranch: "feature", headSha } } },
+    state: { entityId: "3", headSha, headBranch: "feature", resources: { "pull:3": originalPull } },
   };
   const canonicalDecision = { ...decision(value, [operation]), kind: "patch", patch: manifest };
   const proof = { ...verification(value, canonicalDecision), kind: "patch", patch: manifest, resultTree: "c".repeat(40) };
@@ -259,7 +266,12 @@ test("patch update metadata accepts only the exact observed VCS head transition"
   let issueBody = "";
   const { github, calls } = harness(request => {
     const path = endpoint(request);
-    if (request.args[2] === "GET" && path.endsWith("/pulls/3")) return reply({ id: 3, number: 3, state: "open", title: "P", body: pullBody, head: { sha: projectedHead } });
+    if (request.args[2] === "GET" && path.endsWith("/pulls/3")) return reply({
+      id: 3, number: 3, state: "open", draft: false, merged: false, merged_at: null, merge_commit_sha: null, mergeable_state: "clean", auto_merge: null,
+      updated_at: "2026-01-01T00:00:01.000Z", title: "P", body: pullBody, labels: [],
+      head: { sha: projectedHead, ref: "feature", repo: { full_name: repository } }, base: { ref: "main" },
+      user: { id: 7, login: "bugabinga", type: "User" },
+    });
     if (request.args[2] === "GET" && path.endsWith("/git/ref/heads/feature")) return reply({ object: { sha: projectedHead } });
     if (request.args[2] === "GET" && path.endsWith("/issues/9")) return reply({ id: 9, number: 9, state: "open", title: "I", body: issueBody, labels: [], milestone: null, updated_at: "2026-01-01T00:00:00.000Z" });
     if (request.args[2] === "PATCH" && path.endsWith("/pulls/3")) { pullBody = body(request).body; return reply({ id: 3, number: 3, body: pullBody, head: { sha: projectedHead } }); }
@@ -313,6 +325,114 @@ test("named revisions are re-read before the first mutation and stale state fail
     ["--method", "GET", "/repos/bugabinga/smith/issues/1"],
     ["--method", "GET", "/repos/bugabinga/smith/issues/1"],
   ]);
+});
+
+test("pull writes bind head plus mutable labels, comments, and updated metadata while preserving ordered transitions", async () => {
+  const webhookRepository = { id: 42, name: "smith", full_name: repository, default_branch: "main", owner: { id: 7, login: "bugabinga" } };
+  const webhookSender = { id: 7, login: "bugabinga", type: "User" };
+  const initialUpdatedAt = "2026-08-01T00:00:00.000Z";
+  const changedUpdatedAt = "2026-08-01T00:00:01.000Z";
+  const make = async () => {
+    const state = { labels: [], comments: [], checks: [], updatedAt: initialUpdatedAt, mutations: [], failCommentOnce: false };
+    const rawPull = () => ({
+      id: 3, number: 3, state: "open", draft: false, merged: false, merged_at: null, merge_commit_sha: null,
+      mergeable_state: "clean", auto_merge: null, updated_at: state.updatedAt,
+      head: { sha: headSha, ref: "feature/3", repo: { full_name: repository } }, base: { ref: "main" },
+      user: { id: 7, login: "bugabinga", type: "User" }, title: "Pull", body: "Body", labels: state.labels.map(name => ({ name })),
+    });
+    const rawIssue = () => ({ id: 3, number: 3, state: "open", updated_at: state.updatedAt, user: { id: 7 }, title: "Pull", body: "Body", labels: state.labels.map(name => ({ name })), milestone: null, pull_request: {} });
+    const { github, calls } = harness(request => {
+      if (request.args[1] === "graphql") return reply({ data: { repository: { pullRequest: { closingIssuesReferences: { nodes: [], pageInfo: { hasNextPage: false } } } } } });
+      const path = endpoint(request);
+      const method = request.args[2];
+      if (method !== "GET") {
+        state.mutations.push({ method, path, body: body(request) });
+        if (path === "/repos/bugabinga/smith/check-runs") {
+          const input = body(request);
+          state.checks.push({ id: 31, app, name: input.name, head_sha: input.head_sha, status: input.status, conclusion: input.conclusion, output: input.output, external_id: input.external_id });
+          return reply(state.checks[0]);
+        }
+        if (path === "/repos/bugabinga/smith/issues/3/labels") {
+          for (const label of body(request).labels) if (!state.labels.includes(label)) state.labels.push(label);
+          state.updatedAt = changedUpdatedAt;
+          return reply(state.labels.map(name => ({ name })));
+        }
+        if (path === "/repos/bugabinga/smith/issues/3/comments") {
+          if (state.failCommentOnce) { state.failCommentOnce = false; throw new Error("injected marker failure"); }
+          state.updatedAt = "2026-08-01T00:00:02.000Z";
+          const comment = { id: 41, user: bot, created_at: state.updatedAt, updated_at: state.updatedAt, body: body(request).body };
+          state.comments.push(comment);
+          return reply(comment);
+        }
+        throw new Error(`unexpected mutation ${method} ${path}`);
+      }
+      if (path === "/repos/bugabinga/smith") return reply(webhookRepository);
+      if (path.includes("/contents/.claude/agents/reviewer.md?ref=")) return reply({ encoding: "base64", content: Buffer.from("review").toString("base64"), sha: "c".repeat(40) });
+      if (path.includes("/contents/adw/schemas/role-payloads/review.schema.json?ref=")) return reply({ encoding: "base64", content: Buffer.from("{}").toString("base64"), sha: "d".repeat(40) });
+      if (path === "/repos/bugabinga/smith/pulls/3") return reply(rawPull());
+      if (path === "/repos/bugabinga/smith/issues/3") return reply(rawIssue());
+      if (path.startsWith("/repos/bugabinga/smith/pulls/3/files?")) return reply([]);
+      if (path.startsWith("/repos/bugabinga/smith/pulls/3/reviews?")) return reply([]);
+      if (path.startsWith("/repos/bugabinga/smith/issues/3/comments?")) return reply(state.comments);
+      if (path.startsWith(`/repos/bugabinga/smith/commits/${headSha}/check-runs?`)) return reply({ check_runs: state.checks });
+      if (path === "/repos/bugabinga/smith/git/ref/heads/main") return reply({ object: { sha: controlSha } });
+      if (path.startsWith("/repos/bugabinga/smith/actions/workflows/adw-pulls.yml/runs?event=repository_dispatch")) return reply({ workflow_runs: [] });
+      throw new Error(`unexpected ${method} ${path}`);
+    });
+    const event = githubAdapter.normalizeEvent("pull_request", {
+      action: "synchronize", repository: webhookRepository, sender: webhookSender,
+      pull_request: { number: 3, updated_at: initialUpdatedAt, head: { sha: headSha, ref: "feature/3", repo: { full_name: repository } }, base: { ref: "main" } },
+    });
+    const value = await github.readRoleSnapshot(event, role("reviewer"), { controlSha, appId: appIdentity.appId });
+    assert.ok(value.revisions.some(revision => revision.resource === "pull:3" && revision.token === headSha));
+    assert.ok(value.revisions.some(revision => revision.resource === "pull:3:metadata" && revision.token !== headSha));
+    assert.ok(value.revisions.some(revision => revision.resource === "pull:3:comments"));
+    return { github, calls, state, value };
+  };
+
+  const publish = { type: "publish_check", headSha, name: "reviewer", conclusion: "success", summary: "approved", externalId: "review-3" };
+  const comment = { type: "comment", entityId: "3", body: "reviewed", marker: "review-marker" };
+  const dispatch = { type: "dispatch_repository", eventType: "run_review", clientPayload: { repositoryId: "42", prId: "3", headSha, role: "reviewer", provider: "claude" } };
+  for (const [operation, routing] of [[publish, { role: "reviewer", mode: "single", primary: "claude" }], [comment, { role: "reviewer", mode: "single", primary: "claude" }], [dispatch, { role: "reconciler", mode: "single", primary: null }]]) {
+    const fixture = await make();
+    fixture.state.labels.push("hold");
+    fixture.state.updatedAt = changedUpdatedAt;
+    const value = { ...fixture.value, routing };
+    await assert.rejects(
+      () => apply(fixture.github, operation, value, { routing }),
+      error => error?.code === "stale" && error.message === "precondition changed",
+    );
+    assert.equal(fixture.state.mutations.length, 0, operation.type);
+  }
+
+  const fixture = await make();
+  const operations = [publish, { type: "add_label", entityId: "3", label: "reviewed" }, comment];
+  const canonicalDecision = decision(fixture.value, operations);
+  const proof = verification(fixture.value, canonicalDecision);
+  const receipt = await fixture.github.apply({ decision: canonicalDecision, snapshot: fixture.value, verification: proof, previousReceipt: null, vcsProjections: [] });
+  assert.equal(receipt.operations.length, 3);
+  assert.equal(receipt.operations[0].beforeRevision, proof.preconditionDigest);
+  for (let index = 1; index < receipt.operations.length; index++) assert.equal(receipt.operations[index].beforeRevision, receipt.operations[index - 1].afterRevision);
+  assert.deepEqual(fixture.state.mutations.map(mutation => mutation.path), [
+    "/repos/bugabinga/smith/check-runs", "/repos/bugabinga/smith/issues/3/labels", "/repos/bugabinga/smith/issues/3/comments",
+  ]);
+
+  const resumed = await make();
+  const finalization = `<!-- smith:merge-finalized/v1 pr=3 merge=${"c".repeat(40)} role=docs-writer status=complete artifact=${"d".repeat(64)} -->`;
+  const resumeOperations = [publish, { type: "add_label", entityId: "3", label: "reviewed" }, { type: "comment", entityId: "3", body: finalization, marker: finalization }];
+  const resumeDecision = decision(resumed.value, resumeOperations);
+  const resumeProof = verification(resumed.value, resumeDecision);
+  resumed.state.failCommentOnce = true;
+  let partial;
+  await assert.rejects(
+    () => resumed.github.apply({ decision: resumeDecision, snapshot: resumed.value, verification: resumeProof, previousReceipt: null, vcsProjections: [] }),
+    error => { partial = error?.details?.partialReceipt; return error?.code === "forge" && partial?.operations?.length === 2; },
+  );
+  const complete = await resumed.github.apply({ decision: resumeDecision, snapshot: resumed.value, verification: resumeProof, previousReceipt: partial, vcsProjections: [] });
+  assert.equal(complete.operations.length, 3);
+  assert.equal(resumed.state.mutations.filter(mutation => mutation.path === "/repos/bugabinga/smith/check-runs").length, 1);
+  assert.equal(resumed.state.mutations.filter(mutation => mutation.path === "/repos/bugabinga/smith/issues/3/labels").length, 1);
+  assert.equal(resumed.state.comments.filter(entry => entry.body.startsWith(finalization)).length, 1);
 });
 
 test("natural post-state reconstructs a lost receipt without repeating the write", async () => {

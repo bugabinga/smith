@@ -258,8 +258,16 @@ test("missed post-merge work remains retryable while holds suppress writes", () 
 
 test("cancelled pending apply is deterministically retried instead of counted complete", () => {
   const authority = controlAuthority("reconciler");
-  const cancelled = { runId: "99", workflowPath: ".github/workflows/adw-pulls.yml", event: "pull_request_target", entityId: "167", headSha, attempt: 1 };
-  const run = { id: "99", name: "ADW pull and reconcile triggers", workflowPath: cancelled.workflowPath, displayTitle: "ADW pull #167", event: cancelled.event, entityId: cancelled.entityId, status: "completed", conclusion: "cancelled", headSha: cancelled.headSha, headBranch: "feature/167", attempt: 1, actorId: "7", actorLogin: "bugabinga", actorType: "User" };
+  const cancelled = {
+    runId: "99", workflowPath: ".github/workflows/adw-pulls.yml", event: "pull_request_target", entityId: "167",
+    headSha, controlSha, attempt: 1, runConclusion: "failure", applyJobId: "9001",
+  };
+  const run = {
+    id: "99", name: "ADW pull and reconcile triggers", workflowPath: cancelled.workflowPath, displayTitle: "ADW pull #167",
+    event: cancelled.event, entityId: cancelled.entityId, status: "completed", conclusion: cancelled.runConclusion,
+    headSha: cancelled.headSha, headBranch: "feature/167", controlSha, applyJobId: cancelled.applyJobId,
+    attempt: 1, actorId: "7", actorLogin: "bugabinga", actorType: "User",
+  };
   const snapshot = {
     ...snapshotFor("sweeper"),
     event: { kind: "schedule", action: "reconcile", entityId: "R_1" },

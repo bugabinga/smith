@@ -614,11 +614,12 @@ test("deterministic settings snapshot preserves full new rules and reports diges
   assert.match(audit.body, /Live digest: [0-9a-f]{64}/);
 });
 
-test("reconciliation derives pioneer states and exact cancelled-apply recovery from bounded workflow evidence", async () => {
+test("reconciliation inspects completed operational runs and binds failed-run cancelled apply recovery exactly", async () => {
   const fixture = JSON.parse(await readFile(new URL("./fixtures/github/blockers.json", import.meta.url)));
   const firstRevision = "2026-07-28T00:00:00.000Z";
   const secondRevision = "2026-07-28T00:00:01.000Z";
   const artifactDigest = "f".repeat(64);
+  const liveControlSha = fixture.cancelledPullRun.pull_requests[0].base.sha;
   const issues = [
     { id: 1, number: 1, state: "open", updated_at: firstRevision, user: { id: 7 }, title: "Needs proof", body: "Claim", labels: [{ name: "needs:prototype" }] },
     { id: 2, number: 2, state: "open", updated_at: secondRevision, user: { id: 7 }, title: "Disproved", body: "Claim", labels: [] },
@@ -628,7 +629,7 @@ test("reconciliation derives pioneer states and exact cancelled-apply recovery f
   const secondSource = sourceRevision(issues[1]);
   const marker = `<!-- smith:pioneer/v1 issue=2 source=${secondSource} verdict=disproved artifact=${artifactDigest} -->`;
   const retryPioneer = { type: "dispatch_repository", eventType: "retry_pioneer", clientPayload: { repositoryId: "42", issueId: "1", sourceRevision: firstSource, role: "pioneer", provider: "claude" } };
-  const failedDispatch = { ...fixture.failedDispatchRun, name: "ADW issue and reusable execution lanes", path: ".github/workflows/adw-issues.yml", display_title: digestJson(retryPioneer), actor: bot };
+  const failedDispatch = { ...fixture.failedDispatchRun, name: "ADW issue and reusable execution lanes", path: ".github/workflows/adw-issues.yml", display_title: digestJson(retryPioneer), head_sha: liveControlSha, actor: bot };
   const endpoints = [];
   const github = adapter(async request => {
     const endpoint = request.args.at(-1);
@@ -640,33 +641,33 @@ test("reconciliation derives pioneer states and exact cancelled-apply recovery f
     if (endpoint.startsWith("/repos/bugabinga/smith/pulls?state=all")) return reply([]);
     if (endpoint.startsWith("/repos/bugabinga/smith/labels?")) return reply([]);
     if (endpoint.startsWith("/repos/bugabinga/smith/actions/runs?")) return reply({ workflow_runs: Array.from({ length: 20 }, (_, index) => ({ id: index + 1, name: "unrelated", path: ".github/workflows/ci.yml", display_title: "CI", event: "push", status: "completed", conclusion: "success", head_sha: "9".repeat(40), head_branch: "main", run_attempt: 1, actor: { id: 7, login: "bugabinga", type: "User" }, pull_requests: [] })) });
-    if (endpoint === "/repos/bugabinga/smith/actions/workflows/adw-pulls.yml/runs?status=cancelled&per_page=100&page=1") return reply({ workflow_runs: [fixture.cancelledPullRun] });
-    if (/\/actions\/workflows\/adw-(?:issues|maintenance)\.yml\/runs\?status=cancelled&per_page=100&page=1$/.test(endpoint)) return reply({ workflow_runs: [] });
+    if (endpoint === "/repos/bugabinga/smith/actions/workflows/adw-pulls.yml/runs?status=completed&per_page=100&page=1") return reply({ workflow_runs: [fixture.cancelledPullRun] });
+    if (endpoint === "/repos/bugabinga/smith/actions/workflows/adw-maintenance.yml/runs?status=completed&per_page=100&page=1") return reply({ workflow_runs: [fixture.failedPreGraphRun] });
+    if (endpoint === "/repos/bugabinga/smith/actions/workflows/adw-issues.yml/runs?status=completed&per_page=100&page=1") return reply({ workflow_runs: [] });
     if (endpoint === "/repos/bugabinga/smith/actions/workflows/adw-issues.yml/runs?event=repository_dispatch&per_page=100&page=1") return reply({ workflow_runs: [failedDispatch] });
     if (/\/actions\/workflows\/adw-(?:pulls|maintenance)\.yml\/runs\?event=repository_dispatch&per_page=100&page=1$/.test(endpoint)) return reply({ workflow_runs: [] });
-    if (endpoint.startsWith(`/repos/bugabinga/smith/actions/runs/${fixture.cancelledPullRun.id}/jobs?`)) return reply({ jobs: [
-      { id: 1, name: "verify", status: "completed", conclusion: "success" },
-      { id: 2, name: "apply", status: "completed", conclusion: "cancelled" },
-      { id: 3, name: "evidence", status: "completed", conclusion: "skipped" },
-    ] });
+    if (endpoint.startsWith(`/repos/bugabinga/smith/actions/runs/${fixture.cancelledPullRun.id}/jobs?`)) return reply({ jobs: fixture.cancelledPullRun.jobs });
+    if (endpoint.startsWith(`/repos/bugabinga/smith/actions/runs/${fixture.failedPreGraphRun.id}/jobs?`)) return reply({ jobs: fixture.failedPreGraphRun.jobs });
     if (endpoint.startsWith("/repos/bugabinga/smith/issues/1/comments?")) return reply([]);
     if (endpoint.startsWith("/repos/bugabinga/smith/issues/2/comments?")) return reply([{ id: 20, user: bot, created_at: secondRevision, body: marker }]);
     throw new Error(`unexpected ${endpoint}`);
   });
   const event = normalizeEvent("schedule", { schedule: "0 * * * *", repository, sender });
-  const snapshot = await github.readControlSnapshot(event, "reconciler", { controlSha: "a".repeat(40), appId: appIdentity.appId });
+  const snapshot = await github.readControlSnapshot(event, "reconciler", { controlSha: liveControlSha, appId: appIdentity.appId });
   assert.deepEqual(snapshot.state.reconciliation.pioneers, [
     { issueId: "1", sourceRevision: firstSource, verdict: "missing", artifactDigest: null, closingPrId: null },
     { issueId: "2", sourceRevision: secondSource, verdict: "disproved", artifactDigest, closingPrId: null },
   ]);
   assert.deepEqual(snapshot.state.reconciliation.cancelledApplies, [{
     runId: String(fixture.cancelledPullRun.id), workflowPath: fixture.cancelledPullRun.path,
-    event: fixture.cancelledPullRun.event, entityId: "167", headSha: fixture.cancelledPullRun.head_sha, attempt: 1,
+    event: fixture.cancelledPullRun.event, entityId: "167", headSha: fixture.cancelledPullRun.head_sha,
+    controlSha: liveControlSha, attempt: 1, runConclusion: "failure", applyJobId: "91405160611",
   }]);
   assert.deepEqual(planReconciliation({ snapshot, ...snapshot.state.reconciliation }).map(intent => intent.kind).sort(), ["hold_spec", "retry_cancelled_apply", "retry_failed_dispatch"]);
-  assert.ok(endpoints.includes("/repos/bugabinga/smith/actions/workflows/adw-pulls.yml/runs?status=cancelled&per_page=100&page=1"));
+  assert.ok(endpoints.includes("/repos/bugabinga/smith/actions/workflows/adw-pulls.yml/runs?status=completed&per_page=100&page=1"));
+  assert.equal(endpoints.some(endpoint => endpoint.includes("status=cancelled")), false);
   assert.equal(snapshot.state.resources.runs.some(run => run.id === "20" && run.name === "unrelated"), true);
-  assert.equal(snapshot.state.resources.runs.some(run => run.id === String(fixture.cancelledPullRun.id) && run.headBranch === "adw/mjs-phase4"), true);
+  assert.equal(snapshot.state.resources.runs.some(run => run.id === "30713540804" && run.name === "ADW pull #167" && run.displayTitle === "ADW pull #167" && run.controlSha === liveControlSha && run.applyJobId === "91405160611"), true);
 });
 
 test("role snapshot rejects repository drift and untrusted App identity", async () => {

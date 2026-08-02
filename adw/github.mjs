@@ -1,5 +1,5 @@
 import { isAbsolute } from "node:path";
-import { AdwError, REPOSITORY_DISPATCH_WORKFLOWS, canonicalBytes, digestJson, holdReasons, validateDecision, validateOperation, validateRepositoryDispatchPayload, validateSnapshot, validateVerification } from "./core.mjs";
+import { AdwError, MERGE_OBLIGATION_PROVIDERS, REPOSITORY_DISPATCH_WORKFLOWS, canonicalBytes, digestJson, holdReasons, validateDecision, validateOperation, validateRepositoryDispatchPayload, validateSnapshot, validateVerification } from "./core.mjs";
 import { OPERATIONS, controlAuthority, deterministicRole, role } from "./roles.mjs";
 import { runProcess } from "./providers.mjs";
 
@@ -64,6 +64,7 @@ export function operationCapabilities(operation, snapshot = null) {
     if (resource.startsWith("trusted:") || resource.startsWith("patch-base:") || resource.startsWith("ref:")) return "contents:read";
     if (resource === "issues" || resource === "labels" || resource === "milestones" || resource.startsWith("issue:")) return "issues:read";
     if (resource === "pulls") return ["checks:read", "issues:read", "pulls:read"];
+    if (resource === "reconciliation:comments" || (resource.startsWith("pull:") && resource.endsWith(":comments"))) return ["issues:read", "pulls:read"];
     if (resource.startsWith("pull:")) return resource.endsWith(":checks") ? ["checks:read", "pulls:read"] : "pulls:read";
     if (resource === "runs" || resource.startsWith("run:")) return "actions:read";
     if (resource === "alerts") return "alerts:read";
@@ -171,6 +172,7 @@ const APPLY_PAIR = /^<!-- smith:apply\/v1 role=([a-z][a-z0-9-]*) decision=([0-9a
 const REVIEW_MARKER = /^<!-- smith:review-evidence\/v1 kind=(correctness|security) head=([0-9a-f]{40}) conclusion=(approve|reject) provider=(claude|codex) authoritative=true artifact=([0-9a-f]{64}) -->$/;
 const RISK_MARKER = /^<!-- smith:risk\/v1 head=([0-9a-f]{40}) finding=([0-9a-f]{64}) status=(open|cleared) created=([^ ]+) cleared=([^ ]+) -->$/;
 const PIONEER_MARKER = /^<!-- smith:pioneer\/v1 issue=([1-9][0-9]*) source=([^\s\0]+) verdict=(proved|disproved|inconclusive) artifact=([0-9a-f]{64}|-) -->$/;
+const MERGE_FINALIZED_MARKER = /^<!-- smith:merge-finalized\/v1 pr=([1-9][0-9]*) merge=([0-9a-f]{40}) role=([a-z][a-z0-9-]*) status=complete artifact=([0-9a-f]{64}) -->$/;
 const GITHUB_ACTIONS_APP_ID = "15368";
 
 function pairedSemanticMarker(comment, entityId) {
@@ -457,7 +459,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     return value;
   };
   const operationalRuns = async filter => {
-    contract(filter === "status=cancelled" || filter === "event=repository_dispatch", "operational run filter is invalid");
+    contract(filter === "status=completed" || filter === "event=repository_dispatch", "operational run filter is invalid");
     const records = [];
     for (const workflow of ADW_OPERATIONAL_WORKFLOWS) {
       const endpoint = `/repos/${owner}/${name}/actions/workflows/${workflow.file}/runs?${filter}&per_page=${RECOVERY_RUN_PAGE_SIZE}&page=1`;
@@ -524,7 +526,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       return request(`/repos/${owner}/${name}/git/ref/heads/${branch.split("/").map(encodeURIComponent).join("/")}`);
     },
     runs: () => request(`/repos/${owner}/${name}/actions/runs`, "workflow_runs", { pageSize: RUN_PAGE_SIZE, maxItems: MAX_RUN_ITEMS, maxBytes: MAX_COLLECTION_BYTES, truncate: true }),
-    cancelledOperationalRuns: () => operationalRuns("status=cancelled"),
+    completedOperationalRuns: () => operationalRuns("status=completed"),
     repositoryDispatchRuns: () => operationalRuns("event=repository_dispatch"),
   };
   const normalizeResource = value => {
@@ -697,7 +699,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     if (value?.path === ".github/workflows/adw-maintenance.yml" && /^ADW maintenance (?:audit|push|reconcile|[^\s]+(?: [^\s]+){4})$/.test(value.display_title ?? "")) return repositoryId;
     return null;
   };
-  const normalizeRun = (value, repositoryId = null) => {
+  const normalizeRun = (value, repositoryId = null, recovery = null) => {
     const attempt = Number(value.run_attempt ?? 1);
     contract(Number.isSafeInteger(attempt) && attempt > 0, "run attempt is malformed");
     const headSha = text(value.head_sha, "run head");
@@ -711,7 +713,44 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       status: text(value.status, "run status"), conclusion: value.conclusion === null ? null : text(value.conclusion, "run conclusion"),
       headSha, headBranch: value.head_branch === null || value.head_branch === undefined ? null : text(value.head_branch, "run head branch"), attempt,
       actorId: actor === null ? null : restId(actor.id, "run actor"), actorLogin: actor === null ? null : text(actor.login, "run actor login"), actorType: actor === null ? null : text(actor.type, "run actor type"),
+      ...(recovery === null ? {} : { controlSha: recovery.controlSha, applyJobId: recovery.applyJobId }),
     });
+  };
+  const pullMetadata = value => Object.freeze({
+    id: value.id, number: value.number, state: value.state, draft: value.draft, merged: value.merged,
+    mergeSha: value.mergeSha, mergeState: value.mergeState, autoMergeRequest: value.autoMergeRequest,
+    updatedAt: value.updatedAt, headSha: value.headSha, headBranch: value.headBranch, base: value.base,
+    actorId: value.actorId, actorLogin: value.actorLogin, actorType: value.actorType, headRepository: value.headRepository,
+    title: value.title, body: value.body, labels: value.labels,
+  });
+  const pullMetadataRevision = value => digestJson(pullMetadata(value));
+  const withoutPullUpdatedAt = value => {
+    const { updatedAt, ...stable } = pullMetadata(value);
+    return stable;
+  };
+  const cancelledApplyEvidence = async (workflow, value, { repositoryId, defaultBranch, controlSha }) => {
+    if (value?.status !== "completed" || !RETRYABLE_RUN_CONCLUSIONS.has(value?.conclusion) || value?.event === "repository_dispatch") return null;
+    contract(value?.path === workflow.path && workflow.events.includes(value?.event), "operational run identity is malformed");
+    const runId = restId(value?.id, "operational run id");
+    const calledJob = (job, jobName) => job?.name === jobName || (typeof job?.name === "string" && job.name.endsWith(` / ${jobName}`));
+    const jobs = await methods.runJobs(Number(runId));
+    const applyJobs = jobs.filter(job => calledJob(job, "apply"));
+    const evidenceJobs = jobs.filter(job => calledJob(job, "evidence"));
+    if (applyJobs.length !== 1 || applyJobs[0]?.status !== "completed" || applyJobs[0]?.conclusion !== "cancelled" || evidenceJobs.some(job => job?.conclusion === "success")) return null;
+    const baseRun = normalizeRun(value, repositoryId);
+    contract(baseRun.entityId !== null && baseRun.name === baseRun.displayTitle, "operational run entity is malformed");
+    let runControlSha;
+    if (workflow.file === "adw-pulls.yml") {
+      contract(Array.isArray(value.pull_requests) && value.pull_requests.length === 1 && String(value.pull_requests[0]?.number ?? "") === baseRun.entityId, "operational pull run entity is malformed");
+      contract(value.pull_requests[0]?.base?.ref === defaultBranch && typeof value.pull_requests[0]?.base?.sha === "string" && /^[0-9a-f]{40}$/.test(value.pull_requests[0].base.sha), "operational pull run control is malformed");
+      runControlSha = value.pull_requests[0].base.sha;
+    } else {
+      contract(baseRun.headBranch === defaultBranch, "operational run control branch is malformed");
+      runControlSha = baseRun.headSha;
+    }
+    if (runControlSha !== controlSha) return null;
+    const applyJobId = restId(applyJobs[0].id, "cancelled apply job");
+    return normalizeRun(value, repositoryId, { controlSha: runControlSha, applyJobId });
   };
   const reviewEvidence = (comments, headSha, prId) => comments
     .map(comment => parsedReviewMarker(comment, headSha, prId, appIdentity) ?? parsedLegacyReviewMarker(comment, headSha, appIdentity))
@@ -778,7 +817,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     const changedPaths = rawFiles.map(file => text(file.filename, "changed path")).sort();
     const closing = await methods.closingIssues(Number(pull.number));
     if (pull.merged && !pull.mergeSha) throw new AdwError("forge", "merged pull lacks merge SHA");
-    const obligations = pull.merged ? [Object.freeze({ role: "docs-writer", status: "missing", artifactDigest: null, expectedArtifactDigest: null })] : [];
+    const obligations = pull.merged ? Object.keys(MERGE_OBLIGATION_PROVIDERS).sort().map(role => Object.freeze({ role, status: "missing", artifactDigest: null, expectedArtifactDigest: null })) : [];
     const checks = maintenance && !pull.merged ? (await methods.commitChecks(pull.headSha)).map(normalizeCheck) : [];
     const comments = maintenance && !pull.merged ? await methods.comments("issues", Number(pull.number)) : [];
     const evidence = reviewEvidence(comments, pull.headSha, pull.number);
@@ -896,10 +935,14 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         });
         return Object.freeze(projected);
       };
+      const putRevision = (key, kind, token) => {
+        contract(!revisions.some(revision => revision.resource === key), "duplicate snapshot revision");
+        revisions.push({ resource: key, kind, token: String(token) });
+      };
       const put = (key, kind, value, token) => {
         contract(!Object.hasOwn(resources, key), "duplicate snapshot resource");
         resources[key] = value;
-        revisions.push({ resource: key, kind, token: String(token ?? digestJson(value)) });
+        putRevision(key, kind, token ?? digestJson(value));
       };
       put("repository", "repository", Object.freeze(normalizedRepository), digestJson(normalizedRepository));
       const trustedPaths = deterministic
@@ -986,6 +1029,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         const rawFiles = await methods.pullFiles(Number(event.entityId));
         pullValue = await enrichPull(rawPull, rawFiles);
         put(`pull:${event.entityId}`, "pull", pullValue, pullValue.headSha);
+        putRevision(`pull:${event.entityId}:metadata`, "pull_metadata", pullMetadataRevision(pullValue));
         fileValues = rawFiles.map(value => normalizeFile(value, event.entityId));
         put(`pull:${event.entityId}:files`, "files", Object.freeze(fileValues), digestJson(fileValues));
         const reviews = (await methods.pullReviews(Number(event.entityId))).map(value => normalizeReview(value, event.entityId));
@@ -1015,23 +1059,15 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         const runs = rawRunValues.map(value => normalizeRun(value, normalizedRepository.id));
         if (control && rolePolicy.name === "reconciler") {
           const recoveryRuns = [];
-          const calledJob = (job, jobName) => job?.name === jobName || (typeof job?.name === "string" && job.name.endsWith(` / ${jobName}`));
-          for (const { workflow, value } of await methods.cancelledOperationalRuns()) {
-            contract(value?.path === workflow.path && workflow.events.includes(value?.event) && Number.isSafeInteger(value?.run_attempt) && value.run_attempt > 0, "operational run identity is malformed");
-            const run = normalizeRun(value, normalizedRepository.id);
-            contract(run.status === "completed" && run.conclusion === "cancelled", "cancelled operational run is malformed");
-            if (run.event === "repository_dispatch") continue;
-            contract(run.entityId !== null, "operational run entity is malformed");
-            if (workflow.file === "adw-pulls.yml") {
-              contract(Array.isArray(value.pull_requests) && value.pull_requests.length === 1 && String(value.pull_requests[0]?.number ?? "") === run.entityId, "operational pull run entity is malformed");
-            }
-            const jobs = await methods.runJobs(Number(run.id));
-            const applyJobs = jobs.filter(job => calledJob(job, "apply"));
-            const verifyJobs = jobs.filter(job => calledJob(job, "verify"));
-            const evidenceJobs = jobs.filter(job => calledJob(job, "evidence"));
-            if (applyJobs.length !== 1 || applyJobs[0]?.status !== "completed" || applyJobs[0]?.conclusion !== "cancelled" || verifyJobs.length !== 1 || verifyJobs[0]?.status !== "completed" || verifyJobs[0]?.conclusion !== "success" || evidenceJobs.some(job => job?.conclusion === "success")) continue;
+          for (const { workflow, value } of await methods.completedOperationalRuns()) {
+            const run = await cancelledApplyEvidence(workflow, value, { repositoryId: normalizedRepository.id, defaultBranch: normalizedRepository.defaultBranch, controlSha });
+            if (run === null) continue;
             recoveryRuns.push(run);
-            cancelledApplies.push(Object.freeze({ runId: run.id, workflowPath: run.workflowPath, event: run.event, entityId: run.entityId, headSha: run.headSha, attempt: run.attempt }));
+            cancelledApplies.push(Object.freeze({
+              runId: run.id, workflowPath: run.workflowPath, event: run.event, entityId: run.entityId,
+              headSha: run.headSha, controlSha: run.controlSha, attempt: run.attempt,
+              runConclusion: run.conclusion, applyJobId: run.applyJobId,
+            }));
           }
           const dispatchParents = [];
           for (const { workflow, value } of await methods.repositoryDispatchRuns()) {
@@ -1059,11 +1095,19 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
             uniqueRecovery.set(run.id, run);
           }
           if (uniqueRecovery.size > MAX_RECOVERABLE_RUNS || cancelledApplies.length > MAX_RECOVERABLE_RUNS) throw new AdwError("forge", "overflow");
-          const byId = new Map(runs.map(run => [run.id, run]));
+          const byId = new Map(runs.map((run, index) => [run.id, { run, index }]));
           for (const run of [...uniqueRecovery.values()].sort((left, right) => Number(left.id) - Number(right.id))) {
             const previous = byId.get(run.id);
-            if (previous && digestJson(previous) !== digestJson(run)) throw new AdwError("forge", "malformed");
-            if (!previous) { runs.push(run); byId.set(run.id, run); }
+            if (previous) {
+              const { controlSha: previousControl, applyJobId: previousJob, ...previousBase } = previous.run;
+              const { controlSha: currentControl, applyJobId: currentJob, ...currentBase } = run;
+              if (digestJson(previousBase) !== digestJson(currentBase)) throw new AdwError("forge", "malformed");
+              runs[previous.index] = run;
+              byId.set(run.id, { run, index: previous.index });
+            } else {
+              runs.push(run);
+              byId.set(run.id, { run, index: runs.length - 1 });
+            }
           }
           cancelledApplies = Object.freeze([...cancelledApplies].sort((left, right) => Number(left.runId) - Number(right.runId)));
         }
@@ -1138,6 +1182,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         }
         if (markerComments.length > MAX_COMMENT_ITEMS) throw new AdwError("forge", "overflow");
         markerComments.sort((left, right) => left.createdAt.localeCompare(right.createdAt) || numericId(left.id, "comment id") - numericId(right.id, "comment id"));
+        putRevision("reconciliation:comments", "comments", digestJson(markerComments));
         const projectedMarkerComments = projectComments("reconciliation:comments", markerComments);
         const routes = [];
         for (const issue of resources.issues ?? []) {
@@ -1237,6 +1282,8 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         state.headBranch = pullValue.headBranch;
         state.headRepository = pullValue.headRepository;
         state.changedPaths = pullValue.changedPaths;
+        state.merged = pullValue.merged;
+        state.mergeSha = pullValue.mergeSha;
       }
       if (patchBase !== null) {
         const source = issueValue ?? pullValue;
@@ -1342,6 +1389,19 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       const appAuthored = record => String(record?.user?.id ?? "") === appIdentity.botUserId && record?.user?.login === appIdentity.login && record?.user?.type === "Bot";
       const appCheck = record => String(record?.app?.id ?? "") === appIdentity.appId && record?.app?.slug === appIdentity.slug;
       const validTime = value => typeof value === "string" && Number.isFinite(Date.parse(value));
+      const restorePullMetadata = async (entityId, observedRevisions, replacements, expectedCurrent) => {
+        const resource = `pull:${entityId}:metadata`;
+        if (!observedRevisions.some(revision => revision.resource === resource)) return true;
+        const original = trustedSnapshot.state.resources?.[`pull:${entityId}`];
+        if (!original || !expectedCurrent) return false;
+        const current = normalizePull(await pullAt(entityId));
+        if (!canonicalBytes(withoutPullUpdatedAt(current)).equals(canonicalBytes(withoutPullUpdatedAt(expectedCurrent)))) return false;
+        if (!validTime(current.updatedAt) || !validTime(original.updatedAt) || Date.parse(current.updatedAt) < Date.parse(original.updatedAt)) return false;
+        const originalRevision = trustedSnapshot.revisions.find(revision => revision.resource === resource);
+        if (originalRevision?.token !== pullMetadataRevision(original)) return false;
+        replacements.set(resource, originalRevision.token);
+        return true;
+      };
 
       let complete = false;
       let prepared = null;
@@ -1361,6 +1421,8 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
             [`issue:${value.entityId}:comments`, digestJson(predecessor)],
             [`pull:${value.entityId}:comments`, digestJson(predecessor)],
           ]);
+          const originalPull = trustedSnapshot.state.resources?.[`pull:${value.entityId}`] ?? null;
+          if (!await restorePullMetadata(value.entityId, observedRevisions, replacements, originalPull)) return null;
           return digestJson(observedRevisions.map(revision => replacements.has(revision.resource) ? { ...revision, token: replacements.get(revision.resource) } : revision));
         };
         prepared = { method: "POST", endpoint: `/repos/${owner}/${name}/issues/${numericId(value.entityId, "entity id")}/comments`, body: { body: expected } };
@@ -1378,6 +1440,9 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
           if ((value.type === "add_label" && currentLabels.filter(label => label === value.label).length !== 1) || (value.type === "remove_label" && currentLabels.includes(value.label))) return null;
           const predecessorIssue = { ...current, labels: predecessorLabels };
           const replacements = new Map([[`issue:${value.entityId}`, issueSourceRevision(predecessorIssue)]]);
+          const originalPull = trustedSnapshot.state.resources?.[`pull:${value.entityId}`] ?? null;
+          const expectedPull = originalPull === null ? null : { ...originalPull, labels: Object.freeze([...currentLabels].sort()) };
+          if (!await restorePullMetadata(value.entityId, observedRevisions, replacements, expectedPull)) return null;
           if (observedRevisions.some(revision => revision.resource === "issues")) {
             const currentIssues = await openIssues();
             if (currentIssues.filter(candidate => String(candidate?.number ?? "") === value.entityId).length !== 1) return null;
@@ -1659,6 +1724,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         }
         if ((match = /^issue:([1-9][0-9]*)$/.exec(resource))) return issueSourceRevision(await issueAt(match[1]));
         if ((match = /^pull:([1-9][0-9]*)$/.exec(resource))) return text((await pullAt(match[1])).head?.sha, "pull revision");
+        if ((match = /^pull:([1-9][0-9]*):metadata$/.exec(resource))) return pullMetadataRevision(normalizePull(await pullAt(match[1])));
         if ((match = /^(?:patch-base:|ref:)(.+)$/.exec(resource))) {
           const branch = match[1];
           contract(/^[A-Za-z0-9._/-]+$/.test(branch) && !branch.includes(".."), "branch is invalid");
@@ -1666,6 +1732,14 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         }
         if ((match = /^issue:([1-9][0-9]*):comments$/.exec(resource)) || (match = /^pull:([1-9][0-9]*):comments$/.exec(resource))) {
           const values = (await commentsAt(match[1])).map(item => normalizeComment(item, match[1], trustedSnapshot.repository.id));
+          return digestJson(values);
+        }
+        if (resource === "reconciliation:comments") {
+          const values = [];
+          for (const issue of trustedSnapshot.state.resources?.issues ?? []) values.push(...(await commentsAt(issue.number)).map(item => normalizeComment(item, issue.number, trustedSnapshot.repository.id)));
+          for (const pull of trustedSnapshot.state.resources?.pulls ?? []) values.push(...(await commentsAt(pull.number)).map(item => normalizeComment(item, pull.number, trustedSnapshot.repository.id)));
+          if (values.length > MAX_COMMENT_ITEMS) throw new AdwError("forge", "overflow");
+          values.sort((left, right) => left.createdAt.localeCompare(right.createdAt) || numericId(left.id, "comment id") - numericId(right.id, "comment id"));
           return digestJson(values);
         }
         if ((match = /^issue:([1-9][0-9]*):timeline$/.exec(resource))) {
@@ -1708,12 +1782,23 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         }
         if (resource === "runs") {
           const values = (await allRuns()).map(item => normalizeRun(item, trustedSnapshot.repository.id));
-          const recoveryIds = new Set([
-            ...(trustedSnapshot.state?.reconciliation?.cancelledApplies ?? []).map(item => item.runId),
-            ...(trustedSnapshot.state?.resources?.runs ?? []).filter(run => run.event === "repository_dispatch" && run.status === "completed" && RETRYABLE_RUN_CONCLUSIONS.has(run.conclusion) && run.actorId === appIdentity.botUserId).map(run => run.id),
-          ]);
-          const seen = new Set(values.map(run => run.id));
-          for (const runId of [...recoveryIds].sort((left, right) => Number(left) - Number(right))) if (!seen.has(runId)) values.push(normalizeRun(await get(`/repos/${owner}/${name}/actions/runs/${numericId(runId, "run number")}`), trustedSnapshot.repository.id));
+          const byId = new Map(values.map((run, index) => [run.id, index]));
+          for (const cancelled of trustedSnapshot.state?.reconciliation?.cancelledApplies ?? []) {
+            const workflow = ADW_OPERATIONAL_WORKFLOWS.find(candidate => candidate.path === cancelled.workflowPath);
+            contract(workflow !== undefined, "cancelled apply workflow is malformed");
+            const raw = await get(`/repos/${owner}/${name}/actions/runs/${numericId(cancelled.runId, "run number")}`);
+            const run = await cancelledApplyEvidence(workflow, raw, { repositoryId: trustedSnapshot.repository.id, defaultBranch: trustedSnapshot.repository.defaultBranch, controlSha: trustedSnapshot.controlSha });
+            const identity = run && run.id === cancelled.runId && run.workflowPath === cancelled.workflowPath && run.event === cancelled.event && run.entityId === cancelled.entityId && run.headSha === cancelled.headSha && run.controlSha === cancelled.controlSha && run.attempt === cancelled.attempt && run.conclusion === cancelled.runConclusion && run.applyJobId === cancelled.applyJobId;
+            if (!identity) throw new AdwError("stale", "cancelled apply recovery changed");
+            const index = byId.get(run.id);
+            if (index === undefined) { byId.set(run.id, values.length); values.push(run); }
+            else values[index] = run;
+          }
+          const failedDispatchIds = (trustedSnapshot.state?.resources?.runs ?? []).filter(run => run.event === "repository_dispatch" && run.status === "completed" && RETRYABLE_RUN_CONCLUSIONS.has(run.conclusion) && run.actorId === appIdentity.botUserId).map(run => run.id);
+          for (const runId of [...new Set(failedDispatchIds)].sort((left, right) => Number(left) - Number(right))) if (!byId.has(runId)) {
+            byId.set(runId, values.length);
+            values.push(normalizeRun(await get(`/repos/${owner}/${name}/actions/runs/${numericId(runId, "run number")}`), trustedSnapshot.repository.id));
+          }
           return digestJson(values);
         }
         if (resource === "alerts") {
@@ -1792,11 +1877,21 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
           return ref?.object?.sha === projection.headSha;
         }
         if (value.type !== "update_pr") return false;
-        const changed = new Set([`pull:${value.prId}`, `ref:${trustedSnapshot.state.headBranch}`]);
-        if (changed.size !== 2 || ![...changed].every(resource => original.some(revision => revision.resource === resource && revision.token === proof.patch?.baseSha))) return false;
+        const headResources = new Set([`pull:${value.prId}`, `ref:${trustedSnapshot.state.headBranch}`]);
+        const metadataResource = `pull:${value.prId}:metadata`;
+        if (headResources.size !== 2 || ![...headResources].every(resource => original.some(revision => revision.resource === resource && revision.token === proof.patch?.baseSha))) return false;
+        const originalPull = trustedSnapshot.state.resources?.[`pull:${value.prId}`];
+        if (!originalPull || !original.some(revision => revision.resource === metadataResource && revision.token === pullMetadataRevision(originalPull))) return false;
+        const currentPull = normalizePull(await pullAt(value.prId));
+        const expectedPull = { ...originalPull, headSha: projection.headSha, updatedAt: currentPull.updatedAt };
+        if (!canonicalBytes(pullMetadata(currentPull)).equals(canonicalBytes(pullMetadata(expectedPull)))) return false;
         for (let index = 0; index < original.length; index++) {
           if (original[index].resource !== observedRevisions[index].resource || original[index].kind !== observedRevisions[index].kind) return false;
-          const expected = changed.has(original[index].resource) ? projection.headSha : original[index].token;
+          const expected = headResources.has(original[index].resource)
+            ? projection.headSha
+            : original[index].resource === metadataResource
+              ? pullMetadataRevision(currentPull)
+              : original[index].token;
           if (observedRevisions[index].token !== expected) return false;
         }
         return true;
@@ -1912,7 +2007,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     const marker = applyMarker(binding);
     if (operation.type === "comment" || operation.type === "create_issue" || operation.type === "create_pr" || operation.type === "report_drift") {
       const originalBody = markedBody(operation.body, operation.marker);
-      const semantic = operation.type === "comment" && operation.body === operation.marker && (REVIEW_MARKER.test(operation.body) || RISK_MARKER.test(operation.body));
+      const semantic = operation.type === "comment" && operation.body === operation.marker && (REVIEW_MARKER.test(operation.body) || RISK_MARKER.test(operation.body) || MERGE_FINALIZED_MARKER.test(operation.body));
       return Object.freeze({ ...operation, body: semantic ? `${operation.body}\n${marker}` : markedBody(originalBody, marker), marker });
     }
     if (operation.type === "create_milestone") return Object.freeze({ ...operation, description: markedBody(markedBody(operation.description, operation.marker), marker), marker });

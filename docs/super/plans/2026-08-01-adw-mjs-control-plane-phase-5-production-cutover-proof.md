@@ -147,24 +147,25 @@ The initial branch push preceded the required hold. Live Actions evidence was re
 
 Every accepted production run records its run ID and URL, event, expected run head SHA, trusted control SHA, attempt, conclusion, job list, artifact IDs/names, and downloaded sidecar verification. Expected artifact sets are:
 
-- Provider lane: `adw-target`, `adw-source`, `adw-snapshot`, exactly one successful primary `adw-assessment-{claude|codex}`, `adw-decision`, `adw-verification`, `adw-apply-result-1`.
-- Provider-free audit/reconcile lane: `adw-target`, `adw-source`, `adw-snapshot`, `adw-decision`, `adw-verification`, `adw-apply-result-1`; no `adw-assessment-*`.
-- Evidence job must succeed by downloading the same `adw-apply-result-1`.
+- Provider lane: `adw-target`, `adw-source`, `adw-snapshot`, exactly one successful primary `adw-assessment-{claude|codex}`, `adw-decision`, `adw-verification`, and `adw-apply-result-<attempt>`.
+- Provider-free audit/reconcile lane: `adw-target`, `adw-source`, `adw-snapshot`, `adw-decision`, `adw-verification`, and `adw-apply-result-<attempt>`; no `adw-assessment-*`.
+- Attempt defaults to `1`; recovered attempts pass their explicit positive integer. Evidence must download the same attempt-suffixed apply result, and `run.json.attempt` must equal it.
 - Every JSON/patch sidecar digest must match exact bytes.
 - Every `result.json` must have `schemaVersion:1`, `status:"complete"`, `failure:null`, all operations `status:"complete"`, and only complete receipts.
 - Every `dispatch_repository` receipt must be backed by one exact child run lineage: `repository_dispatch` event, closed workflow path, operation digest as display title, exact App actor, trusted control head on `main`, creation at or after the dispatch boundary, and a positive attempt number. A duplicate run identity is conflicting evidence, not success; a failed child proves delivery only and must be recovered by a separate attempt-bound rerun.
 - `snapshot.json.controlSha`, `decision.json.controlSha`, `verification.json.controlSha`, and `result.json.controlSha` must equal the run's trusted control SHA.
 - Decision/snapshot/verification/result digest links must match the corresponding canonical artifact bytes, as additionally enforced by the runtime and offline tests.
 
-Define this exact positive-run capture function once in the owner shell. Call it with a forge-derived run ID, lane (`provider-free`, `provider-claude`, or `provider-codex`), expected run head SHA, and trusted control SHA:
+Define this exact positive-run capture function once in the owner shell. Call it with a forge-derived run ID, lane (`provider-free`, `provider-claude`, or `provider-codex`), expected run head SHA, trusted control SHA, and optional explicit run attempt (default `1`):
 
 ```bash
 capture_run() (
   set -euo pipefail
-  local run_id=$1 lane=$2 expected_run_head=$3 control_sha=$4 repo=bugabinga/smith
+  local run_id=$1 lane=$2 expected_run_head=$3 control_sha=$4 run_attempt=${5:-1} repo=bugabinga/smith
   [[ $run_id =~ ^[1-9][0-9]*$ ]]
   [[ $expected_run_head =~ ^[0-9a-f]{40}$ ]]
   [[ $control_sha =~ ^[0-9a-f]{40}$ ]]
+  [[ $run_attempt =~ ^[1-9][0-9]*$ ]]
   local root="$HOME/adw-phase5-evidence/$run_id"
   rm -rf "$root"
   mkdir -p "$root/download"
@@ -177,11 +178,11 @@ capture_run() (
   test -s "$root/artifacts.jsonl"
   gh run download "$run_id" --repo "$repo" --dir "$root/download"
 
-  local expected
+  local expected apply_artifact="adw-apply-result-$run_attempt"
   case "$lane" in
-    provider-free) expected='adw-apply-result-1,adw-decision,adw-snapshot,adw-source,adw-target,adw-verification' ;;
-    provider-claude) expected='adw-apply-result-1,adw-assessment-claude,adw-decision,adw-snapshot,adw-source,adw-target,adw-verification' ;;
-    provider-codex) expected='adw-apply-result-1,adw-assessment-codex,adw-decision,adw-snapshot,adw-source,adw-target,adw-verification' ;;
+    provider-free) expected="$apply_artifact,adw-decision,adw-snapshot,adw-source,adw-target,adw-verification" ;;
+    provider-claude) expected="$apply_artifact,adw-assessment-claude,adw-decision,adw-snapshot,adw-source,adw-target,adw-verification" ;;
+    provider-codex) expected="$apply_artifact,adw-assessment-codex,adw-decision,adw-snapshot,adw-source,adw-target,adw-verification" ;;
     *) return 2 ;;
   esac
   local actual
@@ -202,7 +203,7 @@ capture_run() (
   local snapshot="$root/download/adw-snapshot/snapshot.sha256"
   local decision="$root/download/adw-decision/decision.sha256"
   local verification="$root/download/adw-verification/verification.sha256"
-  local receipt="$root/download/adw-apply-result-1/result.json"
+  local receipt="$root/download/adw-apply-result-$run_attempt/result.json"
   for file in "$source" "$snapshot" "$decision" "$verification" "$receipt"; do test -f "$file"; done
   local source_digest snapshot_digest decision_digest verification_digest
   source_digest=$(tr -d '\r\n' < "$source")
@@ -228,8 +229,8 @@ capture_run() (
       ([.operations[].status] | all(. == "complete")) and
       ([.operations[].receipts[]?.status] | all(. == "complete"))
     ' "$receipt" >/dev/null
-  jq -e --argjson id "$run_id" --arg head "$expected_run_head" '
-    .databaseId == $id and .headSha == $head and .attempt == 1 and
+  jq -e --argjson id "$run_id" --arg head "$expected_run_head" --argjson attempt "$run_attempt" '
+    .databaseId == $id and .headSha == $head and .attempt == $attempt and
     .status == "completed" and .conclusion == "success" and
     ([.jobs[] | select((.name | test("(^| / )evidence$")) and .conclusion == "success")] | length == 1)
   ' "$root/run.json" >/dev/null
@@ -837,7 +838,7 @@ Natural completion now follows expected-before/current authority; only an exact 
 
 - [x] **Step 3: Preserve the lock without claiming queue order**
 
-`adw-write` remains the repository-wide lock with `cancel-in-progress:false`. GitHub permits one running and at most one pending job; a newer pending job can cancel the older pending job, so there is no FIFO guarantee. Exact operational-workflow runs with bound entity/run identity, successful verify, cancelled apply, and no successful evidence are snapshot-bound as recoverable reconciliation work and retried by attempt. Pull-event run heads and branches remain entity authority rather than being forced to control/`main`. Revision-observing state repairs run before action reruns, and repository dispatches run last under their chained receipt authority. A cancelled apply result is never positive proof of success.
+`adw-write` remains the repository-wide lock with `cancel-in-progress:false`. GitHub permits one running and at most one pending job; a newer pending job can cancel the older pending job, so there is no FIFO guarantee. Exact operational-workflow runs with bound entity/run identity, cancelled apply, and no successful evidence are snapshot-bound as recoverable reconciliation work and retried by attempt; Task 7H corrects discovery to include completed runs whose overall conclusion is failure and does not require the earlier verify job to have succeeded. Pull-event run heads and branches remain entity authority rather than being forced to control/`main`. Revision-observing state repairs run before action reruns, and repository dispatches run last under their chained receipt authority. A cancelled apply result is never positive proof of success.
 
 - [x] **Step 4: Re-run complete offline, read-only live, diff, and signature verification**
 
@@ -885,7 +886,7 @@ The focused four-file RED run recorded 140 tests with 130 passes and 10 expected
 
 - [x] **Step 2: Implement bounded current-state and recovery authority**
 
-Dependabot uses one supported `per_page=100` request and treats a full page as explicitly incomplete. Cancelled apply discovery uses bounded exact operational workflow queries, then binds entity and run identity plus successful verify, cancelled apply, and absent successful evidence. Pull events do not require their run head to equal control or their branch to equal `main`; their exact workflow, event, display title, pull number, run ID, and attempt remain bound. Reconciliation emits an attempt-bound retry for each cancelled apply and never counts cancellation as success. GitHub's repository-wide concurrency lock is still not FIFO.
+Dependabot uses one supported `per_page=100` request and treats a full page as explicitly incomplete. Cancelled apply discovery uses bounded exact operational workflow queries, then binds entity and run identity plus cancelled apply and absent successful evidence; Task 7H additionally binds control SHA and apply-job ID while querying all completed operational conclusions. Pull events do not require their run head to equal control or their branch to equal `main`; their exact workflow, event, display title, pull number, run ID, and attempt remain bound. Reconciliation emits an attempt-bound retry for each cancelled apply and never counts cancellation as success. GitHub's repository-wide concurrency lock is still not FIFO.
 
 `dispatch_repository` retains `contents:write` plus exact snapshot read permissions. Every dispatch apply must reread its exact source entity and all named revisions, compare the observed digest with `expectedBefore` before the POST, and never synthesize that digest. Bounded polling binds event, workflow path, operation digest, App actor, control head, created-after boundary, child status/conclusion, and attempt lineage. An existing child proves delivery only; a failed child produces a separate deterministic attempt-bound rerun and never a duplicate dispatch.
 
@@ -931,6 +932,31 @@ test "$(rg -c '^[[:space:]]+-m "Anchor:' "$ROLLBACK_SCRIPT")" = 1
 ```
 
 Expected: the owner-shell block parses as Bash, contains both current-parent paths and exactly one signed-commit anchor, and contains no force-push/reset command.
+
+### Task 7H: Close final recovery, mutation, obligation, evidence, and disclosure blockers
+
+**Files:**
+
+- Modify: `adw/{core,github,main,providers,roles}.mjs`
+- Modify: `adw/test/{apply,core,github,main,providers,roles,scenarios,wrappers}.test.mjs`
+- Modify: `adw/test/fixtures/github/blockers.json`
+- Modify: `docs/super/plans/2026-08-01-adw-mjs-control-plane-phase-5-production-cutover-proof.md`
+
+- [x] **Step 1: Record focused RED and read-only live evidence**
+
+The focused eight-file RED run recorded 223 tests with 209 passes and 14 expected failures. Read-only API evidence captured live-shaped run `30713540804`: the operational run was completed with overall `failure`, its exact apply job `91405160611` was `cancelled`, and its verify/evidence jobs failed. Source inspection also confirmed operational commands wrote complete snapshots, assessments, decisions, and receipts to public stdout, while an injected provider-auth canary was accepted as a model-controlled comment body. Pulls #146/#147/#148 were merged at `0425d4ed2e001933c65ac8745ec44137f79acda1`, `5b5eefbd333c7380a88a82170304fa5c8d8d9fa6`, and `491a42a3cc8848853e4ccd6cedc5695d9bd06e8c`, with no existing `merge-finalized` comments. No GitHub object was mutated and nothing was pushed.
+
+- [x] **Step 2: Implement exact bounded corrections**
+
+Cancelled-apply discovery now inspects bounded completed operational workflow queries rather than only overall-cancelled runs or the global newest 20. Recovery binds exact workflow, entity, control SHA, run/attempt/conclusion, and cancelled apply-job identity; successful evidence still vetoes recovery. Pull snapshots carry separate head and mutable pull metadata revisions, including labels/holds, comments, and `updatedAt`; `publish_check`, comment, and dispatch writes re-read them, while each operation's observed post-revision remains the next operation's ordered precondition.
+
+Every registered merged-pull obligation role—currently `docs-writer`—appends an exact App-authenticated `smith:merge-finalized/v1` marker after patch or noop completion. Reconciliation imports only the same role and merge SHA, so #146/#147/#148 are not redispatched on later control SHAs; a failed final marker leaves prior operation receipts resumable without replay. `capture_run` accepts an explicit run attempt, defaults to attempt 1, and binds both artifact suffix and run JSON attempt. The administrative merge command uses exact `--match-head-commit`.
+
+Operational stdout now emits only a bounded non-sensitive status while artifact files retain complete transport data. Provider-auth canaries remain transport-only: any credential echoed into a semantic payload or captured patch is rejected before an assessment can become operations. The attack and disclosure regressions cover both findings.
+
+- [ ] **Step 3: Verify focused Node, full Node, read-only live recovery/reconcile snapshots, diff, and signatures**
+
+Run focused Node and full Node, then capture a read-only live reconciler snapshot that exercises the bounded completed operational queries and a read-only reconciliation reduction. Verify `git diff --check`, changed-file scope, and every signed commit signature. Record exact counts, snapshot bytes/digests/intents, and any remaining blocker without guessing. No GitHub mutation or push is permitted.
 
 ### Task 8: Push the owner-authored protected PR and record owner approval on its exact head
 
@@ -1235,7 +1261,7 @@ Expected: exact owner-approved head and main base, mergeable PR, green current-h
 
 ```bash
 MERGE_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-gh pr merge --admin --squash --delete-branch "$PR" --repo bugabinga/smith
+gh pr merge --admin --squash --delete-branch --match-head-commit "$PR_HEAD" "$PR" --repo bugabinga/smith
 MERGE_SHA=$(gh pr view "$PR" --repo bugabinga/smith --json mergeCommit --jq .mergeCommit.oid)
 git fetch origin main
 test "$MERGE_SHA" = "$(git rev-parse origin/main)"
@@ -1453,7 +1479,13 @@ Expected: success; no provider job runs unless reconciliation positively dispatc
 
 - [ ] **Step 6: Capture reconciliation and any child runs**
 
-Run `capture_run "$RECONCILE_RUN" provider-free "$MERGE_SHA" "$MERGE_SHA"`. For each `dispatch_repository` receipt, require exactly one child run identity with event `repository_dispatch`, the closed workflow path for its event type, operation digest as display title, actor ID/login `306488075`/`agent-smith-bugabinga-adc[bot]`, `main` at the trusted control head, creation at or after the parent receipt's created-after boundary, and its complete attempt lineage. Call `capture_run` with the intent's canonical provider lane, `"$MERGE_SHA"` as expected run head, and `"$MERGE_SHA"` as trusted control SHA. A failed child proves delivery only and must have one separate attempt-bound rerun receipt.
+Run `capture_run "$RECONCILE_RUN" provider-free "$MERGE_SHA" "$MERGE_SHA"`. For each `dispatch_repository` receipt, require exactly one child run identity with event `repository_dispatch`, the closed workflow path for its event type, operation digest as display title, actor ID/login `306488075`/`agent-smith-bugabinga-adc[bot]`, `main` at the trusted control head, creation at or after the parent receipt's created-after boundary, and its complete attempt lineage. Call `capture_run` with the intent's canonical provider lane, `"$MERGE_SHA"` as expected run head, `"$MERGE_SHA"` as trusted control SHA, and the explicit attempt when it is greater than one. For example, a recovered provider-free run is captured only after all four values are read from the forge:
+
+```bash
+capture_run "$RECOVERED_RUN" provider-free "$RECOVERED_HEAD" "$MERGE_SHA" "$RECOVERED_ATTEMPT"
+```
+
+Use the canonical provider lane instead of `provider-free` for a recovered provider run. A failed child proves delivery only and must have one separate attempt-bound rerun receipt.
 
 Expected: parent receipt and every natural child receipt complete; duplicate exact runs fail closed, failed children never cause duplicate dispatch, and no duplicate operation digest is accepted.
 

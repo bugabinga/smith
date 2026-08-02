@@ -1,6 +1,6 @@
 import {
-  AdwError, canonicalBytes, digestJson, holdReasons, planMergeGate, reduceAssessments, validateAssessment,
-  validateDecision, validateOperation, validatePatchManifest, validateSnapshot,
+  AdwError, MERGE_OBLIGATION_PROVIDERS, canonicalBytes, digestJson, holdReasons, planMergeGate, reduceAssessments,
+  validateAssessment, validateDecision, validateOperation, validatePatchManifest, validateSnapshot,
 } from "./core.mjs";
 
 export const PROVIDERS = Object.freeze(["claude", "codex"]);
@@ -312,7 +312,9 @@ function operationMarker(assessmentDigest) {
 }
 
 function stateContent(value, name) {
-  if (!value || Object.keys(value).sort().join(",") !== "bytes,data,digest,source,trust" || value.trust !== "untrusted" || typeof value.data !== "string" || value.bytes !== canonicalBytes(value.data).length || value.digest !== digestJson(value.data)) payloadFail(`${name} is not bound untrusted content`);
+  const keys = value && Object.keys(value).sort().join(",");
+  const exact = keys === "bytes,data,digest,source,trust" || (keys === "bytes,data,digest,source,truncated,trust" && value.truncated === false);
+  if (!exact || value.trust !== "untrusted" || typeof value.data !== "string" || value.bytes !== canonicalBytes(value.data).length || value.digest !== digestJson(value.data)) payloadFail(`${name} is not bound untrusted content`);
   payloadText(value.data, name);
   return value.data;
 }
@@ -511,6 +513,11 @@ export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessment
       ? [{ type: "create_issue", ...payload.issue, marker }]
       : [{ type: "noop", reason: "already_complete" }];
   } else payloadFail("role payload family cannot be reduced");
+  if (Object.hasOwn(MERGE_OBLIGATION_PROVIDERS, rolePolicy.name) && state.merged === true && (payload.verdict === "patch" || payload.verdict === "noop")) {
+    if (snapshot.event.kind !== "pull_request" || !new Set(["closed", "run_obligation"]).has(snapshot.event.action) || typeof state.mergeSha !== "string" || !/^[0-9a-f]{40}$/.test(state.mergeSha)) payloadFail("merge obligation authority is invalid");
+    const finalization = `<!-- smith:merge-finalized/v1 pr=${state.entityId} merge=${state.mergeSha} role=${rolePolicy.name} status=complete artifact=${reduction.selected[0]} -->`;
+    operations.push({ type: "comment", entityId: state.entityId, body: finalization, marker: finalization });
+  }
   operations = operations.map(operation => validateOperation(operation, rolePolicy));
   return validateDecision({
     schemaVersion: 1,

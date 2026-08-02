@@ -50,13 +50,50 @@
     }
   ],
   "cancelledPullRun": {
-    "id": 30713540946,
-    "name": "ADW pull and reconcile triggers",
+    "id": 30713540804,
+    "name": "ADW pull #167",
     "path": ".github/workflows/adw-pulls.yml",
     "display_title": "ADW pull #167",
-    "event": "pull_request_review_comment",
+    "event": "pull_request_review",
     "status": "completed",
-    "conclusion": "cancelled",
+    "conclusion": "failure",
+    "head_branch": "adw/mjs-phase4",
+    "head_sha": "2baf202af878a5e18806056f5883b40c5a46addf",
+    "run_attempt": 1,
+    "actor": {
+      "id": 62310815,
+      "login": "github-advanced-security[bot]",
+      "type": "Bot"
+    },
+    "pull_requests": [
+      {
+        "number": 167,
+        "head": {
+          "sha": "cdca1b92987ec8af11f792c15e5454811a7d08f9",
+          "ref": "adw/mjs-phase4"
+        },
+        "base": {
+          "sha": "491a42a3cc8848853e4ccd6cedc5695d9bd06e8c",
+          "ref": "main"
+        }
+      }
+    ],
+    "jobs": [
+      {"id": 91405120915, "name": "pull provider or reconcile-only lane / prepare trusted issue or called lane", "status": "completed", "conclusion": "failure"},
+      {"id": 91405139206, "name": "pull provider or reconcile-only lane / fallback-codex", "status": "completed", "conclusion": "failure"},
+      {"id": 91405151683, "name": "pull provider or reconcile-only lane / verify", "status": "completed", "conclusion": "failure"},
+      {"id": 91405160611, "name": "pull provider or reconcile-only lane / apply", "status": "completed", "conclusion": "cancelled"},
+      {"id": 91405176572, "name": "pull provider or reconcile-only lane / evidence", "status": "completed", "conclusion": "failure"}
+    ]
+  },
+  "failedPreGraphRun": {
+    "id": 30713498516,
+    "name": ".github/workflows/adw-maintenance.yml",
+    "path": ".github/workflows/adw-maintenance.yml",
+    "display_title": "Authorize owner-authored ADW cutover",
+    "event": "push",
+    "status": "completed",
+    "conclusion": "failure",
     "head_branch": "adw/mjs-phase4",
     "head_sha": "2baf202af878a5e18806056f5883b40c5a46addf",
     "run_attempt": 1,
@@ -65,18 +102,8 @@
       "login": "bugabinga",
       "type": "User"
     },
-    "pull_requests": [
-      {
-        "number": 167,
-        "head": {
-          "sha": "2baf202af878a5e18806056f5883b40c5a46addf",
-          "ref": "adw/mjs-phase4"
-        },
-        "base": {
-          "ref": "main"
-        }
-      }
-    ]
+    "pull_requests": [],
+    "jobs": []
   },
   "failedDispatchRun": {
     "id": 30720000001,

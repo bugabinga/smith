@@ -173,13 +173,13 @@ test("operational reduce closes after the one declared fallback attempt", async 
   };
   const result = await invoke(["reduce"], "", {}, env, { executablePath: fixture.executablePath });
   assert.equal(result.code, 4, result.err);
-  assert.deepEqual(JSON.parse(result.out), { status: "terminal", provider: null, reason: "providers_unavailable" });
+  assert.deepEqual(JSON.parse(result.out), { command: "reduce", status: "terminal" });
   const decision = JSON.parse(await readFile(join(fixture.decisionArtifact, "decision.json")));
   assert.equal(decision.operations[0].type, "publish_check");
   assert.equal(decision.operations[0].conclusion, "failure");
 });
 
-test("operational assess writes unable evidence before exit 4 while negative and noop remain successful", async t => {
+test("operational assess preserves artifacts but emits only bounded non-sensitive status", async t => {
   const fixture = await operationalFixture(t, snapshot, {
     ".claude/agents/reviewer.md": "Review.\n",
     "adw/schemas/role-payloads/review.schema.json": "{}\n",
@@ -187,9 +187,10 @@ test("operational assess writes unable evidence before exit 4 while negative and
   await writeTransportArtifact("snapshot", fixture.snapshotArtifact, snapshot);
   const runnerTemporary = join(fixture.root, "runner");
   await mkdir(runnerTemporary);
+  const sensitiveFinding = "private alert snapshot must stay in the assessment artifact";
   const cases = [
     ["unable", payload, 4],
-    ["negative", { verdict: "reject", risk: "high", findings: [] }, 0],
+    ["negative", { verdict: "reject", risk: "high", findings: [{ severity: "high", path: "alerts/private", line: 1, message: sensitiveFinding }] }, 0],
     ["noop", { verdict: "noop", reason: "nothing to do" }, 0],
   ];
   for (const [outcome, resultPayload, expectedCode] of cases) {
@@ -208,7 +209,11 @@ test("operational assess writes unable evidence before exit 4 while negative and
     const provider = { install: async () => ({ executable: process.execPath, version: "2.1.220" }), invoke: async () => ({ assessment: record, patchBytes: null }) };
     const result = await invoke(["assess", "--provider", "claude"], "", {}, env, { executablePath: fixture.executablePath, adapters: { provider } });
     assert.equal(result.code, expectedCode, result.err);
-    assert.equal(JSON.parse(await readFile(join(assessmentArtifact, "envelope.json"))).outcome, outcome);
+    const persisted = JSON.parse(await readFile(join(assessmentArtifact, "envelope.json")));
+    assert.equal(persisted.outcome, outcome);
+    assert.deepEqual(JSON.parse(result.out), { command: "assess", status: outcome === "unable" ? "unable" : "complete" });
+    assert.equal(result.out.includes(sensitiveFinding), false);
+    if (outcome === "negative") assert.equal(JSON.stringify(persisted).includes(sensitiveFinding), true);
   }
 });
 
@@ -266,7 +271,8 @@ test("operational audit consumes full settings/labels/rulesets state and writes 
   const env = { ADW_SOURCE_ARTIFACT: fixture.source, ADW_SNAPSHOT_ARTIFACT: fixture.snapshotArtifact, ADW_DECISION_ARTIFACT: fixture.decisionArtifact, ADW_CONTROL_SHA: controlSha };
   const result = await invoke(["audit"], "", {}, env, { executablePath: fixture.executablePath });
   assert.equal(result.code, 0, result.err);
-  assert.deepEqual(JSON.parse(result.out).operations, [{ type: "noop", reason: "unchanged" }]);
+  assert.deepEqual(JSON.parse(result.out), { command: "audit", status: "complete" });
+  assert.deepEqual(JSON.parse(await readFile(join(fixture.decisionArtifact, "decision.json"))).operations, [{ type: "noop", reason: "unchanged" }]);
 });
 
 test("operational apply consumes exact artifacts and emits canonical apply result", async t => {
@@ -292,6 +298,7 @@ test("operational apply consumes exact artifacts and emits canonical apply resul
   const before = Date.now();
   const result = await invoke(["apply"], "", {}, env, { executablePath: fixture.executablePath, adapters: { github } });
   assert.equal(result.code, 0, result.err);
+  assert.deepEqual(JSON.parse(result.out), { command: "apply", status: "complete" });
   const expiry = Date.parse(env.ADW_GITHUB_TOKEN_EXPIRES_AT);
   assert.ok(expiry >= before + 2_699_000 && expiry <= Date.now() + 2_700_000);
   const receipt = JSON.parse(await readFile(join(fixture.resultArtifact, "result.json")));

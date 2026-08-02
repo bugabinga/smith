@@ -210,6 +210,40 @@ test("role artifacts reduce into closed decisions", () => {
   );
 });
 
+test("every merged-pull obligation decision persists an exact role and merge-SHA finalization marker", () => {
+  const mergeSha = "c".repeat(40);
+  const bindMerged = input => {
+    input.snapshot.event = { kind: "pull_request", action: "closed", entityId: "146" };
+    input.snapshot.state = { ...input.snapshot.state, entityId: "146", merged: true, mergeSha };
+    const wrapped = input.assessments[0]?.assessment !== undefined;
+    const assessment = wrapped ? input.assessments[0].assessment : input.assessments[0];
+    assessment.snapshotDigest = digestJson(input.snapshot);
+    assessment.payloadDigest = digestJson(assessment.payload);
+    input.reduction = { ...input.reduction, selected: [digestJson(assessment)] };
+    return input;
+  };
+  const expectedMarker = input => `<!-- smith:merge-finalized/v1 pr=146 merge=${mergeSha} role=docs-writer status=complete artifact=${input.reduction.selected[0]} -->`;
+
+  const noopInput = bindMerged(roleCase("docs-writer", { verdict: "noop", reason: "documentation unchanged" }, {
+    entityId: "146", labels: [], mergeSha, merged: true,
+  }));
+  const noop = reduceRoleArtifact(noopInput);
+  assert.deepEqual(noop.operations, [
+    { type: "noop", reason: "not_applicable" },
+    { type: "comment", entityId: "146", body: expectedMarker(noopInput), marker: expectedMarker(noopInput) },
+  ]);
+
+  const patchBytes = Buffer.from("x");
+  const patch = { baseSha: "b".repeat(40), digest: digestBytes(patchBytes), size: 1, files: [{ path: "docs/guide.md", kind: "regular", oldMode: "100644", newMode: "100644" }] };
+  const liveEnvelope = data => ({ trust: "untrusted", source: "pull:146", bytes: canonicalBytes(data).length, digest: digestJson(data), truncated: false, data });
+  const patchInput = bindMerged(roleCase("docs-writer", { verdict: "patch", summary: "Update merged docs", patch }, {
+    entityId: "146", labels: [], mergeSha, merged: true, headBranch: "docs/pr-146", baseBranch: "main", title: liveEnvelope("Docs"), body: liveEnvelope("Merged docs"),
+  }, patch, patchBytes));
+  const changed = reduceRoleArtifact(patchInput);
+  assert.deepEqual(changed.operations.map(operation => operation.type), ["create_pr", "comment"]);
+  assert.deepEqual(changed.operations[1], { type: "comment", entityId: "146", body: expectedMarker(patchInput), marker: expectedMarker(patchInput) });
+});
+
 test("repository, ref, and workflow-run findings collapse without issue-endpoint confusion", () => {
   const planner = reduceRoleArtifact(roleCase("planner", { verdict: "blocked", summary: "Main ref cannot be planned", issues: [] }, { entityId: "refs/heads/main", labels: [] }));
   assert.deepEqual(planner.operations.map(operation => operation.type), ["create_issue"]);
