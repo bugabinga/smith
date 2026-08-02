@@ -471,14 +471,18 @@ test("trusted workflow SHA controls orchestration while entity head remains the 
   assert.doesNotMatch(inputLine(pullLane, "target_sha"), /workflow_sha|pull_request\.base\.sha/);
 });
 
-test("Phase 5 plan records the pre-hold runs and keeps the first-push gate incomplete", async () => {
+test("Phase 5 plan preserves pre-hold history and keeps retry deployment unchecked", async () => {
   const plan = await readFile(phase5Plan, "utf8");
   assert.match(plan, /`ADW_CUTOVER_HOLD=true` must be armed before the first branch push/);
   for (const run of ["30713498516", "30713534731", "30713534847", "30713540804", "30713540946"]) assert.match(plan, new RegExp(run));
   assert.match(plan, /four pull runs minted App read tokens, then prepare failed on old control/i);
   assert.match(plan, /zero artifacts and zero writes/i);
-  assert.match(plan, /- \[ \] \*\*Step 2: Arm the hold before the first branch push\*\*/);
-  assert.match(plan, /- \[x\] \*\*Step 3: Push the branch \(executed before the required hold\)\*\*/);
+  assert.match(plan, /At retry planning time, `ADW_CUTOVER_HOLD=true` is already armed/);
+  const task8 = plan.slice(plan.indexOf("### Task 8:"), plan.indexOf("### Task 9:"));
+  assert.match(task8, /PR #168 and branch `adw\/mjs-phase5-retry` already exist/);
+  assert.match(task8, /- \[ \] \*\*Step 2: Revalidate the already-armed hold immediately before push\*\*/);
+  assert.match(task8, /- \[ \] \*\*Step 3: Push the signed plan commit and bind the retry head\*\*/);
+  assert.doesNotMatch(task8, /- \[x\]/);
 });
 
 test("Phase 5 binds dispatch preconditions, delivery, and failed-child recovery", async () => {
@@ -538,13 +542,29 @@ test("cutover plan treats legacy merge-gate absence as an explicit owner bypass"
 
 test("Phase 5 records the rolled-back cutover and blocks retry completion claims", async () => {
   const plan = await readFile(phase5Plan, "utf8");
-  for (const evidence of ["2a31a5a", "d4dd6c6", "30746446905", "30747070695", "30747221797", "30747419140"]) assert.match(plan, new RegExp(evidence));
+  for (const evidence of ["#167", "2a31a5a", "d4dd6c6", "30746446905", "30747070695", "30747221797", "30747419140", "30766618499"]) {
+    assert.match(plan, new RegExp(evidence));
+  }
   assert.match(plan, /signed rollback/i);
   assert.match(plan, /zero source\/snapshot\/apply artifacts/i);
   assert.match(plan, /App can read open PR #163 files.*merged PR #167 files return 404/is);
   assert.match(plan, /retry prerequisite.*unchanged.*p38.*live read/is);
   assert.match(plan, /Phase 5 remains incomplete/i);
   assert.doesNotMatch(plan, /Expected: Phase 5 complete/);
+});
+
+test("Phase 5 retry binds PR 168 and rollback material to its checked head", async () => {
+  const plan = await readFile(phase5Plan, "utf8");
+  const retry = plan.slice(plan.indexOf("## Retry operational baseline"));
+  assert.match(retry, /PR #168.*`adw\/mjs-phase5-retry`/s);
+  assert.match(retry, /d4dd6c6d0e828c876aab5470e8e80524b6cd7e84/);
+  assert.match(retry, /f79462666647a0c504479f68fe4083050d9e5f9d/);
+  assert.match(retry, /CUTOVER_BASE=d4dd6c6d0e828c876aab5470e8e80524b6cd7e84/);
+  assert.match(retry, /git diff --binary "\$CUTOVER_BASE" "\$PR_HEAD"/);
+  assert.match(retry, /git diff --binary -R "\$CUTOVER_BASE" "\$PR_HEAD"/);
+  assert.match(retry, /Only after push and checks, record the exact-head owner approval marker/);
+  const operational = plan.slice(plan.indexOf("### Task 8:"));
+  assert.doesNotMatch(operational, /- \[x\]/);
 });
 
 test("Phase 5 records the final recovery, precondition, obligation, log, and provider-auth corrections", async () => {
