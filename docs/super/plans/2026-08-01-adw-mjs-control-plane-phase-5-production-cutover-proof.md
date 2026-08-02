@@ -24,6 +24,8 @@ This is exactly one Phase 5. It ends only after the atomic cutover, positive pro
 
 On 2026-08-01, the owner approved the first offered authorization route: current `bugabinga` authentication may author the cutover PR. GitHub prohibits author self-approval, so an immutable exact-head owner approval comment bound by REST to numeric owner ID `876467` and login `bugabinga`, together with confirmed ruleset bypass, replaces the impossible review object. Administrative squash remains gated by the unchanged head, required checks, final legacy drain, and quiet-window controls.
 
+On 2026-08-02, the owner authorized administrative squash of PR #150 at exact head `146c5467cd6b87d1ae3ef10f116b075f5910a94e`. Owner `bugabinga` merged it at `2026-08-02T09:44:16Z` as GitHub-verified squash `d1be190b81abf9f5a874ca1e3ed8c1f310d96ec9` (`verification.reason: valid`). This is a pre-cutover product disposition: it advances the main baseline and cutover base, removes #150 from live proof targets, and neither starts the quiet-main interval nor satisfies the later PR #167 cutover merge.
+
 ## Locked safety boundaries
 
 - Production repository is exactly `bugabinga/smith`; default branch is exactly `main`.
@@ -33,32 +35,34 @@ On 2026-08-01, the owner approved the first offered authorization route: current
 - Seed exact non-secret variables `APP_BOT_USER_ID=306488075` and `APP_BOT_LOGIN=agent-smith-bugabinga-adc[bot]` before cutover.
 - Internal App intents use only `repository_dispatch` event types `retry_route`, `fallback_route`, `retry_pioneer`, `run_review`, and `run_obligation`; manual `workflow_dispatch` exposes only owner choices `audit` and `reconcile`. `dispatch_repository` retains `contents:write` plus exact snapshot read permissions so every named precondition can be re-read immediately before delivery. Actions write is present only when the same closed decision contains a separate `rerun_check`; dispatch itself exposes no Actions mutation.
 - Production proof is positive-only. Never inject malformed artifacts, stale revisions, cancelled jobs, partial writes, invalid credentials, changed permissions, malformed events, provider outages, ruleset damage, or secret rotation.
-- Existing organic `BLOCKED`/`BEHIND` state on PRs #150, #163, #165, and #166 is observed, never created or worsened for this proof. `BLOCKED` is not independently disqualifying because a missing required `merge-gate` can cause it; only explicit `BEHIND`/`DIRTY`, draft, ADW holds/evidence, or native protection may block merge.
+- Existing organic `BEHIND` state on still-open PRs #163, #165, and #166 is observed, never created or worsened for this proof. Only live explicit `BEHIND`/`DIRTY`, draft, ADW holds/evidence, or native protection may block merge.
 - Settings/rulesets remain read-only. Audit may report their existing drift but may not mutate it. Label sync may repair only checked-in label definitions through the closed `sync_labels` operation.
 - `pull_request_review_comment` and `check_run`/`check_suite` remain reconcile-only. Their proof runs contain no provider assessment artifact and no provider job execution.
 - No legacy and MJS operational writer may be enabled simultaneously. `adw-selftest` is non-writing and remains enabled. `adw-release` is disabled and receives no replacement because release automation remains deferred.
-- The owner keeps main otherwise quiet from the final head check until both scheduled cycles finish. Any unexpected main movement invalidates current-head evidence, stops proof, and triggers rollback from the new current main; it never authorizes force-push or reset.
+- The owner keeps main otherwise quiet from the final head check until both scheduled cycles finish. The strict `main == MERGE_SHA` quiet-main invariant starts only when the later PR #167 cutover squash lands; the pre-cutover #150 disposition neither starts nor consumes that interval. Any subsequent unexpected main movement invalidates current-head evidence, stops proof, and triggers rollback from the new current main; it never authorizes force-push or reset.
 - Every branch commit is signed when the executor can sign. The protected PR still lands as one GitHub-verified squash commit, satisfying `docs/PROJECT-INVARIANTS.md` §7.
 
 ## Production baseline to revalidate, not manufacture
 
-The 2026-08-01 planning snapshot is:
+The current pre-cutover baseline, revalidated read-only on 2026-08-02, is:
 
-- `origin/main`: `491a42a3cc8848853e4ccd6cedc5695d9bd06e8c`.
+- `origin/main` and the cutover base: `d1be190b81abf9f5a874ca1e3ed8c1f310d96ec9`.
+- The candidate branch contains that main through signed merge commit `6711c32b8aef6a7f0ee23663ec85ee8593489080`; revalidate the final remote PR head after the required corrective push.
 - Candidate tip after Phase 4 Task 6: `e29f484b475f353e1db897c74660fb5316f120a3`.
 - Secrets present: `APP_ID`, `APP_PRIVATE_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_AUTH_JSON`.
-- Repository variables absent; therefore both exact App bot variables must be seeded.
+- Repository variables absent in the original snapshot; the exact App bot variables were subsequently seeded and revalidated.
 - App bot identity already observed on forge records: numeric user ID `306488075`, login `agent-smith-bugabinga-adc[bot]`.
-- Main ruleset ID `19155559`; squash-only and signed commits are active; required contexts are `check` and `merge-gate`. PR #167 has current-head `check` but no legacy `merge-gate`, so cutover requires the confirmed owner administrative bypass rather than pretending that context exists.
+- Main ruleset ID `19155559`; squash-only and signed commits are active; required contexts are `check` and `merge-gate`. PR #167 requires a current-head `check` and confirmed owner administrative bypass if the deleted legacy workflow cannot publish `merge-gate`; the plan never pretends that context exists.
 - Live ruleset has organic drift from `.github/rulesets/main.json`: live strict required checks are `true` and include `do_not_enforce_on_create:true`, while checked-in policy says strict `false` and omits that field.
 - Live label `urgent` has organic color drift (`ededed` live versus `e03131` checked in).
-- PR #150 head `146c5467cd6b87d1ae3ef10f116b075f5910a94e` is `BLOCKED`.
-- PR #163 head `1b1891ee0000c817891fdcc963d778c030e5a74d` is `BEHIND`.
-- PR #165 head `adf17c538ff655d8fb065a848bdc1f499622d482` is `BEHIND`.
-- PR #166 head `9b3e822ef7eef3563fa22b57daa6ced68520f676` is `BEHIND`.
-- All four PRs have current-head legacy App review evidence and are open. The three explicit `BEHIND` states remain fail-closed. PR #150's composite `BLOCKED` state is not proof of an independent blocker and must not be used for a no-merge claim.
+- PR #163 head `1b1891ee0000c817891fdcc963d778c030e5a74d` is open and REST `mergeable_state` is `behind`.
+- PR #165 head `adf17c538ff655d8fb065a848bdc1f499622d482` is open and REST `mergeable_state` is `behind`.
+- PR #166 head `9b3e822ef7eef3563fa22b57daa6ced68520f676` is open and REST `mergeable_state` is `behind`.
+- All three still-open proof PRs have current-head legacy App review evidence. Their explicit behind states remain fail-closed.
 
-At execution, re-read every value. A changed SHA or merge state is not a reason to inject state. If an explicit behind/dirty proof candidate is no longer organically behind/dirty, stop that assertion and ask the owner for another natural candidate; do not make one. Before live audit, pause if any blocked-only PR could merge when its missing `merge-gate` is published; obtain an independently existing blocker or owner disposition without manufacturing failure state.
+Historical rationale is retained: on 2026-08-01, PR #150 at head `146c5467cd6b87d1ae3ef10f116b075f5910a94e` was open with composite `BLOCKED`; all four then-open PRs had current-head legacy App evidence. Because missing `merge-gate` could itself produce `BLOCKED`, that status never proved an independent blocker, which is why the original plan required owner disposition before live audit. The exact-head owner squash above is that disposition, not post-cutover proof.
+
+At execution, re-read every live target. A changed SHA or merge state is not a reason to inject state. If #163, #165, or #166 is no longer organically open and behind/dirty, stop that assertion and ask the owner for another natural candidate; do not make one.
 
 ### Actual pre-hold execution record
 
@@ -890,7 +894,7 @@ Natural completion now follows expected-before/current authority; only an exact 
 
 On 2026-08-01, focused Node passed 172/172 and full Node passed 248/248; workspace Rust tests passed 34/34 across seven suites. `git diff --check`, YAML parsing, and all three canonical/production wrapper byte comparisons passed. `cargo run -p xtask -- check` still reached `xtask pup` and failed only because this Termux environment has no rustup-style `cargo +nightly-2026-01-22`; the earlier project-plan blocker remains open.
 
-Read-only live reduction at main `491a42a3cc8848853e4ccd6cedc5695d9bd06e8c` produced an auditor snapshot of 78,778 bytes (digest `94137e8e76db3e82f379ffaa3343d318aae70e79a2d9e11484da0c1365cd5ce3`) and a reconciler snapshot of 223,611 bytes (digest `1d30d6deedb293a8ec810d05b33a27622e738ca969706a6168b76f444f6909b6`). Auditor failed the three explicit-behind heads, judged #150 eligible without circular `BLOCKED`, and would reconstruct its existing auto-merge arm; reconciler reduced successfully with zero cancelled applies in the bounded live window. Therefore live audit remains blocked until Task 12's independent #150 safety proof or owner disposition. No GitHub object was mutated.
+Read-only live reduction at main `491a42a3cc8848853e4ccd6cedc5695d9bd06e8c` produced an auditor snapshot of 78,778 bytes (digest `94137e8e76db3e82f379ffaa3343d318aae70e79a2d9e11484da0c1365cd5ce3`) and a reconciler snapshot of 223,611 bytes (digest `1d30d6deedb293a8ec810d05b33a27622e738ca969706a6168b76f444f6909b6`). Auditor failed the three explicit-behind heads, judged then-open #150 eligible without circular `BLOCKED`, and would reconstruct its existing auto-merge arm; reconciler reduced successfully with zero cancelled applies in the bounded live window. At that snapshot, live audit remained blocked pending independent #150 safety or owner disposition; the exact-head owner squash recorded above later supplied disposition before cutover. No GitHub object was mutated.
 
 ### Task 7E: Bind deployed refs, submitted-review control, and route-label execution
 
@@ -1014,20 +1018,21 @@ Signed implementation commit `b9d379efebe8e19a8b8be1a25d383be268d8706e` verifies
 
 The branch and PR already exist. Their first push occurred before the required hold; the unchecked hold step preserves that sequencing defect rather than rewriting history. No corrective commit may be pushed until the currently armed hold is revalidated.
 
-- [ ] **Step 1: Rebase only before approval, then rerun Task 7**
+- [x] **Step 1: Merge latest main only before approval and revalidate the local candidate**
 
 ```bash
-git fetch origin
-BASE=$(git merge-base origin/main HEAD)
-test "$BASE" = "$(git rev-parse origin/main)" || git -c commit.gpgsign=true rebase origin/main
+BASE=d1be190b81abf9f5a874ca1e3ed8c1f310d96ec9
+test "$(git rev-parse origin/main)" = "$BASE"
+test "$(git merge-base origin/main HEAD)" = "$BASE"
+test "$(git show -s --format=%P 6711c32b8aef6a7f0ee23663ec85ee8593489080)" = \
+  "2c97b596623f8f31dea2920dba4f5fe28092b727 d1be190b81abf9f5a874ca1e3ed8c1f310d96ec9"
 node --test adw/test/*.test.mjs
-cargo run -p xtask -- check
+find adw -type f -name '*.mjs' -print0 | xargs -0 -n1 node --check
 git diff --check
-BASE=$(git merge-base origin/main HEAD)
 for commit in $(git rev-list "$BASE"..HEAD); do git verify-commit "$commit"; done
 ```
 
-Expected: final branch contains latest main and all checks pass. No rebase is permitted after the exact-head owner approval comment.
+Expected and completed: signed merge `6711c32b8aef6a7f0ee23663ec85ee8593489080` carries main baseline `d1be190b81abf9f5a874ca1e3ed8c1f310d96ec9`; full Node passes 265/265, all MJS syntax checks pass, diff is clean, and every candidate commit verifies. The already-recorded Termux `xtask pup` toolchain blocker is unchanged. This pre-cutover product merge does not start the quiet-main invariant. No history rewrite or main merge is permitted after the exact-head owner approval comment.
 
 - [ ] **Step 2: Arm the hold before the first branch push**
 
@@ -1137,9 +1142,10 @@ Expected and revalidated read-only on 2026-08-01:
 ```bash
 test "$PR_HEAD" = "$(gh pr view "$PR" --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
 test "$(git rev-parse origin/main)" = "$(gh api repos/bugabinga/smith/commits/main --jq .sha)"
+test "$(git rev-parse origin/main)" = "d1be190b81abf9f5a874ca1e3ed8c1f310d96ec9"
 ```
 
-Expected: owner-approved head and main baseline unchanged.
+Expected: owner-approved head unchanged and main baseline exactly `d1be190b81abf9f5a874ca1e3ed8c1f310d96ec9`.
 
 - [ ] **Step 4: Create an encrypted/private rollback workspace and reverse patch**
 
@@ -1147,7 +1153,9 @@ Expected: owner-approved head and main baseline unchanged.
 ROLLBACK_ROOT="$HOME/.local/state/smith-adw-phase5-rollback"
 mkdir -p "$ROLLBACK_ROOT"
 chmod 700 "$ROLLBACK_ROOT"
-CUTOVER_BASE=$(git merge-base origin/main "$PR_HEAD")
+CUTOVER_BASE=$(git rev-parse origin/main)
+test "$CUTOVER_BASE" = "d1be190b81abf9f5a874ca1e3ed8c1f310d96ec9"
+test "$(git merge-base origin/main "$PR_HEAD")" = "$CUTOVER_BASE"
 git diff --binary "$CUTOVER_BASE" "$PR_HEAD" > "$ROLLBACK_ROOT/cutover.patch"
 git diff --binary -R "$CUTOVER_BASE" "$PR_HEAD" > "$ROLLBACK_ROOT/rollback.patch"
 sha256sum "$ROLLBACK_ROOT"/*.patch > "$ROLLBACK_ROOT/SHA256SUMS"
@@ -1394,33 +1402,23 @@ Expected exactly:
 
 **Files:** none; evidence is downloaded outside the repository
 
-- [ ] **Step 1: Revalidate organic proof state without mutation**
+- [ ] **Step 1: Revalidate three organic proof states without mutation**
 
 ```bash
 mkdir -p "$HOME/adw-phase5-evidence"
-for pr in 150 163 165 166; do
-  gh pr view "$pr" --repo bugabinga/smith \
-    --json number,state,headRefOid,mergeStateStatus,autoMergeRequest,url
- done | jq -s '.' > "$HOME/adw-phase5-evidence/pre-audit-prs.json"
+for pr in 163 165 166; do
+  gh api "repos/bugabinga/smith/pulls/$pr" \
+    --jq '{number,state,headRefOid:.head.sha,mergeableState:.mergeable_state,autoMergeRequest:.auto_merge,url:.html_url}'
+done | jq -s '.' > "$HOME/adw-phase5-evidence/pre-audit-prs.json"
 jq -e '
-  (map(select(.number == 150 and .state == "OPEN" and .mergeStateStatus == "BLOCKED")) | length == 1) and
-  (map(select((.number == 163 or .number == 165 or .number == 166) and .state == "OPEN" and .mergeStateStatus == "BEHIND")) | length == 3)
-' "$HOME/adw-phase5-evidence/pre-audit-prs.json"
+  length == 3 and
+  all(.[];
+    (.number == 163 or .number == 165 or .number == 166) and
+    .state == "open" and .mergeableState == "behind")
+' "$HOME/adw-phase5-evidence/pre-audit-prs.json" >/dev/null
 ```
 
-Prove #150 has an independent native blocker before audit; composite `BLOCKED` and missing `merge-gate` do not satisfy this gate:
-
-```bash
-gh pr view 150 --repo bugabinga/smith \
-  --json number,state,isDraft,reviewDecision,mergeStateStatus,autoMergeRequest,statusCheckRollup \
-  > "$HOME/adw-phase5-evidence/pr-150-native-safety.json"
-jq -e '
-  .state == "OPEN" and .mergeStateStatus == "BLOCKED" and
-  (.isDraft == true or .reviewDecision == "REVIEW_REQUIRED" or .reviewDecision == "CHANGES_REQUESTED")
-' "$HOME/adw-phase5-evidence/pr-150-native-safety.json" >/dev/null
-```
-
-If this read-only proof fails—as the 2026-08-01 snapshot with empty `reviewDecision` does—stop before audit and obtain owner disposition. Do not infer safety from auto-merge already being armed, and do not add a synthetic hold for proof.
+Only the three still-open targets participate in live state counts, no-arm assertions, and open-proof evidence.
 
 Capture immutable policy baselines before audit:
 
@@ -1432,7 +1430,7 @@ gh api repos/bugabinga/smith | jq -S \
   > "$HOME/adw-phase5-evidence/settings.before.json"
 ```
 
-Expected: current organic PR states match. If not, pause; never force them back. `BLOCKED` for #150 may be caused solely by missing `merge-gate`; before dispatching audit, prove an independently existing native/ADW blocker or obtain owner disposition. Do not use `BLOCKED` itself as no-merge evidence and do not manufacture a hold.
+Expected: exactly three live targets are open and explicitly behind. If any differs, pause; never force it back or manufacture a hold.
 
 - [ ] **Step 2: Dispatch owner manual audit**
 
@@ -1449,7 +1447,7 @@ AUDIT_RUN=$(gh run list --repo bugabinga/smith --workflow adw-maintenance.yml \
 gh run watch "$AUDIT_RUN" --repo bugabinga/smith --exit-status
 ```
 
-Expected: success; auditor provider jobs skipped; existing label drift repaired only for checked-in labels; settings/ruleset drift reported through an owner-visible issue; #163/#165/#166 receive explicit-behind failure checks. #150's gate conclusion comes only from ADW labels, exact current-head App evidence, product `check`, and sticky risk; native protection handles other blockers.
+Expected: success; auditor provider jobs skipped; existing label drift repaired only for checked-in labels; settings/ruleset drift reported through an owner-visible issue; #163/#165/#166 receive explicit-behind failure checks.
 
 - [ ] **Step 3: Capture and validate audit artifacts/receipt**
 
@@ -1463,7 +1461,7 @@ jq -e '.authority.name == "auditor" and .status == "complete"' \
 jq -e '
   [.operations[] | select(
     .type == "arm_auto_merge" and
-    (.prId == "150" or .prId == "163" or .prId == "165" or .prId == "166"))] | length == 0
+    (.prId == "163" or .prId == "165" or .prId == "166"))] | length == 0
 ' "$AUDIT_DIR"/adw-decision/decision.json >/dev/null
 gh api repos/bugabinga/smith/labels/urgent \
   --jq '.color == "e03131" and .description == "Time-critical (regression, security-adjacent, or blocking others) — the planner ranks it ahead of same/lower-priority work when ordering the backlog"'
@@ -1489,7 +1487,7 @@ DRIFT_URL=$(gh api --paginate 'repos/bugabinga/smith/issues?state=all&per_page=1
 test -n "$DRIFT_URL"
 ```
 
-Expected: no assessment artifacts; complete auditor receipt; no auto-merge operation for already-armed #150 or explicit behind/dirty PRs; #150 is judged without circular `mergeable_state=blocked`; exact `urgent` repair; byte-equivalent live ruleset/settings snapshots; and an App-authored drift report URL.
+Expected: no assessment artifacts; complete auditor receipt; no auto-merge operation for the three explicit behind/dirty PRs; exact `urgent` repair; byte-equivalent live ruleset/settings snapshots; and an App-authored drift report URL.
 
 - [ ] **Step 4: Prove current-head App checks and independently fail-closed merge states**
 
@@ -1503,12 +1501,9 @@ for pr in 163 165 166; do
     ' >/dev/null
   test "$(gh pr view "$pr" --repo bugabinga/smith --json state --jq .state)" = OPEN
 done
-head=$(gh pr view 150 --repo bugabinga/smith --json headRefOid --jq .headRefOid)
-gh api "repos/bugabinga/smith/commits/$head/check-runs?filter=latest&per_page=100" |
-  jq -e --arg head "$head" '[.check_runs[] | select(.name == "merge-gate" and .head_sha == $head and .app.slug == "agent-smith-bugabinga-adc" and .status == "completed")] | length >= 1' >/dev/null
 ```
 
-Expected: explicit behind PRs fail and cannot arm. #150 has a current-head App gate derived without using composite `BLOCKED`; its remaining native state is recorded separately and was proven safe before audit.
+Expected: all three explicit behind PRs have green product checks, failing current-head App gates, remain open, and cannot arm.
 
 - [ ] **Step 5: Dispatch owner manual reconciliation**
 
@@ -1648,10 +1643,10 @@ Expected: issue closes; `closed` is not an issue-wrapper trigger.
 
 **Files:** none
 
-- [ ] **Step 1: Create one benign file-level review comment on #150's exact head**
+- [ ] **Step 1: Create one benign file-level review comment on #163's exact head**
 
 ```bash
-PR_PROOF=150
+PR_PROOF=163
 REVIEW_HEAD=$(gh pr view "$PR_PROOF" --repo bugabinga/smith --json headRefOid --jq .headRefOid)
 REVIEW_FILE=$(gh api "repos/bugabinga/smith/pulls/$PR_PROOF/files?per_page=100" --jq '.[0].filename')
 REVIEW_COMMENT_START=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -1687,11 +1682,11 @@ jq -e '[.jobs[] | select((.name | test("primary-|fallback-| / reduce$")) and .co
   "$HOME/adw-phase5-evidence/$REVIEW_COMMENT_RUN/run.json" >/dev/null
 jq -e '.authority.name == "reconciler"' \
   "$HOME/adw-phase5-evidence/$REVIEW_COMMENT_RUN/download/adw-apply-result-1/result.json" >/dev/null
-test "$(gh pr view 150 --repo bugabinga/smith --json state --jq .state)" = OPEN
-test "$(gh pr view 150 --repo bugabinga/smith --json headRefOid --jq .headRefOid)" = "$REVIEW_HEAD"
+test "$(gh pr view "$PR_PROOF" --repo bugabinga/smith --json state --jq .state)" = OPEN
+test "$(gh pr view "$PR_PROOF" --repo bugabinga/smith --json headRefOid --jq .headRefOid)" = "$REVIEW_HEAD"
 ```
 
-Expected: all provider/reduce jobs skipped, reconciler receipt complete, and PR #150 unchanged.
+Expected: all provider/reduce jobs skipped, reconciler receipt complete, and open PR #163 unchanged.
 
 - [ ] **Step 4: Identify the check-triggered reconcile-only run from audit's MJS check**
 
@@ -1719,34 +1714,38 @@ Expected: reconcile-only graph, all provider/reduce jobs skipped, no provider as
 - [ ] **Step 5: Prove current-head App review evidence remains exact**
 
 ```bash
-for pr in 150 163 165 166; do
+for pr in 163 165 166; do
   head=$(gh pr view "$pr" --repo bugabinga/smith --json headRefOid --jq .headRefOid)
   gh api --paginate "repos/bugabinga/smith/issues/$pr/comments?per_page=100" |
     jq -e --arg head "$head" '
       def app: .user.id == 306488075 and .user.login == "agent-smith-bugabinga-adc[bot]" and .user.type == "Bot";
-      ([.[] | select(app and ((.body | startswith("Review: " + $head + "\nVERDICT: reviewed")) or (.body | test("smith:review-evidence/v1 kind=correctness head=" + $head + " conclusion=approve .*authoritative=true"))))] | length >= 1) and
-      ([.[] | select(app and ((.body | startswith("Security review: " + $head + "\nVERDICT: security-cleared")) or (.body | test("smith:review-evidence/v1 kind=security head=" + $head + " conclusion=approve .*authoritative=true"))))] | length >= 1)' >/dev/null
+      ([.[] | select(app and (((.body | startswith("Review: " + $head)) and (.body | contains("\nVERDICT: reviewed"))) or (.body | test("smith:review-evidence/v1 kind=correctness head=" + $head + " conclusion=approve .*authoritative=true"))))] | length >= 1) and
+      ([.[] | select(app and (((.body | startswith("Security review: " + $head)) and (.body | contains("\nVERDICT: security-cleared"))) or (.body | test("smith:review-evidence/v1 kind=security head=" + $head + " conclusion=approve .*authoritative=true"))))] | length >= 1)' >/dev/null
 done
 ```
 
-Expected: each PR has one-or-more exact current-head App-authored positive records for each of correctness and security. Duplicate positives are valid; reject, stale-head, malformed, or wrong-actor records never satisfy either kind.
+Expected: each of the three still-open PRs has one-or-more exact current-head App-authored positive records for correctness and security. Duplicate positives are valid; reject, stale-head, malformed, or wrong-actor records never satisfy either kind.
 
-### Task 15: Reconcile #150/#163/#165/#166 and observe two schedule cycles
+### Task 15: Reconcile #163/#165/#166 and observe two schedule cycles
 
 **Files:** none
 
 - [ ] **Step 1: Verify explicit behind/dirty PRs did not auto-merge during proof**
 
 ```bash
-for pr in 150 163 165 166; do
+for pr in 163 165 166; do
   gh pr view "$pr" --repo bugabinga/smith \
     --json number,state,mergedAt,headRefOid,mergeStateStatus,url
- done | jq -s '.' > "$HOME/adw-phase5-evidence/post-proof-prs.json"
-jq -e 'all(.[] | select(.number == 163 or .number == 165 or .number == 166); .state == "OPEN" and .mergedAt == null)' \
-  "$HOME/adw-phase5-evidence/post-proof-prs.json"
+done | jq -s '.' > "$HOME/adw-phase5-evidence/post-proof-prs.json"
+jq -e '
+  length == 3 and
+  all(.[];
+    (.number == 163 or .number == 165 or .number == 166) and
+    .state == "OPEN" and .mergedAt == null)
+' "$HOME/adw-phase5-evidence/post-proof-prs.json" >/dev/null
 ```
 
-Expected: every explicit behind/dirty proof PR remains open and unmerged. #150's observed state is retained without claiming `BLOCKED` itself forbids a successful ADW gate.
+Expected: exactly three explicit behind/dirty proof PRs remain open and unmerged.
 
 - [ ] **Step 2: Wait for first natural six-hour reconciliation schedule**
 
@@ -1828,7 +1827,7 @@ Expected: both cycles provider-free and complete; active inventory remains exact
 
 - [ ] **Step 5: Final current-head and independent-blocker assertions**
 
-Re-run Task 12 Step 4, Task 14 Step 5, and Task 15 Step 1. Expected: exact current-head App evidence/checks remain valid; explicit behind/dirty PRs remain open; no receipt arms those PRs; #150's composite blocked state is not represented as independent merge authority.
+Re-run Task 12 Step 4, Task 14 Step 5, and Task 15 Step 1. Expected: exact current-head App evidence/checks remain valid for all three live targets; they remain open; no receipt arms them.
 
 ### Task 16: Publish evidence and close the quiet window
 
@@ -1847,7 +1846,7 @@ for decision in "${decisions[@]}"; do
   jq -e '
     [.operations[] | select(
       .type == "arm_auto_merge" and
-      (.prId == "150" or .prId == "163" or .prId == "165" or .prId == "166"))]
+      (.prId == "163" or .prId == "165" or .prId == "166"))]
     | length == 0
   ' "$decision" >/dev/null
 done
@@ -1878,7 +1877,7 @@ review-comment and check reconcile-only run URLs
 both natural schedule-cycle run URLs
 artifact IDs/names and receipt status for every run
 APP bot ID/login evidence
-#150/#163/#165/#166 exact heads, merge states, App evidence/check IDs, and open status
+#163/#165/#166 exact heads, merge states, App evidence/check IDs, and open status
 label drift repair result and settings/ruleset drift report URL
 statement that no secret was rotated and no malformed/stale/failure/partial production injection occurred
 ```
@@ -1902,7 +1901,7 @@ Trigger rollback immediately on any of:
 - malformed/missing artifact, sidecar mismatch, incomplete/failed receipt, stale write reaching mutation, or duplicate operation digest;
 - current-head `check`/`merge-gate` or App evidence bound to a different head/actor;
 - review-comment/check path executing a provider;
-- any explicit behind/dirty PR being armed or merged, or any blocked-only PR proceeding without the pre-audit independent safety proof;
+- any explicit behind/dirty proof PR being armed or merged;
 - settings/ruleset mutation;
 - unbounded provider recursion from label/App comments;
 - either required schedule cycle missing, failing, cancelling, or running on unexpected control SHA;
@@ -2038,4 +2037,4 @@ Expected: MJS is disabled and drained before rollback selection. Unchanged main 
 
 ## Phase boundary
 
-Phase 5 ends with one GitHub-verified squash decision on main, three MJS operational wrappers plus self-test, no legacy writer or shell reducer, release automation still deferred, the prepared cutover child plus current-main rollback procedure available, positive production receipts captured, explicit behind/dirty candidates still fail-closed, blocked-only state delegated without circularity, and two consecutive scheduled reconciliation cycles green. Legacy marker compatibility, long-term docs, rollback-branch retirement, and backlog cleanup remain Phase 6.
+Phase 5 ends with one GitHub-verified cutover squash decision on main after the separate pre-cutover product disposition, three MJS operational wrappers plus self-test, no legacy writer or shell reducer, release automation still deferred, the prepared cutover child plus current-main rollback procedure available, positive production receipts captured, all three explicit behind/dirty candidates still fail-closed, and two consecutive scheduled reconciliation cycles green. Legacy marker compatibility, long-term docs, rollback-branch retirement, and backlog cleanup remain Phase 6.
