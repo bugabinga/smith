@@ -494,10 +494,10 @@ export function reduceRoleArtifact({ snapshot, rolePolicy, reduction, assessment
     else operations.push({ type: "remove_label", entityId: state.entityId, label: "changes-requested" });
   } else if (rolePolicy.payloadFamily === "maintenance") {
     if (!Array.isArray(state.actionTargets) || payload.actions.some(action => !state.actionTargets.includes(action.entityId))) payloadFail("maintenance target is outside snapshot");
-    const runTargets = new Map((state.resources?.runs ?? []).filter(run => typeof run?.id === "string" && Number.isSafeInteger(run?.attempt) && run.attempt > 0).map(run => [run.id, run]));
+    const runTargets = new Map((state.resources?.runs ?? []).filter(run => typeof run?.id === "string" && Number.isSafeInteger(run?.attempt) && run.attempt > 0 && Array.isArray(run.failedJobs) && run.failedJobs.length > 0).map(run => [run.id, run]));
     const retries = payload.actions.filter(action => action.kind === "retry");
     if ((retries.length > 0 && !rolePolicy.operations.includes("rerun_check")) || retries.some(action => !runTargets.has(action.entityId)) || new Set(retries.map(action => action.entityId)).size !== retries.length) payloadFail("maintenance retry target is not a workflow run");
-    operations = retries.map(action => ({ type: "rerun_check", runId: action.entityId, attempt: runTargets.get(action.entityId).attempt }));
+    operations = retries.map(action => ({ type: "rerun_check", runId: action.entityId, attempt: runTargets.get(action.entityId).attempt, failedJobs: runTargets.get(action.entityId).failedJobs }));
     const findings = payload.actions.filter(action => action.kind !== "retry");
     if (findings.length > 0) {
       const report = { title: `ADW ${rolePolicy.name} findings`, body: boundedFindingReport(payload.summary, findings), marker };

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { AdwError, canonicalBytes, digestJson, planReconciliation } from "../core.mjs";
+import { AdwError, canonicalBytes, digestJson, mapReconciliationIntents, planReconciliation } from "../core.mjs";
 import { controlSnapshotPlan, createDefaultGitHub, createGitHub, deterministicSnapshotPlan, normalizeEvent, roleSnapshotPlan } from "../github.mjs";
 import { deriveDeterministicArtifacts, role } from "../roles.mjs";
 
@@ -614,7 +614,7 @@ test("deterministic settings snapshot preserves full new rules and reports diges
   assert.match(audit.body, /Live digest: [0-9a-f]{64}/);
 });
 
-test("reconciliation inspects completed operational runs and binds failed-run cancelled apply recovery exactly", async () => {
+test("live-30713540804-shaped recovery binds the exact run and failed/cancelled jobs", async () => {
   const fixture = JSON.parse(await readFile(new URL("./fixtures/github/blockers.json", import.meta.url)));
   const firstRevision = "2026-07-28T00:00:00.000Z";
   const secondRevision = "2026-07-28T00:00:01.000Z";
@@ -648,6 +648,7 @@ test("reconciliation inspects completed operational runs and binds failed-run ca
     if (/\/actions\/workflows\/adw-(?:pulls|maintenance)\.yml\/runs\?event=repository_dispatch&per_page=100&page=1$/.test(endpoint)) return reply({ workflow_runs: [] });
     if (endpoint.startsWith(`/repos/bugabinga/smith/actions/runs/${fixture.cancelledPullRun.id}/jobs?`)) return reply({ jobs: fixture.cancelledPullRun.jobs });
     if (endpoint.startsWith(`/repos/bugabinga/smith/actions/runs/${fixture.failedPreGraphRun.id}/jobs?`)) return reply({ jobs: fixture.failedPreGraphRun.jobs });
+    if (endpoint.startsWith(`/repos/bugabinga/smith/actions/runs/${fixture.failedDispatchRun.id}/jobs?`)) return reply({ jobs: fixture.failedDispatchRun.jobs });
     if (endpoint.startsWith("/repos/bugabinga/smith/issues/1/comments?")) return reply([]);
     if (endpoint.startsWith("/repos/bugabinga/smith/issues/2/comments?")) return reply([{ id: 20, user: bot, created_at: secondRevision, body: marker }]);
     throw new Error(`unexpected ${endpoint}`);
@@ -662,12 +663,21 @@ test("reconciliation inspects completed operational runs and binds failed-run ca
     runId: String(fixture.cancelledPullRun.id), workflowPath: fixture.cancelledPullRun.path,
     event: fixture.cancelledPullRun.event, entityId: "167", headSha: fixture.cancelledPullRun.head_sha,
     controlSha: liveControlSha, attempt: 1, runConclusion: "failure", applyJobId: "91405160611",
+    failedJobs: [
+      { id: "91405120915", conclusion: "failure" }, { id: "91405139206", conclusion: "failure" },
+      { id: "91405151683", conclusion: "failure" }, { id: "91405160611", conclusion: "cancelled" },
+      { id: "91405176572", conclusion: "failure" },
+    ],
   }]);
-  assert.deepEqual(planReconciliation({ snapshot, ...snapshot.state.reconciliation }).map(intent => intent.kind).sort(), ["hold_spec", "retry_cancelled_apply", "retry_failed_dispatch"]);
+  const intents = planReconciliation({ snapshot, ...snapshot.state.reconciliation });
+  assert.deepEqual(intents.map(intent => intent.kind).sort(), ["hold_spec", "retry_cancelled_apply", "retry_failed_dispatch"]);
+  const reruns = mapReconciliationIntents({ snapshot, intents }).filter(operation => operation.type === "rerun_check");
+  assert.deepEqual(reruns.map(operation => operation.failedJobs.length).sort((left, right) => left - right), [1, 5]);
   assert.ok(endpoints.includes("/repos/bugabinga/smith/actions/workflows/adw-pulls.yml/runs?status=completed&per_page=100&page=1"));
   assert.equal(endpoints.some(endpoint => endpoint.includes("status=cancelled")), false);
   assert.equal(snapshot.state.resources.runs.some(run => run.id === "20" && run.name === "unrelated"), true);
-  assert.equal(snapshot.state.resources.runs.some(run => run.id === "30713540804" && run.name === "ADW pull #167" && run.displayTitle === "ADW pull #167" && run.controlSha === liveControlSha && run.applyJobId === "91405160611"), true);
+  assert.equal(snapshot.state.resources.runs.some(run => run.id === "30713540804" && run.name === "ADW pull #167" && run.displayTitle === "ADW pull #167" && run.controlSha === liveControlSha && run.applyJobId === "91405160611" && run.failedJobs.length === 5), true);
+  assert.equal(snapshot.state.resources.runs.some(run => run.id === String(fixture.failedDispatchRun.id) && run.failedJobs.length === 1), true);
 });
 
 test("role snapshot rejects repository drift and untrusted App identity", async () => {

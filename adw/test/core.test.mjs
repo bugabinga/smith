@@ -443,7 +443,7 @@ const operationSamples = [
   { type: "create_pr", head: "feature/x", base: "main", title: "title", body: "body", marker: "m4" },
   { type: "update_pr", prId: "P_1", headSha },
   { type: "publish_check", headSha, name: "merge-gate", conclusion: "success", summary: "ok", externalId: "e1" },
-  { type: "rerun_check", runId: "R_1", attempt: 1 },
+  { type: "rerun_check", runId: "R_1", attempt: 1, failedJobs: [{ id: "1", conclusion: "failure" }] },
   { type: "dispatch_repository", eventType: "retry_route", clientPayload: { repositoryId: "42", issueId: "1", sourceRevision: "1".repeat(64), role: "builder", provider: "claude" } },
   { type: "arm_auto_merge", prId: "P_1", headSha, method: "squash" },
   { type: "sync_labels", definitionsDigest: "a".repeat(64) },
@@ -611,11 +611,12 @@ test("cancelled apply recovery binds failed run, control, entity, attempt, and e
   const cancelled = {
     runId: "30713540804", workflowPath: ".github/workflows/adw-pulls.yml", event: "pull_request_review",
     entityId: "167", headSha, controlSha, attempt: 1, runConclusion: "failure", applyJobId: "91405160611",
+    failedJobs: [{ id: "91405151683", conclusion: "failure" }, { id: "91405160611", conclusion: "cancelled" }],
   };
   const run = {
     id: cancelled.runId, name: "ADW pull and reconcile triggers", workflowPath: cancelled.workflowPath, displayTitle: "ADW pull #167",
     event: cancelled.event, entityId: cancelled.entityId, status: "completed", conclusion: cancelled.runConclusion,
-    headSha: cancelled.headSha, headBranch: "feature/167", controlSha: cancelled.controlSha, applyJobId: cancelled.applyJobId,
+    headSha: cancelled.headSha, headBranch: "feature/167", controlSha: cancelled.controlSha, applyJobId: cancelled.applyJobId, failedJobs: cancelled.failedJobs,
     attempt: cancelled.attempt, actorId: "7", actorLogin: "bugabinga", actorType: "User",
   };
   const request = {
@@ -640,7 +641,7 @@ test("a failed dispatch child maps the missing parent intent to an attempt-bound
   const failed = {
     id: "101", name: "ADW pull and reconcile triggers", workflowPath: ".github/workflows/adw-pulls.yml", displayTitle: operationDigest,
     event: "repository_dispatch", entityId: pull.prId, status: "completed", conclusion: "failure", headSha: controlSha, headBranch: "main",
-    attempt: 2, actorId: trust.appId, actorLogin: "smith[bot]", actorType: "Bot",
+    attempt: 2, actorId: trust.appId, actorLogin: "smith[bot]", actorType: "Bot", failedJobs: [{ id: "1001", conclusion: "failure" }],
   };
   const authoritySnapshot = {
     ...snapshot,
@@ -652,12 +653,12 @@ test("a failed dispatch child maps the missing parent intent to an attempt-bound
     comments: [], trust, reviews: [{ prId: pull.prId, headSha: pull.headSha, evidence: [correctness], protectedInput: false }], pioneers: [], holds: [], cancelledApplies: [],
   };
   const expected = {
-    kind: "retry_failed_dispatch", runId: failed.id, workflowPath: failed.workflowPath, headSha: failed.headSha, attempt: failed.attempt,
+    kind: "retry_failed_dispatch", runId: failed.id, workflowPath: failed.workflowPath, headSha: failed.headSha, attempt: failed.attempt, failedJobs: failed.failedJobs,
     operationDigest, eventType: parentIntent.kind, clientPayload,
   };
   const intents = planReconciliation(request);
   assert.deepEqual(intents, [expected]);
-  assert.deepEqual(mapReconciliationIntents({ snapshot: authoritySnapshot, intents }), [{ type: "rerun_check", runId: failed.id, attempt: failed.attempt }]);
+  assert.deepEqual(mapReconciliationIntents({ snapshot: authoritySnapshot, intents }), [{ type: "rerun_check", runId: failed.id, attempt: failed.attempt, failedJobs: failed.failedJobs }]);
 });
 
 test("paired merge finalizations persist #146/#147/#148 obligations across later control SHAs", () => {

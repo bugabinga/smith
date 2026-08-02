@@ -34,6 +34,7 @@ const ADW_OPERATIONAL_WORKFLOWS = Object.freeze([
   Object.freeze({ file: "adw-pulls.yml", path: ".github/workflows/adw-pulls.yml", events: Object.freeze(["check_run", "check_suite", "pull_request_review", "pull_request_review_comment", "pull_request_target", "repository_dispatch"]) }),
 ]);
 const RETRYABLE_RUN_CONCLUSIONS = new Set(["action_required", "cancelled", "failure", "stale", "startup_failure", "timed_out"]);
+const RERUNNABLE_JOB_CONCLUSIONS = new Set(["action_required", "cancelled", "failure", "stale", "startup_failure", "timed_out"]);
 const GITHUB_WRITE_OPERATIONS = new Set([
   "comment", "add_label", "remove_label", "create_issue", "update_issue", "close_issue",
   "create_milestone", "update_milestone", "close_milestone", "assign_milestone", "link_sub_issue",
@@ -486,7 +487,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       return request(`/repos/${owner}/${name}/${kind === "check_suite" ? "check-suites" : "check-runs"}/${positiveInteger(number)}`);
     },
     workflowRun: number => request(`/repos/${owner}/${name}/actions/runs/${positiveInteger(number)}`),
-    runJobs: number => request(`/repos/${owner}/${name}/actions/runs/${positiveInteger(number)}/jobs?filter=latest`, "jobs", { pageSize: 100, maxItems: 100, maxBytes: MAX_COLLECTION_BYTES }),
+    runJobs: number => request(`/repos/${owner}/${name}/actions/runs/${positiveInteger(number)}/jobs?filter=all`, "jobs", { pageSize: 100, maxItems: 100, maxBytes: MAX_COLLECTION_BYTES }),
     alert: (kind, number) => {
       contract(kind === "dependabot_alert" || kind === "code_scanning_alert", "alert kind is invalid");
       return request(`/repos/${owner}/${name}/${kind === "dependabot_alert" ? "dependabot/alerts" : "code-scanning/alerts"}/${positiveInteger(number)}`);
@@ -699,7 +700,7 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     if (value?.path === ".github/workflows/adw-maintenance.yml" && /^ADW maintenance (?:audit|push|reconcile|[^\s]+(?: [^\s]+){4})$/.test(value.display_title ?? "")) return repositoryId;
     return null;
   };
-  const normalizeRun = (value, repositoryId = null, recovery = null) => {
+  const normalizeRun = (value, repositoryId = null, evidence = null) => {
     const attempt = Number(value.run_attempt ?? 1);
     contract(Number.isSafeInteger(attempt) && attempt > 0, "run attempt is malformed");
     const headSha = text(value.head_sha, "run head");
@@ -713,8 +714,15 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
       status: text(value.status, "run status"), conclusion: value.conclusion === null ? null : text(value.conclusion, "run conclusion"),
       headSha, headBranch: value.head_branch === null || value.head_branch === undefined ? null : text(value.head_branch, "run head branch"), attempt,
       actorId: actor === null ? null : restId(actor.id, "run actor"), actorLogin: actor === null ? null : text(actor.login, "run actor login"), actorType: actor === null ? null : text(actor.type, "run actor type"),
-      ...(recovery === null ? {} : { controlSha: recovery.controlSha, applyJobId: recovery.applyJobId }),
+      ...(evidence ?? {}),
     });
+  };
+  const failedJobEvidence = (jobs, attempt) => {
+    contract(Array.isArray(jobs) && jobs.length <= 100 && Number.isSafeInteger(attempt) && attempt > 0, "run jobs are malformed");
+    const failed = jobs.filter(job => Number(job?.run_attempt ?? attempt) === attempt && job?.status === "completed" && RERUNNABLE_JOB_CONCLUSIONS.has(job?.conclusion)).map(job => Object.freeze({ id: restId(job.id, "failed job id"), conclusion: job.conclusion }));
+    failed.sort((left, right) => Number(left.id) - Number(right.id));
+    contract(failed.length > 0 && new Set(failed.map(job => job.id)).size === failed.length, "failed job evidence is malformed");
+    return Object.freeze(failed);
   };
   const pullMetadata = value => Object.freeze({
     id: value.id, number: value.number, state: value.state, draft: value.draft, merged: value.merged,
@@ -750,7 +758,8 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
     }
     if (runControlSha !== controlSha) return null;
     const applyJobId = restId(applyJobs[0].id, "cancelled apply job");
-    return normalizeRun(value, repositoryId, { controlSha: runControlSha, applyJobId });
+    const failedJobs = failedJobEvidence(jobs, baseRun.attempt);
+    return normalizeRun(value, repositoryId, { controlSha: runControlSha, applyJobId, failedJobs });
   };
   const reviewEvidence = (comments, headSha, prId) => comments
     .map(comment => parsedReviewMarker(comment, headSha, prId, appIdentity) ?? parsedLegacyReviewMarker(comment, headSha, appIdentity))
@@ -1066,22 +1075,26 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
             cancelledApplies.push(Object.freeze({
               runId: run.id, workflowPath: run.workflowPath, event: run.event, entityId: run.entityId,
               headSha: run.headSha, controlSha: run.controlSha, attempt: run.attempt,
-              runConclusion: run.conclusion, applyJobId: run.applyJobId,
+              runConclusion: run.conclusion, applyJobId: run.applyJobId, failedJobs: run.failedJobs,
             }));
           }
           const dispatchParents = [];
           for (const { workflow, value } of await methods.repositoryDispatchRuns()) {
             if (value?.path !== workflow.path || value?.event !== "repository_dispatch" || !/^[0-9a-f]{64}$/.test(value?.display_title ?? "")) continue;
             contract(Number.isSafeInteger(value.run_attempt) && value.run_attempt > 0, "repository dispatch run attempt is malformed");
-            const run = normalizeRun(value, normalizedRepository.id);
+            let run = normalizeRun(value, normalizedRepository.id);
             const exactParent = run.actorId === appIdentity.botUserId && run.actorLogin === appIdentity.login && run.actorType === "Bot"
               && run.headBranch === normalizedRepository.defaultBranch && run.headSha === controlSha;
             if (!exactParent) continue;
             const pending = new Set(["in_progress", "pending", "queued", "requested", "waiting"]).has(run.status) && run.conclusion === null;
             const completed = run.status === "completed" && typeof run.conclusion === "string";
             contract(pending || completed, "repository dispatch run state is malformed");
+            if (completed && RETRYABLE_RUN_CONCLUSIONS.has(run.conclusion)) {
+              const failedJobs = failedJobEvidence(await methods.runJobs(Number(run.id)), run.attempt);
+              run = normalizeRun(value, normalizedRepository.id, { failedJobs });
+              recoveryRuns.push(run);
+            }
             dispatchParents.push(run);
-            if (completed && RETRYABLE_RUN_CONCLUSIONS.has(run.conclusion)) recoveryRuns.push(run);
           }
           const dispatchParentIds = new Set();
           for (const run of dispatchParents) {
@@ -1099,8 +1112,8 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
           for (const run of [...uniqueRecovery.values()].sort((left, right) => Number(left.id) - Number(right.id))) {
             const previous = byId.get(run.id);
             if (previous) {
-              const { controlSha: previousControl, applyJobId: previousJob, ...previousBase } = previous.run;
-              const { controlSha: currentControl, applyJobId: currentJob, ...currentBase } = run;
+              const { controlSha: previousControl, applyJobId: previousJob, failedJobs: previousFailedJobs, ...previousBase } = previous.run;
+              const { controlSha: currentControl, applyJobId: currentJob, failedJobs: currentFailedJobs, ...currentBase } = run;
               if (digestJson(previousBase) !== digestJson(currentBase)) throw new AdwError("forge", "malformed");
               runs[previous.index] = run;
               byId.set(run.id, { run, index: previous.index });
@@ -1534,14 +1547,17 @@ export function createGitHub({ repository, token, appIdentity, ghPath, run = run
         contract(binding !== null, "action operation binding is missing");
         const run = await get(`/repos/${owner}/${name}/actions/runs/${numericId(value.runId, "run number")}`);
         const original = trustedSnapshot.state.resources?.runs?.find(item => item.id === value.runId);
+        const jobs = await list(`/repos/${owner}/${name}/actions/runs/${numericId(value.runId, "run number")}/jobs?filter=all`, "jobs");
+        const failedJobs = failedJobEvidence(jobs, value.attempt);
         const sourceIdentity = original && original.attempt === value.attempt && original.status === "completed" && RETRYABLE_RUN_CONCLUSIONS.has(original.conclusion)
+          && digestJson(original.failedJobs) === digestJson(value.failedJobs) && digestJson(failedJobs) === digestJson(value.failedJobs)
           && String(run?.id ?? "") === value.runId && original.headSha === run.head_sha && original.name === run.name && original.event === run.event
           && (original.workflowPath === null || original.workflowPath === run.path) && (original.displayTitle === null || original.displayTitle === run.display_title);
         const actionReady = sourceIdentity && value.attempt === run.run_attempt && original.status === run.status && original.conclusion === run.conclusion;
         const actionDelivered = sourceIdentity && run.run_attempt === value.attempt + 1;
         contract(actionReady || actionDelivered, "rerun source does not match snapshot");
-        const target = Object.freeze({ type: "rerun_check", runId: value.runId, name: original.name, workflowPath: original.workflowPath ?? null, displayTitle: original.displayTitle ?? null, event: original.event, headSha: original.headSha, status: original.status, conclusion: original.conclusion, attempt: value.attempt });
-        const action = { method: "POST", endpoint: `/repos/${owner}/${name}/actions/runs/${numericId(value.runId, "run number")}/rerun`, body: {} };
+        const target = Object.freeze({ type: "rerun_check", runId: value.runId, name: original.name, workflowPath: original.workflowPath ?? null, displayTitle: original.displayTitle ?? null, event: original.event, headSha: original.headSha, status: original.status, conclusion: original.conclusion, attempt: value.attempt, failedJobs: value.failedJobs });
+        const action = { method: "POST", endpoint: `/repos/${owner}/${name}/actions/runs/${numericId(value.runId, "run number")}/rerun-failed-jobs`, body: {} };
         const delivered = async markerTime => {
           const fresh = await page(`/repos/${owner}/${name}/actions/runs/${numericId(value.runId, "run number")}`);
           return String(fresh?.id ?? "") === target.runId && fresh?.name === target.name && fresh?.event === target.event && fresh?.head_sha === target.headSha && fresh?.run_attempt === target.attempt + 1

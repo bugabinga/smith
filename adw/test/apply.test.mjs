@@ -650,29 +650,33 @@ test("auto-merge accepts only App risk opens cleared by the authenticated owner"
   assert.throws(() => validateAutoMergeMarkers({ ...request, comments: [...evidence, openComment, { ...ownerClear, user: bot }] }), error => error?.code === "stale" && error.message === "auto-merge sticky risk is not owner-cleared");
 });
 
-test("rerun writes one action between control-commit marker transitions", async () => {
-  const operation = { type: "rerun_check", runId: "4", attempt: 1 };
-  const original = { id: "4", name: "ci", workflowPath: null, displayTitle: null, event: "push", status: "completed", conclusion: "failure", headSha, attempt: 1 };
+test("rerun writes only the failed-jobs action bound to exact failed job evidence", async () => {
+  const failedJobs = [{ id: "40", conclusion: "failure" }, { id: "41", conclusion: "cancelled" }];
+  const operation = { type: "rerun_check", runId: "4", attempt: 1, failedJobs };
+  const original = { id: "4", name: "ci", workflowPath: null, displayTitle: null, event: "push", status: "completed", conclusion: "failure", headSha, attempt: 1, failedJobs };
   const value = snapshot([], { runs: [original] });
-  const authority = actionMarker(operation, value, { type: "rerun_check", runId: "4", name: "ci", workflowPath: null, displayTitle: null, event: "push", headSha, status: "completed", conclusion: "failure", attempt: 1 });
+  const authority = actionMarker(operation, value, { type: "rerun_check", runId: "4", name: "ci", workflowPath: null, displayTitle: null, event: "push", headSha, status: "completed", conclusion: "failure", attempt: 1, failedJobs });
   let markerBody = null;
   let markerStatus = null;
   let delivered = false;
-  const { github, calls } = harness(request => {
+  const { github, calls, mints } = harness(request => {
     const path = endpoint(request);
     if (request.args[2] === "GET" && path.endsWith("/actions/runs/4")) return reply({ id: 4, name: "ci", event: "push", head_sha: headSha, run_attempt: delivered ? 2 : 1, status: delivered ? "queued" : "completed", conclusion: delivered ? null : "failure", triggering_actor: delivered ? bot : { id: 7, login: "bugabinga", type: "User" }, updated_at: delivered ? "2026-01-01T00:00:01.000Z" : "2025-12-31T00:00:00.000Z" });
+    if (request.args[2] === "GET" && path.includes("/actions/runs/4/jobs?")) return reply({ jobs: failedJobs.map(job => ({ ...job, id: Number(job.id), run_attempt: 1, status: "completed", name: `job-${job.id}` })) });
     const liveMarker = () => ({ id: 10, ...markerBody, external_id: markerBody.external_id, head_sha: markerBody.head_sha, status: markerStatus, conclusion: markerStatus === "completed" ? "success" : null, output: markerBody.output, app, created_at: "2026-01-01T00:00:00.000Z" });
     if (request.args[2] === "GET" && path.startsWith(`/repos/bugabinga/smith/commits/${controlSha}/check-runs?`)) return reply({ check_runs: markerBody === null ? [] : [liveMarker()] });
     if (request.args[2] === "GET" && path.endsWith("/check-runs/10")) return reply(liveMarker());
     if (request.args[2] === "POST" && path.endsWith("/check-runs")) { markerBody = body(request); markerStatus = "in_progress"; return reply({ id: 10 }); }
-    if (request.args[2] === "POST" && path.endsWith("/actions/runs/4/rerun")) { assert.equal(delivered, false); delivered = true; return reply(null); }
+    if (request.args[2] === "POST" && path.endsWith("/actions/runs/4/rerun-failed-jobs")) { assert.equal(delivered, false); delivered = true; return reply(null); }
     if (request.args[2] === "PATCH" && path.endsWith("/check-runs/10")) { markerStatus = "completed"; return reply(liveMarker()); }
     throw new Error(`unexpected ${request.args[2]} ${path}`);
   });
   assert.equal((await apply(github, operation, value)).status, "complete");
   const writes = calls.filter(call => call.args[2] !== "GET");
-  assert.deepEqual(writes.map(call => [call.args[2], endpoint(call)]), [["POST", "/repos/bugabinga/smith/check-runs"], ["POST", "/repos/bugabinga/smith/actions/runs/4/rerun"], ["PATCH", "/repos/bugabinga/smith/check-runs/10"]]);
-  assert.equal(writes.filter(call => endpoint(call).endsWith("/actions/runs/4/rerun")).length, 1);
+  assert.deepEqual(writes.map(call => [call.args[2], endpoint(call)]), [["POST", "/repos/bugabinga/smith/check-runs"], ["POST", "/repos/bugabinga/smith/actions/runs/4/rerun-failed-jobs"], ["PATCH", "/repos/bugabinga/smith/check-runs/10"]]);
+  assert.equal(writes.filter(call => endpoint(call).endsWith("/actions/runs/4/rerun-failed-jobs")).length, 1);
+  assert.equal(writes.some(call => endpoint(call).endsWith("/actions/runs/4/rerun")), false);
+  assert.deepEqual(mints.map(mint => mint.permissions), [["actions:write", "checks:write"]]);
   assert.deepEqual(body(writes[0]), { name: "smith/apply-action", head_sha: controlSha, status: "in_progress", output: { title: "smith/apply-action", summary: authority.summary }, external_id: authority.externalId });
   assert.deepEqual(body(writes[1]), {});
   assert.deepEqual(body(writes[2]), { status: "completed", conclusion: "success", output: { title: "smith/apply-action", summary: authority.summary } });
@@ -683,14 +687,19 @@ test("rerun writes one action between control-commit marker transitions", async 
 });
 
 test("an exact bot-triggered increased rerun completes an in-progress marker without duplicate delivery", async () => {
-  const operation = { type: "rerun_check", runId: "4", attempt: 1 };
-  const value = snapshot([], { runs: [{ id: "4", name: "ci", workflowPath: null, displayTitle: null, event: "push", status: "completed", conclusion: "failure", headSha, attempt: 1 }] });
-  const authority = actionMarker(operation, value, { type: "rerun_check", runId: "4", name: "ci", workflowPath: null, displayTitle: null, event: "push", headSha, status: "completed", conclusion: "failure", attempt: 1 });
+  const failedJobs = [{ id: "40", conclusion: "failure" }];
+  const operation = { type: "rerun_check", runId: "4", attempt: 1, failedJobs };
+  const value = snapshot([], { runs: [{ id: "4", name: "ci", workflowPath: null, displayTitle: null, event: "push", status: "completed", conclusion: "failure", headSha, attempt: 1, failedJobs }] });
+  const authority = actionMarker(operation, value, { type: "rerun_check", runId: "4", name: "ci", workflowPath: null, displayTitle: null, event: "push", headSha, status: "completed", conclusion: "failure", attempt: 1, failedJobs });
   const marker = status => ({ id: 10, name: "smith/apply-action", head_sha: controlSha, status, conclusion: status === "completed" ? "success" : null, external_id: authority.externalId, output: { title: "smith/apply-action", summary: authority.summary }, app, created_at: "2026-01-01T00:00:00.000Z" });
   let markerValue = marker("in_progress");
   const { github, calls } = harness(request => {
     const path = endpoint(request);
     if (path.endsWith("/actions/runs/4")) return reply({ id: 4, name: "ci", event: "push", head_sha: headSha, run_attempt: 2, status: "queued", conclusion: null, triggering_actor: bot, updated_at: "2026-01-01T00:00:01.000Z" });
+    if (path.includes("/actions/runs/4/jobs?")) return reply({ jobs: [
+      { id: 40, name: "source-test", run_attempt: 1, status: "completed", conclusion: "failure" },
+      { id: 50, name: "newer-test", run_attempt: 2, status: "completed", conclusion: "failure" },
+    ] });
     if (path.startsWith(`/repos/bugabinga/smith/commits/${controlSha}/check-runs?`)) return reply({ check_runs: [markerValue] });
     if (request.args[2] === "PATCH" && path.endsWith("/check-runs/10")) { markerValue = marker("completed"); return reply(markerValue); }
     if (path.endsWith("/check-runs/10")) return reply(markerValue);
@@ -708,13 +717,15 @@ test("an exact bot-triggered increased rerun completes an in-progress marker wit
 });
 
 test("in-progress rerun recovery rejects a non-exact attempt lineage", async () => {
-  const operation = { type: "rerun_check", runId: "4", attempt: 1 };
-  const value = snapshot([], { runs: [{ id: "4", name: "ci", workflowPath: null, displayTitle: null, event: "push", status: "completed", conclusion: "failure", headSha, attempt: 1 }] });
-  const authority = actionMarker(operation, value, { type: "rerun_check", runId: "4", name: "ci", workflowPath: null, displayTitle: null, event: "push", headSha, status: "completed", conclusion: "failure", attempt: 1 });
+  const failedJobs = [{ id: "40", conclusion: "failure" }];
+  const operation = { type: "rerun_check", runId: "4", attempt: 1, failedJobs };
+  const value = snapshot([], { runs: [{ id: "4", name: "ci", workflowPath: null, displayTitle: null, event: "push", status: "completed", conclusion: "failure", headSha, attempt: 1, failedJobs }] });
+  const authority = actionMarker(operation, value, { type: "rerun_check", runId: "4", name: "ci", workflowPath: null, displayTitle: null, event: "push", headSha, status: "completed", conclusion: "failure", attempt: 1, failedJobs });
   const marker = { id: 10, name: "smith/apply-action", head_sha: controlSha, status: "in_progress", conclusion: null, external_id: authority.externalId, output: { title: "smith/apply-action", summary: authority.summary }, app, created_at: "2026-01-01T00:00:00.000Z" };
   const { github, calls } = harness(request => {
     const path = endpoint(request);
     if (path.endsWith("/actions/runs/4")) return reply({ id: 4, name: "ci", event: "push", head_sha: headSha, run_attempt: 3, status: "queued", conclusion: null, triggering_actor: bot, updated_at: "2026-01-01T00:00:01.000Z" });
+    if (path.includes("/actions/runs/4/jobs?")) return reply({ jobs: [{ id: 40, name: "test", status: "completed", conclusion: "failure" }] });
     if (path.startsWith(`/repos/bugabinga/smith/commits/${controlSha}/check-runs?`)) return reply({ check_runs: [marker] });
     throw new Error(`unexpected ${path}`);
   });
@@ -967,7 +978,7 @@ test("auto-merge may arm while GitHub reports blocked by its missing gate, but n
 test("operation capabilities are exact, operation-scoped, and exclude settings writes", () => {
   assert.deepEqual(operationCapabilities({ type: "comment" }), ["issues:write"]);
   assert.deepEqual(operationCapabilities({ type: "publish_check" }), ["checks:write"]);
-  assert.deepEqual(operationCapabilities({ type: "rerun_check", runId: "4", attempt: 1 }), ["actions:write", "checks:write"]);
+  assert.deepEqual(operationCapabilities({ type: "rerun_check", runId: "4", attempt: 1, failedJobs: [{ id: "40", conclusion: "failure" }] }), ["actions:write", "checks:write"]);
   assert.deepEqual(operationCapabilities({ type: "dispatch_repository" }), ["contents:write", "repository:read"]);
   const reconciliationSnapshot = snapshot([
     { resource: "issues", kind: "issues", token: "r" },
@@ -1296,7 +1307,7 @@ test("dry-run record writer performs identical stale reads without mutation", as
 });
 
 test("injected E2E: product-check rerun remains a canonical provider decision operation", async () => {
-  const operation = { type: "rerun_check", runId: "4", attempt: 1 };
+  const operation = { type: "rerun_check", runId: "4", attempt: 1, failedJobs: [{ id: "40", conclusion: "failure" }] };
   const value = { ...snapshot(), routing: { role: "sweeper", mode: "single", primary: "codex" } };
   const canonicalDecision = decision(value, [operation]);
   const proof = verification(value, canonicalDecision);

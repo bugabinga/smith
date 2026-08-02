@@ -279,6 +279,11 @@ function parsePayload(text) {
   return value;
 }
 
+const PROVIDER_RAW_SCAN_MAX_BYTES = 524_288;
+const PROVIDER_SEMANTIC_SCAN_MAX_BYTES = 262_144;
+const PATCH_SCAN_MAX_BYTES = 1_048_576;
+const COMBINED_SEMANTIC_SCAN_MAX_BYTES = PROVIDER_SEMANTIC_SCAN_MAX_BYTES + PATCH_SCAN_MAX_BYTES;
+
 function containsCredential(value, sensitive) {
   if (typeof value === "string") return sensitive.some(secret => value.includes(secret));
   if (Array.isArray(value)) return value.some(item => containsCredential(item, sensitive));
@@ -288,6 +293,44 @@ function containsCredential(value, sensitive) {
 
 function bytesContainCredential(bytes, sensitive) {
   return sensitive.some(secret => bytes.includes(Buffer.from(secret)));
+}
+
+function semanticStringBytes(value, maximum = PROVIDER_SEMANTIC_SCAN_MAX_BYTES) {
+  const chunks = [];
+  let size = 0;
+  const collect = item => {
+    if (typeof item === "string") {
+      const bytes = Buffer.from(item);
+      size += bytes.length;
+      if (size > maximum) rejectRequest("output");
+      chunks.push(bytes);
+    } else if (Array.isArray(item)) {
+      for (const child of item) collect(child);
+    } else if (item && Object.getPrototypeOf(item) === Object.prototype) {
+      for (const key of Object.keys(item).sort()) collect(item[key]);
+    }
+  };
+  collect(value);
+  return Buffer.concat(chunks, size);
+}
+
+function exactOutputSurfaces(...values) {
+  const chunks = values.map(value => typeof value === "string" || Buffer.isBuffer(value) ? Buffer.from(value) : rejectRequest("output"));
+  const size = chunks.reduce((total, chunk) => total + chunk.length, 0);
+  if (size > PROVIDER_RAW_SCAN_MAX_BYTES) rejectRequest("output");
+  return chunks;
+}
+
+function scanCredentialSurface({ value, rawBytes, sensitive }) {
+  if (rawBytes.some(bytes => bytesContainCredential(bytes, sensitive)) || containsCredential(value, sensitive) || bytesContainCredential(semanticStringBytes(value), sensitive)) rejectRequest("credential");
+}
+
+function scanPatchCredentialSurface({ manifest, patchBytes, sensitive }) {
+  if (patchBytes.length > PATCH_SCAN_MAX_BYTES) rejectRequest("patch");
+  const metadata = semanticStringBytes(manifest);
+  const combinedSize = metadata.length + patchBytes.length;
+  if (combinedSize > COMBINED_SEMANTIC_SCAN_MAX_BYTES) rejectRequest("patch");
+  if (bytesContainCredential(patchBytes, sensitive) || bytesContainCredential(Buffer.concat([metadata, patchBytes], combinedSize), sensitive)) rejectRequest("credential");
 }
 
 export async function invokeProvider({
@@ -344,6 +387,7 @@ export async function invokeProvider({
   const startedAt = now();
   let raw;
   let providerOutput;
+  let providerRawBytes;
   let homeClaim;
   try {
     homeClaim = await claimDirectory(home, repository);
@@ -358,6 +402,7 @@ export async function invokeProvider({
         args: ["-p", providerPrompt, "--output-format", "json", "--json-schema", outputSchema, "--model", config.model, "--effort", config.effort, ...editArgs],
         cwd: repository, env, input: "", timeoutMs: config.timeoutSeconds * 1000, maxOutputBytes: 262_144,
       });
+      providerRawBytes = exactOutputSurfaces(result.stdout, result.stderr);
       providerOutput = parsePayload(result.stdout);
       raw = providerOutput.structured_output;
     } else {
@@ -368,7 +413,7 @@ export async function invokeProvider({
       delete env.CODEX_AUTH_JSON;
       const output = join(home, "result.json");
       const outputSchemaPath = await createPrivateFile(homeClaim, "output.schema.json", outputSchema);
-      await run({
+      const execution = await run({
         file: tool,
         args: ["exec", "-m", config.model, "-c", `model_reasoning_effort=${config.effort}`, "--sandbox", rolePolicy.patch === null ? "read-only" : "workspace-write", "--output-schema", outputSchemaPath, "--output-last-message", output, providerPrompt],
         cwd: repository, env, input: "", timeoutMs: config.timeoutSeconds * 1000, maxOutputBytes: 262_144,
@@ -380,10 +425,11 @@ export async function invokeProvider({
         outputFile = await open(output, constants.O_RDONLY | constants.O_NOFOLLOW);
         const outputStat = await outputFile.stat();
         if (!outputStat.isFile() || outputStat.size > 262_144) rejectRequest("output");
-        const outputText = await outputFile.readFile("utf8");
+        const outputBytes = await outputFile.readFile();
         const after = await outputFile.stat();
         if (after.size !== outputStat.size || after.dev !== outputStat.dev || after.ino !== outputStat.ino || after.mtimeMs !== outputStat.mtimeMs || after.ctimeMs !== outputStat.ctimeMs) rejectRequest("output");
-        raw = parsePayload(outputText);
+        providerRawBytes = exactOutputSurfaces(execution.stdout, execution.stderr, outputBytes);
+        raw = parsePayload(outputBytes.toString("utf8"));
         providerOutput = raw;
       } finally {
         await outputFile?.close();
@@ -391,7 +437,7 @@ export async function invokeProvider({
       await assertClaim(codexClaim);
     }
     await assertClaim(homeClaim);
-    if (containsCredential(providerOutput, auth.sensitive)) rejectRequest("credential");
+    scanCredentialSurface({ value: providerOutput, rawBytes: providerRawBytes, sensitive: auth.sensitive });
     if (!raw || Array.isArray(raw) || Object.keys(raw).sort().join(",") !== "outcome,patch,payload" || !rolePolicy.payload.outcomes.includes(raw.outcome) || typeof raw.payload !== "object" || raw.payload === null) rejectRequest("malformed");
     try { validateRolePayload(rolePolicy.name, raw.payload); } catch { rejectRequest("malformed"); }
     if (rolePolicy.payload.requiredKeys.some(key => !Object.hasOwn(raw.payload, key))) rejectRequest("malformed");
@@ -406,7 +452,7 @@ export async function invokeProvider({
       if (typeof capturePatch !== "function") rejectRequest("patch");
       const captured = await capturePatch(raw.patch);
       if (!captured || Object.keys(captured).sort().join(",") !== "manifest,patchBytes" || !Buffer.isBuffer(captured.patchBytes) || !canonicalBytes(captured.manifest).equals(canonicalBytes(raw.patch))) rejectRequest("patch");
-      if (bytesContainCredential(captured.patchBytes, auth.sensitive)) rejectRequest("credential");
+      scanPatchCredentialSurface({ manifest: raw.patch, patchBytes: captured.patchBytes, sensitive: auth.sensitive });
       capturedPatchBytes = captured.patchBytes;
     }
     await assertClaim(homeClaim);
@@ -427,7 +473,7 @@ export async function invokeProvider({
       startedAt,
       completedAt: now(),
     };
-    if (containsCredential(assessment, auth.sensitive)) rejectRequest("credential");
+    if (containsCredential(assessment, auth.sensitive) || bytesContainCredential(semanticStringBytes(assessment), auth.sensitive)) rejectRequest("credential");
     const validated = validateAssessmentArtifact({ assessment, patchBytes: capturedPatchBytes });
     return capturedPatchBytes === undefined ? validated : Object.freeze({ assessment: validated, patchBytes: capturedPatchBytes });
   } catch (error) {

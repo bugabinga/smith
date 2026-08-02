@@ -203,12 +203,31 @@ test("provider-auth canaries remain transport-only and cannot become semantic co
   );
 });
 
-test("Codex rejects nested access-token leaves emitted as steerer comments without leaking them", async t => {
+test("raw provider streams reject exact credentials without joining unrelated stream boundaries", async t => {
+  const root = await mkdtemp(join(tmpdir(), "smith-adw-provider-raw-secret-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const credential = "raw-provider-stream-secret";
+  const output = JSON.stringify({ structured_output: { outcome: "positive", payload: { verdict: "approve", risk: "none", findings: [] }, patch: null } });
+  const request = home => ({
+    provider: "claude", executable: process.execPath, cliVersion: "2.1.220", rolePolicy: productionRole("reviewer"), snapshot,
+    idempotencyKey: "review:42", home, repository: process.cwd(), credential: { CLAUDE_CODE_OAUTH_TOKEN: credential },
+    runIdentity: { id: "run", job: "claude", attempt: 1 }, baseEnv: base.env, now: () => "2026-07-28T10:00:00.000Z",
+  });
+  await assert.rejects(
+    () => invokeProvider({ ...request(join(root, "attack-home")), run: async () => ({ code: 0, signal: null, stdout: output, stderr: credential }) }),
+    error => error?.code === "provider" && error.message === "credential" && !JSON.stringify(error).includes(credential),
+  );
+  const accepted = await invokeProvider({ ...request(join(root, "control-home")), run: async () => ({ code: 0, signal: null, stdout: output, stderr: "raw-provider-stream-" }) });
+  assert.equal(accepted.outcome, "positive");
+});
+
+test("Codex rejects an access token reconstructed across valid steerer fields without false separator matches", async t => {
   const root = await mkdtemp(join(tmpdir(), "smith-adw-codex-steerer-secret-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const policy = productionRole("steerer");
   const schema = await readFile(policy.payloadSchema, "utf8");
-  const accessToken = "nested-access-token-do-not-publish-4fb751";
+  const body = "bounded comment";
+  const accessToken = `positive${body}comment`;
   const authJson = JSON.stringify({ auth: { access_token: accessToken, future: { strings: ["future-secret-leaf"] } }, empty: "" });
   const steeringSnapshot = {
     ...snapshot,
@@ -230,26 +249,39 @@ test("Codex rejects nested access-token leaves emitted as steerer comments witho
       runIdentity: { id: "run", job: "codex", attempt: 1 }, baseEnv: base.env, now: () => "2026-07-28T10:00:00.000Z",
       run: async request => {
         const output = request.args[request.args.indexOf("--output-last-message") + 1];
-        await writeFile(output, JSON.stringify({ outcome: "positive", payload: { verdict: "comment", body: accessToken }, patch: null }));
+        await writeFile(output, JSON.stringify({ outcome: "positive", payload: { verdict: "comment", body }, patch: null }));
         return { code: 0, signal: null, stdout: "", stderr: "" };
       },
     }),
     error => error?.code === "provider" && error.message === "credential" && !JSON.stringify(error).includes(accessToken),
   );
+  const separatedToken = `positive${body}-comment`;
+  const accepted = await invokeProvider({
+    provider: "codex", executable: process.execPath, cliVersion: "0.145.0", rolePolicy: policy, snapshot: steeringSnapshot,
+    idempotencyKey: "steer:42", home: join(root, "control-home"), repository: process.cwd(), credential: { CODEX_AUTH_JSON: JSON.stringify({ auth: { access_token: separatedToken } }) },
+    runIdentity: { id: "run", job: "codex", attempt: 1 }, baseEnv: base.env, now: () => "2026-07-28T10:00:00.000Z",
+    run: async request => {
+      const output = request.args[request.args.indexOf("--output-last-message") + 1];
+      await writeFile(output, JSON.stringify({ outcome: "positive", payload: { verdict: "comment", body }, patch: null }));
+      return { code: 0, signal: null, stdout: "", stderr: "" };
+    },
+  });
+  assert.equal(accepted.payload.body, body);
 });
 
-test("Codex rejects nested refresh-token leaves captured in patch bytes without leaking them", async t => {
+test("Codex rejects a token reconstructed across patch metadata and content without false separator matches", async t => {
   const root = await mkdtemp(join(tmpdir(), "smith-adw-codex-patch-secret-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const policy = productionRole("codex-builder");
   const schema = await readFile(policy.payloadSchema, "utf8");
-  const refreshToken = "nested-refresh-token-do-not-publish-83ca02";
-  const authJson = JSON.stringify({ tokens: { nested: [{ refresh_token: refreshToken }] } });
   const baseSha = "b".repeat(40);
-  const patchBytes = Buffer.from(`diff --git a/smith/src/lib.rs b/smith/src/lib.rs\n+${refreshToken}\n`);
+  const patchPath = "smith/src/lib.rs";
+  const patchBytes = Buffer.from("diff --git a/smith/src/lib.rs b/smith/src/lib.rs\n+safe\n");
+  const refreshToken = `${patchPath}${patchBytes}`;
+  const authJson = JSON.stringify({ tokens: { nested: [{ refresh_token: refreshToken }] } });
   const manifest = {
     baseSha, digest: (await import("../core.mjs")).digestBytes(patchBytes), size: patchBytes.length,
-    files: [{ path: "smith/src/lib.rs", kind: "regular", oldMode: "100644", newMode: "100644" }],
+    files: [{ path: patchPath, kind: "regular", oldMode: "100644", newMode: "100644" }],
   };
   const buildSnapshot = {
     ...snapshot,
@@ -278,6 +310,19 @@ test("Codex rejects nested refresh-token leaves captured in patch bytes without 
     }),
     error => error?.code === "provider" && error.message === "credential" && !JSON.stringify(error).includes(refreshToken),
   );
+  const separatedToken = `${patchPath}:${patchBytes}`;
+  const accepted = await invokeProvider({
+    provider: "codex", executable: process.execPath, cliVersion: "0.145.0", rolePolicy: policy, snapshot: buildSnapshot,
+    idempotencyKey: "build:42", home: join(root, "control-home"), repository: process.cwd(), credential: { CODEX_AUTH_JSON: JSON.stringify({ tokens: { access_token: separatedToken } }) },
+    runIdentity: { id: "run", job: "codex", attempt: 1 }, baseEnv: base.env, now: () => "2026-07-28T10:00:00.000Z",
+    run: async request => {
+      const output = request.args[request.args.indexOf("--output-last-message") + 1];
+      await writeFile(output, JSON.stringify({ outcome: "positive", payload: { verdict: "patch", summary: "Build", patch: manifest }, patch: manifest }));
+      return { code: 0, signal: null, stdout: "", stderr: "" };
+    },
+    capturePatch: async () => ({ manifest, patchBytes }),
+  });
+  assert.deepEqual(accepted.patchBytes, patchBytes);
 });
 
 test("provider invocation enforces role payload keys", async t => {

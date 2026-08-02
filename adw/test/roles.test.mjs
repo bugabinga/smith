@@ -202,8 +202,9 @@ test("role artifacts reduce into closed decisions", () => {
   const alert = reduceRoleArtifact(roleCase("alert-triager", { verdict: "issue", summary: "Uncovered", issue }, { entityId: "3", labels: [] }));
   assert.equal(alert.operations[0].type, "create_issue");
 
-  const sweep = reduceRoleArtifact(roleCase("sweeper", { verdict: "action", summary: "Retry", actions: [{ kind: "retry", entityId: "1", reason: "stale" }] }, { entityId: "4", labels: [], actionTargets: ["1"], resources: { runs: [{ id: "1", attempt: 2 }] } }));
-  assert.deepEqual(sweep.operations, [{ type: "rerun_check", runId: "1", attempt: 2 }]);
+  const failedJobs = [{ id: "10", conclusion: "failure" }];
+  const sweep = reduceRoleArtifact(roleCase("sweeper", { verdict: "action", summary: "Retry", actions: [{ kind: "retry", entityId: "1", reason: "stale" }] }, { entityId: "4", labels: [], actionTargets: ["1"], resources: { runs: [{ id: "1", attempt: 2, failedJobs }] } }));
+  assert.deepEqual(sweep.operations, [{ type: "rerun_check", runId: "1", attempt: 2, failedJobs }]);
   assert.throws(
     () => reduceRoleArtifact(roleCase("sweeper", { verdict: "action", summary: "Retry", actions: [{ kind: "retry", entityId: "2", reason: "stale" }] }, { entityId: "4", labels: [], actionTargets: ["1"], resources: { runs: [{ id: "1", attempt: 1 }] } })),
     error => error?.code === "contract",

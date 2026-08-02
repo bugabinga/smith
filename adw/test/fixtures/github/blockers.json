@@ -121,6 +121,9 @@
       "login": "smith[bot]",
       "type": "Bot"
     },
-    "pull_requests": []
+    "pull_requests": [],
+    "jobs": [
+      {"id": 91409900001, "name": "apply", "status": "completed", "conclusion": "failure"}
+    ]
   }
 }

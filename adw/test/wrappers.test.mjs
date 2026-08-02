@@ -499,8 +499,9 @@ test("capture_run binds run head, control SHA, and explicit recovered attempt", 
   assert.match(fn, /local run_id=\$1 lane=\$2 expected_run_head=\$3 control_sha=\$4 run_attempt=\$\{5:-1\} repo=bugabinga\/smith/);
   assert.match(fn, /\[\[ \$expected_run_head =~ \^\[0-9a-f\]\{40\}\$ \]\]/);
   assert.match(fn, /\[\[ \$run_attempt =~ \^\[1-9\]\[0-9\]\*\$ \]\]/);
-  assert.match(fn, /for \(\(attempt=1; attempt<=run_attempt; attempt\+\+\)\)/);
-  assert.match(fn, /expected_artifacts\+=\("adw-apply-result-\$attempt"\)/);
+  assert.match(fn, /expected_artifacts\+=\("adw-apply-result-\$run_attempt"\)/);
+  assert.match(fn, /artifact_attempt=\$\{artifact#adw-apply-result-\}/);
+  assert.match(fn, /test "\$artifact_attempt" -le "\$run_attempt"/);
   assert.match(fn, /receipts\+=\("\$receipt"\)/);
   assert.match(fn, /\*\.patch\.sha256\) payload=\$\{sidecar%\.sha256\}/);
   assert.match(fn, /payload="\$\{sidecar%\.sha256\}\.json"/);
@@ -519,6 +520,8 @@ test("capture_run binds run head, control SHA, and explicit recovered attempt", 
     'capture_run "$CHECK_RUN" provider-free "$REVIEW_HEAD" "$MERGE_SHA"',
   ]) assert.ok(plan.includes(call), `missing default-attempt call: ${call}`);
   assert.match(plan, /capture_run "\$RECOVERED_RUN" provider-free "\$RECOVERED_HEAD" "\$MERGE_SHA" "\$RECOVERED_ATTEMPT"/);
+  assert.match(plan, /Missing earlier apply-result artifacts are admissible only when the exact run's artifact inventory proves no such result was uploaded/);
+  assert.match(plan, /current complete receipt reconstructs forge state/);
 });
 
 test("cutover plan treats legacy merge-gate absence as an explicit owner bypass", async () => {
@@ -541,6 +544,18 @@ test("Phase 5 records the final recovery, precondition, obligation, log, and pro
     "explicit run attempt", "--match-head-commit", "bounded non-sensitive status", "provider-auth canary",
   ]) assert.match(task, new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
   assert.match(task, /focused Node.*full Node.*read-only live.*diff.*signature/is);
+});
+
+test("Phase 5 records concatenated-secret and failed-job-only recovery closure", async () => {
+  const plan = await readFile(phase5Plan, "utf8");
+  const task = plan.slice(plan.indexOf("### Task 7I:"), plan.indexOf("### Task 8:"));
+  for (const phrase of [
+    "524288 raw provider bytes", "262144 normalized semantic bytes", "1048576 patch bytes", "1310720 combined",
+    "arbitrary encoding is not claimed", "provider CLI remains the trust root", "rerun-failed-jobs", "30713540804", "91405160611",
+  ]) assert.match(task, new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+  assert.match(task, /failed\/cancelled jobs/);
+  assert.match(task, /Actions\/Checks write token remains exact/);
+  assert.doesNotMatch(task, /\/actions\/runs\/\{run_id\}\/rerun`/);
 });
 
 test("Phase 5 treats adw-write as a lock, not FIFO, and recovers cancelled pending apply", async () => {

@@ -151,11 +151,11 @@ The initial branch push preceded the required hold. Live Actions evidence was re
 
 Every accepted production run records its run ID and URL, event, expected run head SHA, trusted control SHA, attempt, conclusion, job list, artifact IDs/names, and downloaded sidecar verification. Expected artifact sets are:
 
-- Provider lane: `adw-target`, `adw-source`, `adw-snapshot`, exactly one successful primary `adw-assessment-{claude|codex}`, `adw-decision`, `adw-verification`, and every retained `adw-apply-result-1` through `adw-apply-result-<attempt>`.
-- Provider-free audit/reconcile lane: `adw-target`, `adw-source`, `adw-snapshot`, `adw-decision`, `adw-verification`, and every retained `adw-apply-result-1` through `adw-apply-result-<attempt>`; no `adw-assessment-*`.
-- Attempt defaults to `1`; recovered attempts pass their explicit positive integer. Evidence must download the complete retained apply-result chain from `1` through that attempt, and `run.json.attempt` must equal it.
+- Provider lane: `adw-target`, `adw-source`, `adw-snapshot`, exactly one successful primary `adw-assessment-{claude|codex}`, `adw-decision`, `adw-verification`, the current `adw-apply-result-<attempt>`, and every earlier apply result that the run artifact inventory says was uploaded.
+- Provider-free audit/reconcile lane: `adw-target`, `adw-source`, `adw-snapshot`, `adw-decision`, `adw-verification`, the current `adw-apply-result-<attempt>`, and every earlier apply result that the run artifact inventory says was uploaded; no `adw-assessment-*`.
+- Attempt defaults to `1`; recovered attempts pass their explicit positive integer. Missing earlier apply-result artifacts are admissible only when the exact run's artifact inventory proves no such result was uploaded. Successful source/snapshot/decision/verification artifacts are preserved by failed-job reruns, and the required current complete receipt reconstructs forge state even when an earlier cancelled apply uploaded no result. `run.json.attempt` must equal the explicit attempt.
 - Every JSON/patch sidecar digest, including every retained `result.sha256`, must match exact bytes.
-- The current attempt's `result.json` must have `schemaVersion:1`, `status:"complete"`, `failure:null`, all operations `status:"complete"`, and only complete receipts. Each earlier result must be a structurally valid `partial`/`failed` result with a failure at the chain's exact operation boundary; its complete receipts must be an unchanged prefix of the next result's receipts.
+- The current attempt's `result.json` must have `schemaVersion:1`, `status:"complete"`, `failure:null`, all operations `status:"complete"`, and only complete receipts. Each uploaded earlier result must be a structurally valid `partial`/`failed` result with a failure at the chain's exact operation boundary; its complete receipts must be an unchanged prefix of the next uploaded result's receipts.
 - Every `dispatch_repository` receipt must be backed by one exact child run lineage: `repository_dispatch` event, closed workflow path, operation digest as display title, exact App actor, trusted control head on `main`, creation at or after the dispatch boundary, and a positive attempt number. A duplicate run identity is conflicting evidence, not success; a failed child proves delivery only and must be recovered by a separate attempt-bound rerun.
 - `snapshot.json.controlSha`, `decision.json.controlSha`, `verification.json.controlSha`, and `result.json.controlSha` must equal the run's trusted control SHA.
 - Decision/snapshot/verification/result digest links must match the corresponding canonical artifact bytes, as additionally enforced by the runtime and offline tests.
@@ -189,15 +189,24 @@ capture_run() (
     provider-codex) expected_artifacts+=(adw-assessment-codex) ;;
     *) return 2 ;;
   esac
-  local attempt
-  for ((attempt=1; attempt<=run_attempt; attempt++)); do
-    expected_artifacts+=("adw-apply-result-$attempt")
+  expected_artifacts+=("adw-apply-result-$run_attempt")
+  local artifact
+  for artifact in "${expected_artifacts[@]}"; do
+    test "$(jq -r --arg name "$artifact" 'select(.name == $name) | .name' "$root/artifacts.jsonl" | wc -l)" = 1
   done
-  local actual expected
-  actual=$(jq -sr 'map(.name) | sort | join(",")' "$root/artifacts.jsonl")
-  expected=$(printf '%s\n' "${expected_artifacts[@]}" | LC_ALL=C sort | paste -sd, -)
-  test "$actual" = "$expected"
-  test "$(find "$root/download" -type f -name '*.sha256' | wc -l)" -ge "$((run_attempt + 4))"
+  while IFS= read -r artifact; do
+    case "$artifact" in
+      adw-apply-result-*)
+        local artifact_attempt=${artifact#adw-apply-result-}
+        [[ $artifact_attempt =~ ^[1-9][0-9]*$ ]]
+        test "$artifact_attempt" -le "$run_attempt"
+        ;;
+      *)
+        printf '%s\n' "${expected_artifacts[@]}" | grep -Fx -- "$artifact" >/dev/null
+        ;;
+    esac
+  done < <(jq -r '.name' "$root/artifacts.jsonl")
+  test "$(find "$root/download" -type f -name '*.sha256' | wc -l)" -ge 5
   find "$root/download" -type f -name '*.sha256' -print0 |
   while IFS= read -r -d '' sidecar; do
     case "$sidecar" in
@@ -231,8 +240,11 @@ capture_run() (
     "$root/download/adw-verification/verification.json" >/dev/null
 
   local -a receipts=()
-  for ((attempt=1; attempt<=run_attempt; attempt++)); do
-    local result_dir="$root/download/adw-apply-result-$attempt"
+  local result_dir
+  while IFS= read -r result_dir; do
+    local attempt=${result_dir##*-}
+    [[ $attempt =~ ^[1-9][0-9]*$ ]]
+    test "$attempt" -le "$run_attempt"
     local receipt="$result_dir/result.json" result_sidecar="$result_dir/result.sha256"
     for file in "$receipt" "$result_sidecar"; do test -f "$file"; done
     receipts+=("$receipt")
@@ -264,7 +276,8 @@ capture_run() (
                  else "pending" end)))
         end)
       ' "$receipt" >/dev/null
-  done
+  done < <(find "$root/download" -mindepth 1 -maxdepth 1 -type d -name 'adw-apply-result-*' | sort -V)
+  test "${#receipts[@]}" -ge 1
   jq -s -e '
     . as $chain |
     all(range(0; length - 1);
@@ -1011,6 +1024,29 @@ The focused nine-file Node run passed 239/239 and the full Node run passed 263/2
 A guarded read-only live reconciliation at main `491a42a3cc8848853e4ccd6cedc5695d9bd06e8c` made 86 API requests and produced 192865 snapshot bytes with digest `d0d190cee178ba8daa102ddd8fef4ea9018727d500b86dbd427a88adf8a9789a`. It recovered exactly run `30713540804`, attempt 1, overall `failure`, cancelled apply job `91405160611`, pull #167, and the same control SHA. The read-only reduction produced 30 intents: 21 held, one cancelled-apply retry, three first-time missing obligations for #146/#147/#148, four reviews, and one label sync. Mapping produced one `sync_labels`, one `rerun_check`, and seven `dispatch_repository` operations; none was applied. The three historical obligations remain expected first executions because production has no finalization markers yet; after each exact marker lands, later control SHAs do not redispatch it.
 
 Signed implementation commit `b9d379efebe8e19a8b8be1a25d383be268d8706e` verifies as Good under ED25519 key `SHA256:/hKgUDV+nKK77+MpfPjoTPym4qiOGZIsa8D1/mTrh5Y`. No GitHub object was mutated and nothing was pushed.
+
+### Task 7I: Close concatenated credential disclosure and full-run recovery blockers
+
+**Files:**
+
+- Modify: `adw/{core,github,providers,roles}.mjs`
+- Modify: `adw/test/{apply,core,github,providers,roles,scenarios,wrappers}.test.mjs`
+- Modify: `adw/test/fixtures/github/blockers.json`
+- Modify: `docs/super/plans/2026-08-01-adw-mjs-control-plane-phase-5-production-cutover-proof.md`
+
+- [x] **Step 1: Record focused RED before implementation**
+
+The focused provider/apply RED run passed 58/61 and failed the three new attacks as expected: a complete nested Codex access token split across valid steerer fields, a complete nested token split across patch metadata/content, and a rerun operation still bound to the full-run endpoint. No GitHub object was mutated, no secret was logged, and nothing was pushed.
+
+- [x] **Step 2: Implement exact bounded corrections**
+
+Credential leaves are derived recursively from the exact provider credential. Scanning covers exact raw provider bytes, every individual semantic key/value, and deterministic semantic concatenation with arrays in index order and object values in lexicographic key order. Patch scanning additionally concatenates normalized manifest strings with exact patch bytes. Ceilings are exactly 524288 raw provider bytes, 262144 normalized semantic bytes, 1048576 patch bytes, and 1310720 combined patch-metadata/content bytes. Matching is exact bytes only: separators remain separators, arbitrary encoding is not claimed, errors contain no credential, and the pinned exact provider CLI remains the trust root.
+
+Recovery now posts only `POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs`; the full-run `/rerun` endpoint is closed. Snapshot, intent, operation, App check evidence, and immediate pre-write reread bind the exact run attempt plus the sorted REST IDs/conclusions of its failed/cancelled jobs. The Actions/Checks write token remains exact for rerun delivery and its idempotency check marker. Successful source/snapshot/decision/verification jobs and artifacts are not rerun. Missing earlier apply results are accepted in production evidence only when the exact run artifact inventory proves none was uploaded; the current complete receipt reconstructs forge state. The live-30713540804-shaped regression binds run `30713540804`, cancelled apply job `91405160611`, and all five failed/cancelled jobs.
+
+- [x] **Step 3: Verify focused/full Node, diff, and one-anchor signature**
+
+Focused Node passed 206/206 and full Node passed 267/267. Changed MJS syntax checks, fixture JSON parse, and `git diff --check` passed. The single signed anchor is verified with `git verify-commit HEAD`; no GitHub object was mutated and nothing was pushed.
 
 ### Task 8: Push the owner-authored protected PR and record owner approval on its exact head
 
