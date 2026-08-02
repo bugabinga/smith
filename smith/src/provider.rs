@@ -81,6 +81,14 @@ pub enum ProviderEvent {
     ThinkingDelta {
         /// The fragment.
         text: String,
+        /// Provider-attached data that Smith never interprets.
+        ///
+        /// The provider adapter attaches signed-thinking metadata to the delta
+        /// whose text it authenticates. The agent loop later carries it into
+        /// [`ContentBlock::Thinking`](crate::ContentBlock::Thinking) for
+        /// replay on later requests (§5.4).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_metadata: Option<serde_json::Value>,
     },
     /// A complete tool call.
     ///
@@ -204,6 +212,7 @@ mod tests {
             },
             ProviderEvent::ThinkingDelta {
                 text: "hmm".to_owned(),
+                provider_metadata: None,
             },
             ProviderEvent::ToolCall {
                 id: "call-1".to_owned(),
@@ -227,6 +236,40 @@ mod tests {
         ciborium::into_writer(&events, &mut bytes).unwrap();
         let restored: Vec<ProviderEvent> = ciborium::from_reader(bytes.as_slice()).unwrap();
         assert_eq!(restored, events);
+    }
+
+    #[test]
+    fn a_thinking_delta_preserves_opaque_provider_metadata_through_cbor() {
+        let event = ProviderEvent::ThinkingDelta {
+            text: "hmm".to_owned(),
+            provider_metadata: Some(serde_json::json!({
+                "signature": "sig-abc",
+                "unrecognized": { "nested": [1, 2, 3] },
+            })),
+        };
+
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&event, &mut bytes).unwrap();
+        let restored: ProviderEvent = ciborium::from_reader(bytes.as_slice()).unwrap();
+
+        assert_eq!(restored, event);
+    }
+
+    #[test]
+    fn a_thinking_delta_omits_absent_provider_metadata() {
+        let event = ProviderEvent::ThinkingDelta {
+            text: "hmm".to_owned(),
+            provider_metadata: None,
+        };
+
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(
+            !json.contains("provider_metadata"),
+            "absent metadata must not be serialized: {json}"
+        );
+
+        let restored: ProviderEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, event);
     }
 
     /// Maps each variant to the `kind` string it must serialize as.
