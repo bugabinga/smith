@@ -244,10 +244,31 @@ export async function installProvider({ provider, prefix, npmPath, repository, r
   }
 }
 
+function collectSensitiveStrings(value, strings) {
+  if (typeof value === "string") {
+    if (value.length > 0) strings.add(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectSensitiveStrings(item, strings);
+    return;
+  }
+  if (value && Object.getPrototypeOf(value) === Object.prototype) {
+    for (const item of Object.values(value)) collectSensitiveStrings(item, strings);
+  }
+}
+
 function exactCredential(provider, credential) {
   const key = provider === "claude" ? "CLAUDE_CODE_OAUTH_TOKEN" : "CODEX_AUTH_JSON";
   if (!credential || Object.keys(credential).length !== 1 || typeof credential[key] !== "string" || credential[key].length === 0) rejectRequest("credential");
-  return { key, value: credential[key] };
+  const value = credential[key];
+  const sensitive = new Set([value]);
+  if (provider === "codex") {
+    let parsed;
+    try { parsed = JSON.parse(value); } catch { rejectRequest("credential"); }
+    collectSensitiveStrings(parsed, sensitive);
+  }
+  return { key, value, sensitive: Object.freeze([...sensitive]) };
 }
 
 function parsePayload(text) {
@@ -258,11 +279,15 @@ function parsePayload(text) {
   return value;
 }
 
-function containsCredential(value, credential) {
-  if (typeof value === "string") return value.includes(credential);
-  if (Array.isArray(value)) return value.some(item => containsCredential(item, credential));
-  if (value && Object.getPrototypeOf(value) === Object.prototype) return Object.entries(value).some(([key, item]) => key.includes(credential) || containsCredential(item, credential));
+function containsCredential(value, sensitive) {
+  if (typeof value === "string") return sensitive.some(secret => value.includes(secret));
+  if (Array.isArray(value)) return value.some(item => containsCredential(item, sensitive));
+  if (value && Object.getPrototypeOf(value) === Object.prototype) return Object.entries(value).some(([key, item]) => containsCredential(key, sensitive) || containsCredential(item, sensitive));
   return false;
+}
+
+function bytesContainCredential(bytes, sensitive) {
+  return sensitive.some(secret => bytes.includes(Buffer.from(secret)));
 }
 
 export async function invokeProvider({
@@ -318,6 +343,7 @@ export async function invokeProvider({
   const auth = exactCredential(provider, credential);
   const startedAt = now();
   let raw;
+  let providerOutput;
   let homeClaim;
   try {
     homeClaim = await claimDirectory(home, repository);
@@ -332,7 +358,8 @@ export async function invokeProvider({
         args: ["-p", providerPrompt, "--output-format", "json", "--json-schema", outputSchema, "--model", config.model, "--effort", config.effort, ...editArgs],
         cwd: repository, env, input: "", timeoutMs: config.timeoutSeconds * 1000, maxOutputBytes: 262_144,
       });
-      raw = parsePayload(result.stdout).structured_output;
+      providerOutput = parsePayload(result.stdout);
+      raw = providerOutput.structured_output;
     } else {
       const codexClaim = await claimDirectory(join(home, ".codex"), repository);
       const codexHome = codexClaim.path;
@@ -357,13 +384,14 @@ export async function invokeProvider({
         const after = await outputFile.stat();
         if (after.size !== outputStat.size || after.dev !== outputStat.dev || after.ino !== outputStat.ino || after.mtimeMs !== outputStat.mtimeMs || after.ctimeMs !== outputStat.ctimeMs) rejectRequest("output");
         raw = parsePayload(outputText);
+        providerOutput = raw;
       } finally {
         await outputFile?.close();
       }
       await assertClaim(codexClaim);
     }
     await assertClaim(homeClaim);
-    if (containsCredential(raw, auth.value)) rejectRequest("credential");
+    if (containsCredential(providerOutput, auth.sensitive)) rejectRequest("credential");
     if (!raw || Array.isArray(raw) || Object.keys(raw).sort().join(",") !== "outcome,patch,payload" || !rolePolicy.payload.outcomes.includes(raw.outcome) || typeof raw.payload !== "object" || raw.payload === null) rejectRequest("malformed");
     try { validateRolePayload(rolePolicy.name, raw.payload); } catch { rejectRequest("malformed"); }
     if (rolePolicy.payload.requiredKeys.some(key => !Object.hasOwn(raw.payload, key))) rejectRequest("malformed");
@@ -378,7 +406,7 @@ export async function invokeProvider({
       if (typeof capturePatch !== "function") rejectRequest("patch");
       const captured = await capturePatch(raw.patch);
       if (!captured || Object.keys(captured).sort().join(",") !== "manifest,patchBytes" || !Buffer.isBuffer(captured.patchBytes) || !canonicalBytes(captured.manifest).equals(canonicalBytes(raw.patch))) rejectRequest("patch");
-      if (captured.patchBytes.includes(Buffer.from(auth.value))) rejectRequest("credential");
+      if (bytesContainCredential(captured.patchBytes, auth.sensitive)) rejectRequest("credential");
       capturedPatchBytes = captured.patchBytes;
     }
     await assertClaim(homeClaim);
@@ -399,6 +427,7 @@ export async function invokeProvider({
       startedAt,
       completedAt: now(),
     };
+    if (containsCredential(assessment, auth.sensitive)) rejectRequest("credential");
     const validated = validateAssessmentArtifact({ assessment, patchBytes: capturedPatchBytes });
     return capturedPatchBytes === undefined ? validated : Object.freeze({ assessment: validated, patchBytes: capturedPatchBytes });
   } catch (error) {

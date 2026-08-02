@@ -147,11 +147,11 @@ The initial branch push preceded the required hold. Live Actions evidence was re
 
 Every accepted production run records its run ID and URL, event, expected run head SHA, trusted control SHA, attempt, conclusion, job list, artifact IDs/names, and downloaded sidecar verification. Expected artifact sets are:
 
-- Provider lane: `adw-target`, `adw-source`, `adw-snapshot`, exactly one successful primary `adw-assessment-{claude|codex}`, `adw-decision`, `adw-verification`, and `adw-apply-result-<attempt>`.
-- Provider-free audit/reconcile lane: `adw-target`, `adw-source`, `adw-snapshot`, `adw-decision`, `adw-verification`, and `adw-apply-result-<attempt>`; no `adw-assessment-*`.
-- Attempt defaults to `1`; recovered attempts pass their explicit positive integer. Evidence must download the same attempt-suffixed apply result, and `run.json.attempt` must equal it.
-- Every JSON/patch sidecar digest must match exact bytes.
-- Every `result.json` must have `schemaVersion:1`, `status:"complete"`, `failure:null`, all operations `status:"complete"`, and only complete receipts.
+- Provider lane: `adw-target`, `adw-source`, `adw-snapshot`, exactly one successful primary `adw-assessment-{claude|codex}`, `adw-decision`, `adw-verification`, and every retained `adw-apply-result-1` through `adw-apply-result-<attempt>`.
+- Provider-free audit/reconcile lane: `adw-target`, `adw-source`, `adw-snapshot`, `adw-decision`, `adw-verification`, and every retained `adw-apply-result-1` through `adw-apply-result-<attempt>`; no `adw-assessment-*`.
+- Attempt defaults to `1`; recovered attempts pass their explicit positive integer. Evidence must download the complete retained apply-result chain from `1` through that attempt, and `run.json.attempt` must equal it.
+- Every JSON/patch sidecar digest, including every retained `result.sha256`, must match exact bytes.
+- The current attempt's `result.json` must have `schemaVersion:1`, `status:"complete"`, `failure:null`, all operations `status:"complete"`, and only complete receipts. Each earlier result must be a structurally valid `partial`/`failed` result with a failure at the chain's exact operation boundary; its complete receipts must be an unchanged prefix of the next result's receipts.
 - Every `dispatch_repository` receipt must be backed by one exact child run lineage: `repository_dispatch` event, closed workflow path, operation digest as display title, exact App actor, trusted control head on `main`, creation at or after the dispatch boundary, and a positive attempt number. A duplicate run identity is conflicting evidence, not success; a failed child proves delivery only and must be recovered by a separate attempt-bound rerun.
 - `snapshot.json.controlSha`, `decision.json.controlSha`, `verification.json.controlSha`, and `result.json.controlSha` must equal the run's trusted control SHA.
 - Decision/snapshot/verification/result digest links must match the corresponding canonical artifact bytes, as additionally enforced by the runtime and offline tests.
@@ -178,20 +178,28 @@ capture_run() (
   test -s "$root/artifacts.jsonl"
   gh run download "$run_id" --repo "$repo" --dir "$root/download"
 
-  local expected apply_artifact="adw-apply-result-$run_attempt"
+  local -a expected_artifacts=(adw-decision adw-snapshot adw-source adw-target adw-verification)
   case "$lane" in
-    provider-free) expected="$apply_artifact,adw-decision,adw-snapshot,adw-source,adw-target,adw-verification" ;;
-    provider-claude) expected="$apply_artifact,adw-assessment-claude,adw-decision,adw-snapshot,adw-source,adw-target,adw-verification" ;;
-    provider-codex) expected="$apply_artifact,adw-assessment-codex,adw-decision,adw-snapshot,adw-source,adw-target,adw-verification" ;;
+    provider-free) ;;
+    provider-claude) expected_artifacts+=(adw-assessment-claude) ;;
+    provider-codex) expected_artifacts+=(adw-assessment-codex) ;;
     *) return 2 ;;
   esac
-  local actual
+  local attempt
+  for ((attempt=1; attempt<=run_attempt; attempt++)); do
+    expected_artifacts+=("adw-apply-result-$attempt")
+  done
+  local actual expected
   actual=$(jq -sr 'map(.name) | sort | join(",")' "$root/artifacts.jsonl")
+  expected=$(printf '%s\n' "${expected_artifacts[@]}" | LC_ALL=C sort | paste -sd, -)
   test "$actual" = "$expected"
-  test "$(find "$root/download" -type f -name '*.sha256' | wc -l)" -ge 5
+  test "$(find "$root/download" -type f -name '*.sha256' | wc -l)" -ge "$((run_attempt + 4))"
   find "$root/download" -type f -name '*.sha256' -print0 |
   while IFS= read -r -d '' sidecar; do
-    payload=${sidecar%.sha256}
+    case "$sidecar" in
+      *.patch.sha256) payload=${sidecar%.sha256} ;;
+      *) payload="${sidecar%.sha256}.json" ;;
+    esac
     test -f "$payload"
     expected_digest=$(tr -d '\r\n' < "$sidecar")
     [[ $expected_digest =~ ^[0-9a-f]{64}$ ]]
@@ -203,8 +211,7 @@ capture_run() (
   local snapshot="$root/download/adw-snapshot/snapshot.sha256"
   local decision="$root/download/adw-decision/decision.sha256"
   local verification="$root/download/adw-verification/verification.sha256"
-  local receipt="$root/download/adw-apply-result-$run_attempt/result.json"
-  for file in "$source" "$snapshot" "$decision" "$verification" "$receipt"; do test -f "$file"; done
+  for file in "$source" "$snapshot" "$decision" "$verification"; do test -f "$file"; done
   local source_digest snapshot_digest decision_digest verification_digest
   source_digest=$(tr -d '\r\n' < "$source")
   snapshot_digest=$(tr -d '\r\n' < "$snapshot")
@@ -218,17 +225,56 @@ capture_run() (
   jq -e --arg control "$control_sha" --arg decision "$decision_digest" \
     '.controlSha == $control and .decisionDigest == $decision' \
     "$root/download/adw-verification/verification.json" >/dev/null
-  jq -e --arg control "$control_sha" --arg source "$source_digest" \
-    --arg snapshot "$snapshot_digest" --arg decision "$decision_digest" \
-    --arg verification "$verification_digest" '
-      .schemaVersion == 1 and .controlSha == $control and
-      .sourceDigest == $source and .snapshotDigest == $snapshot and
-      .decisionDigest == $decision and .verificationDigest == $verification and
-      .status == "complete" and .failure == null and
-      (.operations | length >= 1) and
-      ([.operations[].status] | all(. == "complete")) and
-      ([.operations[].receipts[]?.status] | all(. == "complete"))
-    ' "$receipt" >/dev/null
+
+  local -a receipts=()
+  for ((attempt=1; attempt<=run_attempt; attempt++)); do
+    local result_dir="$root/download/adw-apply-result-$attempt"
+    local receipt="$result_dir/result.json" result_sidecar="$result_dir/result.sha256"
+    for file in "$receipt" "$result_sidecar"; do test -f "$file"; done
+    receipts+=("$receipt")
+    jq -e --arg control "$control_sha" --arg source "$source_digest" \
+      --arg snapshot "$snapshot_digest" --arg decision "$decision_digest" \
+      --arg verification "$verification_digest" --argjson artifact_attempt "$attempt" \
+      --argjson current_attempt "$run_attempt" '
+        . as $result |
+        $result.schemaVersion == 1 and $result.controlSha == $control and
+        $result.sourceDigest == $source and $result.snapshotDigest == $snapshot and
+        $result.decisionDigest == $decision and $result.verificationDigest == $verification and
+        ($result.operations | length >= 1) and
+        ([$result.operations[].receipts[]?.status] | all(. == "complete")) and
+        (if $artifact_attempt == $current_attempt then
+          $result.status == "complete" and $result.failure == null and
+          ([$result.operations[].status] | all(. == "complete"))
+        else
+          ($result.status == "partial" or $result.status == "failed") and $result.failure != null and
+          ([$result.operations[] | select(.status == "failed")] | length == 1) and
+          ($result.failure.operationIndex as $failed_operation |
+            $result.operations[$failed_operation].status == "failed") and
+          (([$result.operations[].receipts[]?] | length) as $completed_receipts |
+            $result.status == (if $completed_receipts > 0 then "partial" else "failed" end) and
+            all(range(0; $result.operations | length);
+              . as $operation |
+              $result.operations[$operation].status ==
+                (if $operation < $result.failure.operationIndex then "complete"
+                 elif $operation == $result.failure.operationIndex then "failed"
+                 else "pending" end)))
+        end)
+      ' "$receipt" >/dev/null
+  done
+  jq -s -e '
+    . as $chain |
+    all(range(0; length - 1);
+      . as $attempt |
+      $chain[$attempt] as $previous |
+      $chain[$attempt + 1] as $next |
+      ($previous.operations | length) == ($next.operations | length) and
+      all(range(0; $previous.operations | length);
+        . as $operation |
+        $previous.operations[$operation].index == $next.operations[$operation].index and
+        $previous.operations[$operation].operationDigest == $next.operations[$operation].operationDigest and
+        $previous.operations[$operation].receipts ==
+          $next.operations[$operation].receipts[0:($previous.operations[$operation].receipts | length)]))
+  ' "${receipts[@]}" >/dev/null
   jq -e --argjson id "$run_id" --arg head "$expected_run_head" --argjson attempt "$run_attempt" '
     .databaseId == $id and .headSha == $head and .attempt == $attempt and
     .status == "completed" and .conclusion == "success" and

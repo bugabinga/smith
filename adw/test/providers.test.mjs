@@ -203,6 +203,83 @@ test("provider-auth canaries remain transport-only and cannot become semantic co
   );
 });
 
+test("Codex rejects nested access-token leaves emitted as steerer comments without leaking them", async t => {
+  const root = await mkdtemp(join(tmpdir(), "smith-adw-codex-steerer-secret-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const policy = productionRole("steerer");
+  const schema = await readFile(policy.payloadSchema, "utf8");
+  const accessToken = "nested-access-token-do-not-publish-4fb751";
+  const authJson = JSON.stringify({ auth: { access_token: accessToken, future: { strings: ["future-secret-leaf"] } }, empty: "" });
+  const steeringSnapshot = {
+    ...snapshot,
+    event: { kind: "issue_comment", action: "created", entityId: "42" },
+    routing: { role: policy.name, mode: policy.mode, primary: policy.primary },
+    revisions: [
+      { resource: `trusted:${policy.charter}`, kind: "control", token: "c".repeat(40) },
+      { resource: `trusted:${policy.payloadSchema}`, kind: "control", token: "d".repeat(40) },
+    ],
+    state: { resources: {
+      [`trusted:${policy.charter}`]: trusted(policy.charter, "trusted steering charter"),
+      [`trusted:${policy.payloadSchema}`]: trusted(policy.payloadSchema, schema),
+    } },
+  };
+  await assert.rejects(
+    () => invokeProvider({
+      provider: "codex", executable: process.execPath, cliVersion: "0.145.0", rolePolicy: policy, snapshot: steeringSnapshot,
+      idempotencyKey: "steer:42", home: join(root, "home"), repository: process.cwd(), credential: { CODEX_AUTH_JSON: authJson },
+      runIdentity: { id: "run", job: "codex", attempt: 1 }, baseEnv: base.env, now: () => "2026-07-28T10:00:00.000Z",
+      run: async request => {
+        const output = request.args[request.args.indexOf("--output-last-message") + 1];
+        await writeFile(output, JSON.stringify({ outcome: "positive", payload: { verdict: "comment", body: accessToken }, patch: null }));
+        return { code: 0, signal: null, stdout: "", stderr: "" };
+      },
+    }),
+    error => error?.code === "provider" && error.message === "credential" && !JSON.stringify(error).includes(accessToken),
+  );
+});
+
+test("Codex rejects nested refresh-token leaves captured in patch bytes without leaking them", async t => {
+  const root = await mkdtemp(join(tmpdir(), "smith-adw-codex-patch-secret-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const policy = productionRole("codex-builder");
+  const schema = await readFile(policy.payloadSchema, "utf8");
+  const refreshToken = "nested-refresh-token-do-not-publish-83ca02";
+  const authJson = JSON.stringify({ tokens: { nested: [{ refresh_token: refreshToken }] } });
+  const baseSha = "b".repeat(40);
+  const patchBytes = Buffer.from(`diff --git a/smith/src/lib.rs b/smith/src/lib.rs\n+${refreshToken}\n`);
+  const manifest = {
+    baseSha, digest: (await import("../core.mjs")).digestBytes(patchBytes), size: patchBytes.length,
+    files: [{ path: "smith/src/lib.rs", kind: "regular", oldMode: "100644", newMode: "100644" }],
+  };
+  const buildSnapshot = {
+    ...snapshot,
+    routing: { role: policy.name, mode: policy.mode, primary: policy.primary },
+    revisions: [
+      { resource: "base", kind: "git_ref", token: baseSha },
+      { resource: `trusted:${policy.charter}`, kind: "control", token: "c".repeat(40) },
+      { resource: `trusted:${policy.payloadSchema}`, kind: "control", token: "d".repeat(40) },
+    ],
+    state: { resources: {
+      [`trusted:${policy.charter}`]: trusted(policy.charter, "trusted builder charter"),
+      [`trusted:${policy.payloadSchema}`]: trusted(policy.payloadSchema, schema),
+    } },
+  };
+  await assert.rejects(
+    () => invokeProvider({
+      provider: "codex", executable: process.execPath, cliVersion: "0.145.0", rolePolicy: policy, snapshot: buildSnapshot,
+      idempotencyKey: "build:42", home: join(root, "home"), repository: process.cwd(), credential: { CODEX_AUTH_JSON: authJson },
+      runIdentity: { id: "run", job: "codex", attempt: 1 }, baseEnv: base.env, now: () => "2026-07-28T10:00:00.000Z",
+      run: async request => {
+        const output = request.args[request.args.indexOf("--output-last-message") + 1];
+        await writeFile(output, JSON.stringify({ outcome: "positive", payload: { verdict: "patch", summary: "Build", patch: manifest }, patch: manifest }));
+        return { code: 0, signal: null, stdout: "", stderr: "" };
+      },
+      capturePatch: async () => ({ manifest, patchBytes }),
+    }),
+    error => error?.code === "provider" && error.message === "credential" && !JSON.stringify(error).includes(refreshToken),
+  );
+});
+
 test("provider invocation enforces role payload keys", async t => {
   const root = await mkdtemp(join(tmpdir(), "smith-adw-payload-"));
   const home = join(root, "home");
@@ -322,11 +399,14 @@ test("Codex auth file is mode-0600 and removed in finally", async () => {
   const root = await mkdtemp(join(tmpdir(), "smith-adw-codex-"));
   const home = join(root, "home");
   let authMode;
+  let authBytes;
   let providerArgs;
+  const authJson = '{"tokens":{"access_token":"valid-access","nested":{"refresh_token":"valid-refresh"}},"future":["valid-leaf",""]}';
   const run = async request => {
     providerArgs = request.args;
     const auth = join(home, ".codex", "auth.json");
     authMode = (await import("node:fs/promises")).stat(auth).then(value => value.mode & 0o777);
+    authBytes = await readFile(auth);
     const output = request.args[request.args.indexOf("--output-last-message") + 1];
     await writeFile(output, JSON.stringify({ outcome: "positive", payload: { verdict: "approve", risk: "none", findings: [] }, patch: null }));
     return { code: 0, signal: null, stdout: "", stderr: "" };
@@ -334,11 +414,12 @@ test("Codex auth file is mode-0600 and removed in finally", async () => {
   const result = await invokeProvider({
     provider: "codex", executable: process.execPath, cliVersion: "0.145.0", rolePolicy: productionRole("reviewer"), snapshot,
     idempotencyKey: "review:42",
-    home, repository: process.cwd(), credential: { CODEX_AUTH_JSON: "{\"token\":\"secret\"}" },
+    home, repository: process.cwd(), credential: { CODEX_AUTH_JSON: authJson },
     runIdentity: { id: "run", job: "codex", attempt: 1 }, baseEnv: base.env, now: () => "2026-07-28T10:00:00.000Z", run,
   });
   assert.equal(result.provider, "codex");
   assert.equal(await authMode, 0o600);
+  assert.deepEqual(authBytes, Buffer.from(authJson));
   assert.deepEqual(providerArgs.slice(providerArgs.indexOf("--sandbox"), providerArgs.indexOf("--sandbox") + 2), ["--sandbox", "read-only"]);
   await assert.rejects(() => access(home));
   await rm(root, { recursive: true, force: true });

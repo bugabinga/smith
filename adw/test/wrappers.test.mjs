@@ -499,7 +499,13 @@ test("capture_run binds run head, control SHA, and explicit recovered attempt", 
   assert.match(fn, /local run_id=\$1 lane=\$2 expected_run_head=\$3 control_sha=\$4 run_attempt=\$\{5:-1\} repo=bugabinga\/smith/);
   assert.match(fn, /\[\[ \$expected_run_head =~ \^\[0-9a-f\]\{40\}\$ \]\]/);
   assert.match(fn, /\[\[ \$run_attempt =~ \^\[1-9\]\[0-9\]\*\$ \]\]/);
-  assert.match(fn, /adw-apply-result-\$run_attempt/);
+  assert.match(fn, /for \(\(attempt=1; attempt<=run_attempt; attempt\+\+\)\)/);
+  assert.match(fn, /expected_artifacts\+=\("adw-apply-result-\$attempt"\)/);
+  assert.match(fn, /receipts\+=\("\$receipt"\)/);
+  assert.match(fn, /\*\.patch\.sha256\) payload=\$\{sidecar%\.sha256\}/);
+  assert.match(fn, /payload="\$\{sidecar%\.sha256\}\.json"/);
+  assert.match(fn, /\$result\.status == "partial" or \$result\.status == "failed"/);
+  assert.match(fn, /\$previous\.operations\[\$operation\]\.receipts ==[\s\S]*\$next\.operations\[\$operation\]\.receipts/);
   assert.match(fn, /--arg head "\$expected_run_head"/);
   assert.match(fn, /--arg control "\$control_sha"/);
   assert.match(fn, /--argjson attempt "\$run_attempt"/);
