@@ -891,9 +891,11 @@ Dependabot uses one supported `per_page=100` request and treats a full page as e
 
 Untrusted text retains full byte count and digest while exposing an explicit bounded preview. Comment collections retain the triggering comment and newest context under a fixed snapshot budget, record omitted-item/body truncation, and fail closed only when the defined 1000-comment or 8 MiB total-entity ceiling is incomplete. Final snapshots remain under 256 KiB before provider canonicalization.
 
-- [ ] **Step 3: Verify focused/full Node, read-only live snapshots, diff, and signatures**
+- [x] **Step 3: Verify focused/full Node, read-only live snapshots, diff, and signatures**
 
-Record exact totals, live alert/reconciler bytes and digests, changed-file diff checks, and signed commit verification here. No GitHub mutation or push is permitted.
+Focused Node passed 182/182; full Node passed 258/258. `git diff --check`, `git show --check`, Node syntax checks, and both changed JSON parses passed. Read-only snapshots at current main `491a42a3cc8848853e4ccd6cedc5695d9bd06e8c` produced 131450 alert bytes (digest `54faf9b66e860b698ca89f2a63563de1936ecf7a7d5f742aaec52f12b592196b`, 22 open alerts through the supported bounded request) and 192029 reconciler bytes (digest `692b047a93bedaeba63b5ce94e554cc88b85151017b5ce5a856217d274f05dbd`, zero cancelled applies, zero failed-child reruns, 29 intents). Reconciliation explicitly retained 79 newest/authority comments from 136 and recorded 57 omissions with zero body truncations.
+
+Signed commit `468afb79b33668959d9687e043d1f5e01f51e61d` verifies as Good under ED25519 key `SHA256:/hKgUDV+nKK77+MpfPjoTPym4qiOGZIsa8D1/mTrh5Y`. No GitHub object was mutated and nothing was pushed.
 
 ### Task 8: Push the owner-authored protected PR and record owner approval on its exact head
 
