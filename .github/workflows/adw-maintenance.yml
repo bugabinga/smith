@@ -1,0 +1,40 @@
+name: ADW maintenance triggers
+run-name: "${{ github.event_name == 'repository_dispatch' && github.event.client_payload.smith_operation_digest || github.event_name == 'workflow_dispatch' && format('ADW maintenance {0}', inputs.lane) || github.event_name == 'schedule' && format('ADW maintenance {0}', github.event.schedule) || github.event_name == 'push' && 'ADW maintenance push' || format('ADW maintenance {0}', github.event_name) }}"
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '7 */6 * * *'
+    - cron: '17 2 * * *'
+    - cron: '27 2 * * 1'
+    - cron: '37 2 * * *'
+    - cron: '47 2 * * 1'
+    - cron: '57 2 * * *'
+  repository_dispatch:
+    types: [run_obligation]
+  workflow_dispatch:
+    inputs:
+      lane: {description: lane, required: true, type: choice, options: [audit, reconcile]}
+permissions: {}
+jobs:
+  maintenance-event-lane:
+    name: reconciliation, planning, audit, labels, alert, or obligation lane
+    if: vars.ADW_CUTOVER_HOLD != 'true' && github.ref == 'refs/heads/main' && github.workflow_sha == github.sha && ((github.event_name != 'repository_dispatch' && github.event_name != 'workflow_dispatch') || (github.event_name == 'repository_dispatch' && github.event.sender.id == fromJSON(vars.APP_BOT_USER_ID) && github.event.sender.login == vars.APP_BOT_LOGIN && github.event.sender.type == 'Bot') || (github.event_name == 'workflow_dispatch' && github.event.sender.id == github.event.repository.owner.id && github.event.sender.login == github.repository_owner && github.event.sender.type == 'User'))
+    permissions:
+      contents: read
+    uses: ./.github/workflows/adw-issues.yml
+    with:
+      lane: ${{ github.event_name == 'repository_dispatch' && 'maintenance-obligation' || github.event_name == 'workflow_dispatch' && format('maintenance-{0}', inputs.lane) || github.event.schedule == '7 */6 * * *' && 'maintenance-reconcile' || github.event.schedule == '17 2 * * *' && 'maintenance-audit' || github.event.schedule == '27 2 * * 1' && 'maintenance-survey' || github.event.schedule == '37 2 * * *' && 'maintenance-sweep' || github.event.schedule == '47 2 * * 1' && 'maintenance-doctor' || 'maintenance-plan' }}
+      role: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.role || (github.event_name == 'workflow_dispatch' && inputs.lane == 'reconcile') && 'reconciler' || (github.event_name == 'workflow_dispatch' && inputs.lane == 'audit') && 'auditor' || github.event.schedule == '17 2 * * *' && 'auditor' || github.event.schedule == '7 */6 * * *' && 'reconciler' || github.event.schedule == '27 2 * * 1' && 'surveyor' || github.event.schedule == '37 2 * * *' && 'sweeper' || github.event.schedule == '47 2 * * 1' && 'adw-doctor' || github.event.schedule == '57 2 * * *' && 'alert-triager' || 'planner' }}
+      primary: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.provider || (github.event_name == 'workflow_dispatch' || github.event.schedule == '17 2 * * *' || github.event.schedule == '7 */6 * * *') && 'none' || (github.event.schedule == '37 2 * * *' || github.event.schedule == '47 2 * * 1') && 'codex' || 'claude' }}
+      fallback: ${{ github.event_name == 'repository_dispatch' && 'none' || (github.event_name == 'workflow_dispatch' || github.event.schedule == '17 2 * * *' || github.event.schedule == '7 */6 * * *' || github.event.schedule == '37 2 * * *') && 'none' || github.event.schedule == '47 2 * * 1' && 'claude' || 'codex' }}
+      decision: ${{ github.event_name == 'workflow_dispatch' && inputs.lane || github.event.schedule == '17 2 * * *' && 'audit' || github.event.schedule == '7 */6 * * *' && 'reconcile' || 'reduce' }}
+      read_class: prepare-maintenance
+      control_sha: ${{ github.workflow_sha }}
+      target_sha: ${{ github.event_name == 'repository_dispatch' && github.event.client_payload.mergeSha || github.sha }}
+      target_repository: ${{ github.repository }}
+    secrets:
+      APP_ID: ${{ secrets.APP_ID }}
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
