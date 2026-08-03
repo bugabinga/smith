@@ -170,7 +170,7 @@ Downstream jobs use `if: always()` where needed so provider failure still reache
 Target operational wrappers:
 
 1. `adw-issues.yml`: issue, issue-comment, and backlog events.
-2. `adw-pulls.yml`: pull request, review, review-comment, and check events.
+2. `adw-pulls.yml`: pull request, review, review-comment, and check events. Review-comment and check events wake reconciliation only; they never invoke a provider role directly.
 3. `adw-maintenance.yml`: default-branch pushes, schedules, alerts, reconciliation, spec-change planning, settings/labels audit, and manual dispatch.
 
 `adw-selftest.yml` remains CI, not an operational ADW wrapper. The premature `adw-release.yml` is deleted: PROJECT-INVARIANTS §8a and issues #104/#120/#122 keep release automation absent until `xtask release` and required cross-build proofs exist.
