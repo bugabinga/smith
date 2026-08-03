@@ -51,7 +51,7 @@ jobs:
           # already excludes it via paths-ignore; without this the Security tab
           # fills with findings from the ~75 committed throwaway sources. target/
           # is gitignored (never checked out) but listed defensively.
-          ignore-globs: "**/.git/**,**/bin/**,**/target/**,**/prototypes/**"
+          ignore-globs: "**/.git/**,**/bin/**,**/target/**,**/prototypes/**,**/adw/test/fixtures/**"
 
       - name: Upload DevSkim scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v4
