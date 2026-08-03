@@ -132,15 +132,17 @@
 
 ## Phase 4: Wrapper and Disposable-Repository Proof
 
-**Outcome:** Candidate thin wrappers and the complete failure/retry/merge matrix pass outside production.
+> **Owner-approved supersession (2026-08-01):** Phase 4 Tasks 1–6 remain the completed offline wrapper/failure evidence. Planned disposable-repository Tasks 7–8 remain unchecked and are superseded—not completed—by Phase 5 positive production testing during an owner-authorized quiet window. Production proof must never rotate secrets or inject malformed artifacts, stale writes, cancellation, provider failure, or partial writes.
 
-**Why now:** Authority transfer requires proof of triggers, permissions, credentials, artifacts, checks, and writes together.
+**Outcome:** Candidate thin wrappers and the complete offline failure/retry/merge matrix are ready for the owner-approved Phase 5 production proof.
+
+**Why now:** Authority transfer requires offline proof of triggers, permissions, credentials, artifacts, checks, and closed writes before positive production testing.
 
 **Scope:**
 
 - Candidate issue, pull, maintenance, and self-test wrappers held outside active production paths until cutover.
 - Explicit App permission matrix and global writer concurrency.
-- Disposable-repository runs for writes, provider failures, retries, current-head checks, squash auto-merge, signing, and cleanup.
+- Offline write, provider-failure, retry, current-head, auto-merge, signing, and cleanup contracts retained as regression evidence.
 - Wrapper contract tests and production read-only parity.
 
 **Out of scope:**
@@ -150,22 +152,23 @@
 **Key files/areas likely affected:**
 
 - `adw/test/`: wrapper contracts and live scenarios.
-- `prototypes/` or test fixtures: inactive candidate wrappers and disposable-repository evidence.
+- `prototypes/` and test fixtures: inactive candidate wrappers and offline evidence.
 
 **Dependencies:**
 
-- Phases 1–3 and separately scoped disposable App/repository.
+- Phases 1–3 and the owner-approved production-proof substitution above.
 
 **Verification:**
 
-- Disposable matrix passes with no provider job receiving forge credentials.
+- Offline malformed/stale/partial/fallback and wrapper-contract suites pass with no provider job receiving forge credentials.
 - Operational YAML candidate remains below 400 lines and contains no embedded policy/tools.
+- Positive write-path evidence is deferred to the superseding Phase 5 plan; no disposable matrix is claimed complete.
 
 **Phase boundary health:** Production remains entirely legacy-driven; candidate wrappers cannot trigger there.
 
 **Risks:**
 
-- Live GitHub semantics differ from mocks; require write-path proof before cutover approval.
+- Live GitHub semantics differ from mocks; Phase 5 uses positive production proof with signed rollback and no destructive injection.
 
 **Context notes:** Test the exact artifact downloads and job conditions used at cutover, not approximations.
 
@@ -200,7 +203,9 @@
 **Verification:**
 
 - No legacy ADW workflow can start; no active legacy run remains before merge.
-- First reconciliation, issue event, PR event, both providers, `check`, and `merge-gate` succeed on current heads.
+- Manual audit/reconcile, Codex triager, Claude owner steerer, review-comment/check reconcile-only paths, organic blocked/behind jam reporting, and label/settings drift handling produce bound production artifacts and complete receipts.
+- PRs #150, #163, #165, and #166 reconcile at exact current heads without auto-merging while blocked/behind.
+- Two consecutive natural scheduled reconciliation cycles succeed with no dual writers; production secrets remain unchanged and no malformed/stale/failure injection occurs.
 
 **Phase boundary health:** One control plane owns all writes; owner-signed direct revert remains available.
 
@@ -240,7 +245,7 @@
 **Verification:**
 
 - Two reconciliations and all critical trigger classes complete without unexplained terminal state.
-- Full Node, Cargo, wrapper, dry-run, and disposable regression suites pass.
+- Full Node, Cargo, wrapper, dry-run, and retained offline failure regression suites pass.
 
 **Phase boundary health:** Migration is complete; normal ADW maintenance continues through the owner-controlled control plane.
 
