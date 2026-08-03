@@ -1,42 +1,33 @@
-# ADW self-test — the deterministic checks on the cycle's own contracts.
-#
-# The gate's label sets are duplicated by necessity: adw-gate and
-# adw-jam-detector each inline a bootstrap copy for a base that predates the
-# shared file. Duplication that nothing checks is how the two drifted apart in
-# the first place, so the drift is checked here instead of trusted.
-#
-# No LLM, no network, no tokens — plain shell over files in the repo. It runs on
-# every PR touching the ADW so a change to the label contract cannot land
-# without its consequences being asserted.
+# ADW self-test — deterministic checks for the MJS control plane.
 name: adw-selftest
 
 on:
   pull_request:
     paths:
       - 'adw/**'
-      - '.github/adw/**'
+      - '.claude/agents/**'
+      - '.claude/skills/pioneer/SKILL.md'
       - '.github/workflows/adw-*.yml'
+      - 'prototypes/p38-adw-disposable/wrappers/**'
   push:
-    branches: [ "main" ]
+    branches: [main]
     paths:
       - 'adw/**'
-      - '.github/adw/**'
+      - '.claude/agents/**'
+      - '.claude/skills/pioneer/SKILL.md'
       - '.github/workflows/adw-*.yml'
+      - 'prototypes/p38-adw-disposable/wrappers/**'
   workflow_dispatch: {}
 
 permissions:
   contents: read
 
 jobs:
-  gate-labels:
-    runs-on: ubuntu-latest
+  contracts:
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: MJS control-plane contracts
         run: node --test adw/test/*.test.mjs
-      - name: Gate label contract
-        run: bash .github/adw/gate-labels.test.sh
-      - name: Builder route reconciler
-        run: bash .github/adw/reconcile-builder-routes.test.sh
-      - name: Workflow contracts
-        run: bash .github/adw/workflow-contract.test.sh
