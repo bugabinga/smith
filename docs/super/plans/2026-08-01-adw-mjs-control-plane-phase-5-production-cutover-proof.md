@@ -141,7 +141,9 @@ The rolled-back fourth attempt used owner-authored PR #171 from `adw/mjs-phase5-
 
 The rolled-back fifth attempt used owner-authored PR #172 from `adw/mjs-phase5-retry4`, based on signed fourth rollback `64a4515225f8f988989d38e21657bde97177202b`. Signed direct-child aggregate `5343ec254bdf63b0e1617ec345a139764f544c02` and signed planning head `b59d8d5293013a0bcbb0f98c25fd3be25983a212` are its implementation anchors. Fifth cutover `2917520ee4842a8dbc9e57cce829a51710e5acff`, partial audit retry `30798105635`, failed attempt-2 recovery, signed rollback `6c9a656c66b38b8bf4771ad47a79fab8bd617bba`, and immutable-old-source failure `30801002050` are historical execution evidence. Run `30801002050` cannot validate the corrected parser because its exact source artifact necessarily contains control `2917520`'s old parser. Tasks 8–11 completed for that attempt; Task 12 stopped at audit recovery; Tasks 13–16 did not execute.
 
-The rolled-back sixth attempt used owner-authored PR #173 from `adw/mjs-phase5-retry5`, based on signed fifth rollback `6c9a656c66b38b8bf4771ad47a79fab8bd617bba`. Signed direct-child aggregate `60d471bab66f6bafc1774281b5bbc6d422250944`, cutover `57361a625096b392299f7f2861d5d7b24db16d3f`, audits `30849959379` and `30850408903`, partial reconciliation `30850775894`, and signed rollback `6538fd7cc4ad1a97c64a87539273c55469f51cd8` are historical evidence. The hold remains `true`, legacy authority remains active except disabled `adw-release`, and no seventh cutover, complete reconciliation, scheduled-cycle proof, or Phase 5 completion has occurred. No seventh-attempt PR or exact-head owner approval is recorded by this change.
+The rolled-back sixth attempt used owner-authored PR #173 from `adw/mjs-phase5-retry5`, based on signed fifth rollback `6c9a656c66b38b8bf4771ad47a79fab8bd617bba`. Signed direct-child aggregate `60d471bab66f6bafc1774281b5bbc6d422250944`, cutover `57361a625096b392299f7f2861d5d7b24db16d3f`, audits `30849959379` and `30850408903`, partial reconciliation `30850775894`, and signed rollback `6538fd7cc4ad1a97c64a87539273c55469f51cd8` are historical evidence.
+
+The seventh candidate is owner-authored PR #175 from `adw/mjs-phase5-retry6`, based on signed sixth rollback `6538fd7cc4ad1a97c64a87539273c55469f51cd8`. Signed direct-child aggregate `26283a9015dc44f0f5770f69b3618ba96bf1b1c0` is staging provenance only. The hold remains `true`, legacy authority remains active except disabled `adw-release`, exact-head approval must follow this signed planning head update, and no seventh cutover, deployment proof, complete reconciliation, scheduled-cycle proof, or Phase 5 completion has occurred.
 
 ## File map
 
@@ -1214,21 +1216,21 @@ Global preconditions and the `runs` projection remain unchanged and authoritativ
 
 Focused core/scenario coverage requires one canonical dispatch and `sync_labels` plus one rerun with dispatch suppressed. Full Node, changed MJS syntax, `git diff --check`, and one signed commit with exactly one `Anchor:` trailer are required. No GitHub object is mutated and nothing is pushed.
 
-### Task 8: Archived sixth-attempt procedure; seventh authorization pending
-
-> **Do not execute Tasks 8–16 as written.** Their PR #173, retry5 branch, `6c9a656` base, and rollback commands are preserved as the immutable sixth-attempt procedure. Sixth cutover `57361a6` has already been rolled back by signed `6538fd7`. A seventh attempt requires a separate owner-authored PR, exact checked head, approval, and commands rebound to signed sixth rollback `6538fd7`; none is authorized here.
+### Task 8: Push the seventh-attempt plan and record owner approval on its exact checked head
 
 **Files:** none
 
 **Historical fifth-attempt procedure:** PR #172 and branch `adw/mjs-phase5-retry4` advanced from aggregate `5343ec254bdf63b0e1617ec345a139764f544c02` to its signed planning commit before fifth cutover `2917520ee4842a8dbc9e57cce829a51710e5acff` and rollback `6c9a656c66b38b8bf4771ad47a79fab8bd617bba`. Those identifiers remain immutable history.
 
-**Historical sixth-attempt procedure:** PR #173 and branch `adw/mjs-phase5-retry5` named signed aggregate `60d471bab66f6bafc1774281b5bbc6d422250944` over signed rollback base `6c9a656c66b38b8bf4771ad47a79fab8bd617bba`. The commands below are retained only to audit that completed attempt. They are not future authorization gates and must not be rerun.
+**Historical sixth-attempt procedure:** PR #173 and branch `adw/mjs-phase5-retry5` advanced from signed aggregate `60d471bab66f6bafc1774281b5bbc6d422250944` before sixth cutover `57361a625096b392299f7f2861d5d7b24db16d3f` and signed rollback `6538fd7cc4ad1a97c64a87539273c55469f51cd8`. Those identifiers and the prior attempt's rollback branch remain immutable history.
+
+PR #175 and branch `adw/mjs-phase5-retry6` already exist. The hold is already armed, but it must be revalidated before the plan push. The push changes the seventh-attempt PR head from signed aggregate `26283a9015dc44f0f5770f69b3618ba96bf1b1c0` to this signed planning commit; therefore every step remains unchecked until executed in order, and no approval marker may be posted from the aggregate or any pre-push head.
 
 - [ ] **Step 1: Revalidate the signed local retry candidate**
 
 ```bash
-BASE=6c9a656c66b38b8bf4771ad47a79fab8bd617bba
-AGGREGATE=60d471bab66f6bafc1774281b5bbc6d422250944
+BASE=6538fd7cc4ad1a97c64a87539273c55469f51cd8
+AGGREGATE=26283a9015dc44f0f5770f69b3618ba96bf1b1c0
 test "$(git rev-parse origin/main)" = "$BASE"
 test "$(git merge-base origin/main HEAD)" = "$BASE"
 test "$(git show -s --format=%P "$AGGREGATE")" = "$BASE"
@@ -1242,7 +1244,7 @@ for commit in $(git rev-list "$BASE"..HEAD); do git verify-commit "$commit"; don
 test -z "$(git status --porcelain)"
 ```
 
-Expected: rollback base and main are exactly `6c9a656c66b38b8bf4771ad47a79fab8bd617bba`; the aggregate is its signed direct child; this signed plan commit descends from the aggregate; full Node, MJS syntax, diff, signatures, and clean-tree checks pass. Do not merge or rebase after exact-head approval.
+Expected: rollback base and main are exactly `6538fd7cc4ad1a97c64a87539273c55469f51cd8`; the aggregate is its signed direct child; this signed plan commit descends from the aggregate; full Node, MJS syntax, diff, signatures, and clean-tree checks pass. Do not merge or rebase after exact-head approval.
 
 - [ ] **Step 2: Revalidate the already-armed hold immediately before push**
 
@@ -1255,28 +1257,28 @@ Expected: the existing retry hold is still exactly `true`. Do not mutate any var
 - [ ] **Step 3: Push the signed plan commit and bind the retry head**
 
 ```bash
-PR=173
-git push origin HEAD:refs/heads/adw/mjs-phase5-retry5
+PR=175
+git push origin HEAD:refs/heads/adw/mjs-phase5-retry6
 PR_HEAD=$(gh pr view "$PR" --repo bugabinga/smith --json headRefOid --jq .headRefOid)
 test "$PR_HEAD" = "$(git rev-parse HEAD)"
 test "$PR_HEAD" = \
-  "$(git ls-remote origin refs/heads/adw/mjs-phase5-retry5 | cut -f1)"
+  "$(git ls-remote origin refs/heads/adw/mjs-phase5-retry6 | cut -f1)"
 ```
 
-Expected: PR #173, its remote branch, and the signed local planning commit name one exact head. No GitHub mutation other than this branch push occurs.
+Expected: PR #175, its remote branch, and the signed local planning commit name one exact head. No GitHub mutation other than this branch push occurs.
 
 - [ ] **Step 4: Validate the existing retry PR**
 
 ```bash
 gh pr view "$PR" --repo bugabinga/smith \
   --json number,state,headRefName,baseRefName,author \
-  --jq '.number == 173 and .state == "OPEN" and
-        .headRefName == "adw/mjs-phase5-retry5" and
+  --jq '.number == 175 and .state == "OPEN" and
+        .headRefName == "adw/mjs-phase5-retry6" and
         .baseRefName == "main" and .author.login == "bugabinga"'
 test "$PR_HEAD" = "$(gh pr view "$PR" --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
 ```
 
-Expected: PR #173 is open from the exact sixth-attempt branch to `main`, owner-authored, and still bound to the pushed planning commit.
+Expected: PR #175 is open from the exact seventh-attempt branch to `main`, owner-authored, and still bound to the pushed planning commit.
 
 - [ ] **Step 5: Validate current-head checks and explicit owner bypass**
 
@@ -1301,18 +1303,18 @@ Expected: the pushed planning head has a green product `check`; legacy `merge-ga
 From the authenticated owner shell, post exactly one approval comment and retain its immutable REST coordinates:
 
 ```bash
-PR=173
+PR=175
 PR_HEAD=$(gh pr view "$PR" --repo bugabinga/smith --json headRefOid --jq .headRefOid)
 test "$PR_HEAD" = "$(git rev-parse HEAD)"
 test "$PR_HEAD" = \
-  "$(git ls-remote origin refs/heads/adw/mjs-phase5-retry5 | cut -f1)"
+  "$(git ls-remote origin refs/heads/adw/mjs-phase5-retry6 | cut -f1)"
 checks=$(gh api "repos/bugabinga/smith/commits/$PR_HEAD/check-runs?filter=latest&per_page=100")
 jq -e --arg head "$PR_HEAD" '
   [.check_runs[] | select(.name == "check" and .head_sha == $head and
     .status == "completed" and .conclusion == "success")] | length >= 1
 ' <<<"$checks" >/dev/null
 gh api user | jq -e '.id == 876467 and .login == "bugabinga"' >/dev/null
-OWNER_APPROVAL_MARKER="Owner approval: quiet-window MJS production cutover sixth attempt and positive-only proof on PR #173 exact head $PR_HEAD."
+OWNER_APPROVAL_MARKER="Owner approval: quiet-window MJS production cutover seventh attempt and positive-only proof on PR #175 exact head $PR_HEAD."
 OWNER_APPROVAL_COMMENT_JSON=$(gh api --method POST \
   "repos/bugabinga/smith/issues/$PR/comments" \
   -f body="$OWNER_APPROVAL_MARKER")
@@ -1330,7 +1332,7 @@ printf 'owner_approval_comment_id=%s\nowner_approval_created_at=%s\nowner_approv
   "$OWNER_APPROVAL_MARKER"
 ```
 
-Expected: approval is created only after the plan push updates PR #173 and its new current-head checks pass; it names PR #173 and exact `PR_HEAD`. Any identity, body, issue binding, head, or creation-time mismatch stops cutover.
+Expected: approval is created only after the plan push updates PR #175 and its new current-head checks pass; it names PR #175 and exact `PR_HEAD`. Any identity, body, issue binding, head, or creation-time mismatch stops cutover.
 
 ### Task 9: Seed production identity and prepare signed rollback
 
@@ -1368,27 +1370,27 @@ The first-attempt read is retained above as history and does not complete this r
 ```bash
 test "$PR_HEAD" = "$(gh pr view "$PR" --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
 test "$(git rev-parse origin/main)" = "$(gh api repos/bugabinga/smith/commits/main --jq .sha)"
-test "$(git rev-parse origin/main)" = "6c9a656c66b38b8bf4771ad47a79fab8bd617bba"
+test "$(git rev-parse origin/main)" = "6538fd7cc4ad1a97c64a87539273c55469f51cd8"
 ```
 
-Expected: PR #173 remains on its owner-approved plan head and main remains exactly signed rollback base `6c9a656c66b38b8bf4771ad47a79fab8bd617bba`.
+Expected: PR #175 remains on its owner-approved plan head and main remains exactly signed rollback base `6538fd7cc4ad1a97c64a87539273c55469f51cd8`.
 
 - [ ] **Step 4: Create an encrypted/private rollback workspace and reverse patch**
 
 ```bash
-ROLLBACK_ROOT="$HOME/.local/state/smith-adw-phase5-retry5-rollback"
+ROLLBACK_ROOT="$HOME/.local/state/smith-adw-phase5-retry6-rollback"
 mkdir -p "$ROLLBACK_ROOT"
 chmod 700 "$ROLLBACK_ROOT"
-CUTOVER_BASE=6c9a656c66b38b8bf4771ad47a79fab8bd617bba
+CUTOVER_BASE=6538fd7cc4ad1a97c64a87539273c55469f51cd8
 test "$(git rev-parse origin/main)" = "$CUTOVER_BASE"
 test "$(git merge-base origin/main "$PR_HEAD")" = "$CUTOVER_BASE"
-test "$PR_HEAD" = "$(gh pr view 173 --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
+test "$PR_HEAD" = "$(gh pr view 175 --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
 git diff --binary "$CUTOVER_BASE" "$PR_HEAD" > "$ROLLBACK_ROOT/cutover.patch"
 git diff --binary -R "$CUTOVER_BASE" "$PR_HEAD" > "$ROLLBACK_ROOT/rollback.patch"
 sha256sum "$ROLLBACK_ROOT"/*.patch > "$ROLLBACK_ROOT/SHA256SUMS"
 ```
 
-Expected: both patches are derived only from signed rollback base `6c9a656` and PR #173's exact approved sixth-attempt head; the reverse patch restores the rollback tree and contains no secret values.
+Expected: both patches are derived only from signed rollback base `6538fd7` and PR #175's exact approved seventh-attempt head; the reverse patch restores the rollback tree and contains no secret values.
 
 - [ ] **Step 5: Rehearse and sign rollback before merge**
 
@@ -1404,9 +1406,9 @@ REHEARSAL_SHA=$(git -C "$REHEARSAL_WT" rev-parse HEAD)
 git -C "$REHEARSAL_WT" verify-commit "$REHEARSAL_SHA"
 test "$(git -C "$REHEARSAL_WT" rev-parse HEAD^{tree})" = \
   "$(git rev-parse "$CUTOVER_BASE^{tree}")"
-git branch -f fix/rollback-adw-mjs-phase5-retry5-rehearsal "$REHEARSAL_SHA"
+git branch -f fix/rollback-adw-mjs-phase5-retry6-rehearsal "$REHEARSAL_SHA"
 git bundle create "$ROLLBACK_ROOT/rehearsal.bundle" \
-  refs/heads/fix/rollback-adw-mjs-phase5-retry5-rehearsal
+  refs/heads/fix/rollback-adw-mjs-phase5-retry6-rehearsal
 git bundle verify "$ROLLBACK_ROOT/rehearsal.bundle"
 git worktree remove --force "$REHEARSAL_WT"
 ```
@@ -1417,7 +1419,7 @@ Expected: signed rehearsal commit verifies and its tree equals the pre-cutover t
 
 **Files:** none
 
-Legacy writers are currently active except `adw-release`; that rollback state is not a sixth-attempt drain. Disable and observe all 21 paths again inside PR #173's new quiet window.
+Legacy writers are currently active except `adw-release`; that rollback state is not a seventh-attempt drain. Disable and observe all 21 paths again inside PR #175's new quiet window.
 
 - [ ] **Step 1: Enter the owner-announced quiet window**
 
@@ -1501,7 +1503,7 @@ Expected: zero active legacy runs, all legacy workflows disabled, self-test acti
 ```bash
 set -euo pipefail
 test "$PR_HEAD" = "$(gh pr view "$PR" --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
-test "$CUTOVER_BASE" = 6c9a656c66b38b8bf4771ad47a79fab8bd617bba
+test "$CUTOVER_BASE" = 6538fd7cc4ad1a97c64a87539273c55469f51cd8
 test "$CUTOVER_BASE" = "$(gh api repos/bugabinga/smith/commits/main --jq .sha)"
 test "$CUTOVER_BASE" = "$(git rev-parse origin/main)"
 test "$(gh pr view "$PR" --repo bugabinga/smith --json mergeable --jq .mergeable)" = MERGEABLE
@@ -1519,7 +1521,7 @@ jq -e --argjson id "$OWNER_APPROVAL_COMMENT_ID" \
     .id == $id and
     .user.id == 876467 and .user.login == "bugabinga" and
     .author_association == "OWNER" and .body == $body and
-    .body == ("Owner approval: quiet-window MJS production cutover sixth attempt and positive-only proof on PR #173 exact head " + $head + ".") and
+    .body == ("Owner approval: quiet-window MJS production cutover seventh attempt and positive-only proof on PR #175 exact head " + $head + ".") and
     .created_at == $created and .updated_at == $created and
     (.issue_url | endswith("/issues/" + ($pr | tostring)))
   ' <<<"$OWNER_APPROVAL_COMMENT_JSON" >/dev/null
@@ -1583,11 +1585,11 @@ test "$(git -C "$ROLLBACK_WT" rev-parse HEAD^)" = "$MERGE_SHA"
 test "$(git -C "$ROLLBACK_WT" rev-parse HEAD^{tree})" = \
   "$(git rev-parse "$CUTOVER_BASE^{tree}")"
 git -C "$ROLLBACK_WT" verify-commit "$ROLLBACK_SHA"
-test -z "$(git ls-remote --heads origin refs/heads/fix/rollback-adw-mjs-phase5-retry5)"
-git branch -f fix/rollback-adw-mjs-phase5-retry5 "$ROLLBACK_SHA"
-git push origin refs/heads/fix/rollback-adw-mjs-phase5-retry5
+test -z "$(git ls-remote --heads origin refs/heads/fix/rollback-adw-mjs-phase5-retry6)"
+git branch -f fix/rollback-adw-mjs-phase5-retry6 "$ROLLBACK_SHA"
+git push origin refs/heads/fix/rollback-adw-mjs-phase5-retry6
 git bundle create "$ROLLBACK_ROOT/parent-correct.bundle" \
-  refs/heads/fix/rollback-adw-mjs-phase5-retry5
+  refs/heads/fix/rollback-adw-mjs-phase5-retry6
 git bundle verify "$ROLLBACK_ROOT/parent-correct.bundle"
 git worktree remove --force "$ROLLBACK_WT"
 HOLD_RELEASE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -1609,7 +1611,7 @@ while read -r run; do
 done < "$ROLLBACK_ROOT/held-mjs-runs"
 ```
 
-Expected: prepared signed rollback is a direct child of PR #173's cutover squash, restores exact sixth-attempt base `6c9a656`, and is available at `fix/rollback-adw-mjs-phase5-retry5` plus the private bundle. All five historical rollback branches and commits remain untouched. The new rollback is executable only while current main equals `MERGE_SHA`; later main movement requires the new-current-main procedure below. Every MJS run created before rollback readiness has only skipped jobs and zero artifacts; the hold is deleted only afterward.
+Expected: prepared signed rollback is a direct child of PR #175's cutover squash, restores exact seventh-attempt base `6538fd7`, and is available at `fix/rollback-adw-mjs-phase5-retry6` plus the private bundle. All six historical rollback branches and commits remain untouched. The new rollback is executable only while current main equals `MERGE_SHA`; later main movement requires the new-current-main procedure below. Every MJS run created before rollback readiness has only skipped jobs and zero artifacts; the hold is deleted only afterward.
 
 - [ ] **Step 5: Verify only MJS can write**
 
@@ -1632,7 +1634,7 @@ Expected exactly:
 
 **Files:** none; evidence is downloaded outside the repository
 
-**Historical fourth- through sixth-attempt execution:** Fourth-attempt audit `30787720045` succeeded with a complete receipt; reconciliation `30788000713` then failed in prepare with zero artifacts and rollback `64a4515225f8f988989d38e21657bde97177202b` followed. Fifth-attempt audit retry `30798105635` attempt 1 completed `report_drift` and the PR #163 `publish_check`, failed operation 2, and retained a partial receipt; attempt 2 failed before any apply operation on the single-match flat prior-receipt layout, and rollback `6c9a656c66b38b8bf4771ad47a79fab8bd617bba` followed. Sixth-attempt audits `30849959379` and `30850408903` succeeded; reconciliation `30850775894` completed dispatch operation 0, failed operation 1 stale after child-run progression, restored operation 0 from the flat receipt on attempt 2, and again correctly failed stale before rollback `6538fd7cc4ad1a97c64a87539273c55469f51cd8`. This evidence remains historical; the unchecked commands below are archived sixth-attempt commands and are not evidence of seventh-attempt authorization or completion.
+**Historical fourth- through sixth-attempt execution:** Fourth-attempt audit `30787720045` succeeded with a complete receipt; reconciliation `30788000713` then failed in prepare with zero artifacts and rollback `64a4515225f8f988989d38e21657bde97177202b` followed. Fifth-attempt audit retry `30798105635` attempt 1 completed `report_drift` and the PR #163 `publish_check`, failed operation 2, and retained a partial receipt; attempt 2 failed before any apply operation on the single-match flat prior-receipt layout, and rollback `6c9a656c66b38b8bf4771ad47a79fab8bd617bba` followed. Sixth-attempt audits `30849959379` and `30850408903` succeeded; reconciliation `30850775894` completed dispatch operation 0, failed operation 1 stale after child-run progression, restored operation 0 from the flat receipt on attempt 2, and again correctly failed stale before rollback `6538fd7cc4ad1a97c64a87539273c55469f51cd8`. This evidence remains historical; the unchecked commands below are seventh-attempt commands and are not evidence of authorization execution or completion.
 
 - [ ] **Step 1: Revalidate three organic proof states without mutation**
 
@@ -1754,7 +1756,7 @@ gh run watch "$RECONCILE_RUN" --repo bugabinga/smith --exit-status
 
 Expected: success; no provider job runs unless reconciliation positively dispatches a missing real obligation/review through the closed internal path. Such a child run is recorded, not induced.
 
-> **Historical fourth-attempt blocker:** Run `30788000713` failed in prepare before any artifact upload with `operational pull run entity is malformed`. No child dispatch, apply, write, or receipt occurred, and rollback followed; this does not complete the sixth-attempt step.
+> **Historical fourth-attempt blocker:** Run `30788000713` failed in prepare before any artifact upload with `operational pull run entity is malformed`. No child dispatch, apply, write, or receipt occurred, and rollback followed; this does not complete the seventh-attempt step.
 
 - [ ] **Step 6: Capture reconciliation and any child runs**
 
@@ -2120,9 +2122,9 @@ Use `gh pr comment "$PR" --repo bugabinga/smith --body-file <generated-redacted-
 
 - [ ] **Step 3: Close quiet window only after owner acceptance**
 
-Owner comments acceptance on the evidence. Normal main merges may resume. Keep `fix/rollback-adw-mjs-phase5-retry5` until Phase 6 explicitly retires it; retain historical `fix/rollback-adw-mjs-phase5`, `fix/rollback-adw-mjs-phase5-retry`, `fix/rollback-adw-mjs-phase5-retry2`, `fix/rollback-adw-mjs-phase5-retry3`, and `fix/rollback-adw-mjs-phase5-retry4` as first- through fifth-attempt evidence.
+Owner comments acceptance on the evidence. Normal main merges may resume. Keep `fix/rollback-adw-mjs-phase5-retry6` until Phase 6 explicitly retires it; retain historical `fix/rollback-adw-mjs-phase5`, `fix/rollback-adw-mjs-phase5-retry`, `fix/rollback-adw-mjs-phase5-retry2`, `fix/rollback-adw-mjs-phase5-retry3`, `fix/rollback-adw-mjs-phase5-retry4`, and `fix/rollback-adw-mjs-phase5-retry5` as first- through sixth-attempt evidence.
 
-Expected after a later fully proved cutover: owner acceptance may complete Phase 5. The fourth attempt completed cutover and audit, then failed reconciliation and rolled back. The fifth attempt reached partial audit writes, failed receipt recovery, and rolled back. The sixth attempt completed two audits and one dispatch delivery, then correctly failed stale after child-run progression and rolled back. A seventh retry remains required; Phase 6 remains separate.
+Expected after a fully proved seventh cutover: owner acceptance may complete Phase 5. The fourth attempt completed cutover and audit, then failed reconciliation and rolled back. The fifth attempt reached partial audit writes, failed receipt recovery, and rolled back. The sixth attempt completed two audits and one dispatch delivery, then correctly failed stale after child-run progression and rolled back. The seventh attempt remains unexecuted; Phase 6 remains separate.
 
 ## Rollback triggers and exact procedure
 
@@ -2147,9 +2149,9 @@ Rollback from the owner shell:
 ```bash
 set -euo pipefail
 REPO=bugabinga/smith
-PR=173
-ROLLBACK_ROOT="$HOME/.local/state/smith-adw-phase5-retry5-rollback"
-EXPECTED_CUTOVER_BASE=6c9a656c66b38b8bf4771ad47a79fab8bd617bba
+PR=175
+ROLLBACK_ROOT="$HOME/.local/state/smith-adw-phase5-retry6-rollback"
+EXPECTED_CUTOVER_BASE=6538fd7cc4ad1a97c64a87539273c55469f51cd8
 mjs=(adw-issues.yml adw-pulls.yml adw-maintenance.yml)
 
 # Contain first: no rollback ref or main-head inspection precedes MJS disable/drain.
@@ -2191,7 +2193,7 @@ CURRENT_MAIN=$(git rev-parse origin/main)
 test "$CURRENT_MAIN" = "$(gh api "repos/$REPO/commits/main" --jq .sha)"
 git merge-base --is-ancestor "$MERGE_SHA" "$CURRENT_MAIN"
 sha256sum --check "$ROLLBACK_ROOT/SHA256SUMS"
-PREPARED_ROLLBACK_SHA=$(git rev-parse origin/fix/rollback-adw-mjs-phase5-retry5)
+PREPARED_ROLLBACK_SHA=$(git rev-parse origin/fix/rollback-adw-mjs-phase5-retry6)
 test "$(git rev-parse "$PREPARED_ROLLBACK_SHA^")" = "$MERGE_SHA"
 test "$(git rev-parse "$PREPARED_ROLLBACK_SHA^{tree}")" = \
   "$(git rev-parse "$CUTOVER_BASE^{tree}")"
@@ -2273,4 +2275,4 @@ Expected: MJS is disabled and drained before rollback selection. Unchanged main 
 
 ## Phase boundary
 
-Phase 5 remains incomplete after cutovers `2a31a5a`, `4cd7808`, `7ec4fbf`, `e91e4a1`, `2917520`, and `57361a6` and signed rollbacks `d4dd6c6`, `2f3d9c9`, `58ff44b`, `64a4515`, `6c9a656`, and `6538fd7`. Fourth-attempt audit `30787720045` succeeded complete. Fifth-attempt audit retry `30798105635` retained two complete operation receipts before flat receipt recovery failed. Sixth-attempt audits `30849959379` and `30850408903` succeeded with behind states fail-closed. Reconciliation `30850775894` emitted eight dispatches, completed operation 0 delivery, then correctly failed operation 1 stale after the child advanced the global `runs` projection; attempt 2 proved flat receipt recovery, restored operation 0, and correctly failed stale again. Signed sixth rollback `6538fd7` restored legacy authority. Deterministic reconciliation now emits at most one asynchronous operation per decision while retaining canonical retry-before-dispatch order, held intents, safe synchronous operations, and all global preconditions. Full Node remains a retry prerequisite, and a seventh retry is required. Phase 5 can end only after a future GitHub-verified cutover leaves three MJS operational wrappers plus self-test as sole ADW authority, release automation deferred, a parent-correct signed rollback available, all required positive production receipts captured, explicit behind/dirty candidates still fail-closed, and two consecutive scheduled reconciliation cycles green. Prior audits, probes, partial receipts, and correct stale failures remain retry evidence, not phase-completion evidence; legacy marker compatibility, long-term docs, rollback-branch retirement, and backlog cleanup remain Phase 6.
+Phase 5 remains incomplete after cutovers `2a31a5a`, `4cd7808`, `7ec4fbf`, `e91e4a1`, `2917520`, and `57361a6` and signed rollbacks `d4dd6c6`, `2f3d9c9`, `58ff44b`, `64a4515`, `6c9a656`, and `6538fd7`. Fourth-attempt audit `30787720045` succeeded complete. Fifth-attempt audit retry `30798105635` retained two complete operation receipts before flat receipt recovery failed. Sixth-attempt audits `30849959379` and `30850408903` succeeded with behind states fail-closed. Reconciliation `30850775894` emitted eight dispatches, completed operation 0 delivery, then correctly failed operation 1 stale after the child advanced the global `runs` projection; attempt 2 proved flat receipt recovery, restored operation 0, and correctly failed stale again. Signed sixth rollback `6538fd7` restored legacy authority. Deterministic reconciliation now emits at most one asynchronous operation per decision while retaining canonical retry-before-dispatch order, held intents, safe synchronous operations, and all global preconditions. Full Node remains a retry prerequisite, and the authorized seventh retry remains unexecuted. Phase 5 can end only after a future GitHub-verified cutover leaves three MJS operational wrappers plus self-test as sole ADW authority, release automation deferred, a parent-correct signed rollback available, all required positive production receipts captured, explicit behind/dirty candidates still fail-closed, and two consecutive scheduled reconciliation cycles green. Prior audits, probes, partial receipts, and correct stale failures remain retry evidence, not phase-completion evidence; legacy marker compatibility, long-term docs, rollback-branch retirement, and backlog cleanup remain Phase 6.

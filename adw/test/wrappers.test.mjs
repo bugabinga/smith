@@ -567,12 +567,12 @@ test("Phase 5 records all six rolled-back cutovers and blocks completion claims"
   assert.match(plan, /no intent, write, or receipt/i);
   assert.match(plan, /operation 0 delivery completed.*globally named `runs` projection.*operation 1 correctly failed stale/is);
   assert.match(plan, /attempt 2.*flat prior-receipt parser.*restoring operation 0.*failed stale again/is);
-  assert.match(plan, /seventh retry remains required/i);
+  assert.match(plan, /authorized seventh retry remains unexecuted/i);
   assert.match(plan, /Phase 5 remains incomplete/i);
   assert.doesNotMatch(plan, /Expected: Phase 5 complete/);
 });
 
-test("Phase 5 preserves prior history and archives sixth-attempt commands", async () => {
+test("Phase 5 preserves prior history and binds seventh-attempt commands", async () => {
   const plan = await readFile(phase5Plan, "utf8");
   const retry = plan.slice(plan.indexOf("## Current post-rollback baseline"));
   assert.match(retry, /PR #168.*`adw\/mjs-phase5-retry`/s);
@@ -590,18 +590,22 @@ test("Phase 5 preserves prior history and archives sixth-attempt commands", asyn
   assert.match(retry, /5343ec254bdf63b0e1617ec345a139764f544c02/);
   assert.match(retry, /2917520ee4842a8dbc9e57cce829a51710e5acff/);
   assert.match(retry, /PR #173.*`adw\/mjs-phase5-retry5`/s);
-  assert.match(retry, /AGGREGATE=60d471bab66f6bafc1774281b5bbc6d422250944/);
-  assert.match(retry, /BASE=6c9a656c66b38b8bf4771ad47a79fab8bd617bba/);
-  assert.match(retry, /CUTOVER_BASE=6c9a656c66b38b8bf4771ad47a79fab8bd617bba/);
-  assert.match(retry, /PR=173/);
-  assert.match(retry, /HEAD:refs\/heads\/adw\/mjs-phase5-retry5/);
+  assert.match(retry, /60d471bab66f6bafc1774281b5bbc6d422250944/);
+  assert.match(retry, /57361a625096b392299f7f2861d5d7b24db16d3f/);
   assert.match(retry, /fix\/rollback-adw-mjs-phase5-retry5/);
+  assert.match(retry, /PR #175.*`adw\/mjs-phase5-retry6`/s);
+  assert.match(retry, /AGGREGATE=26283a9015dc44f0f5770f69b3618ba96bf1b1c0/);
+  assert.match(retry, /BASE=6538fd7cc4ad1a97c64a87539273c55469f51cd8/);
+  assert.match(retry, /CUTOVER_BASE=6538fd7cc4ad1a97c64a87539273c55469f51cd8/);
+  assert.match(retry, /PR=175/);
+  assert.match(retry, /HEAD:refs\/heads\/adw\/mjs-phase5-retry6/);
+  assert.match(retry, /fix\/rollback-adw-mjs-phase5-retry6/);
   assert.match(retry, /git diff --binary "\$CUTOVER_BASE" "\$PR_HEAD"/);
   assert.match(retry, /git diff --binary -R "\$CUTOVER_BASE" "\$PR_HEAD"/);
   assert.match(retry, /Only after push and checks, record the exact-head owner approval marker/);
-  assert.match(retry, /approval is created only after the plan push updates PR #173 and its new current-head checks pass/i);
-  assert.match(retry, /hold remains `true`.*legacy authority remains active except disabled `adw-release`.*no seventh cutover, complete reconciliation, scheduled-cycle proof, or Phase 5 completion/is);
-  assert.match(retry, /Do not execute Tasks 8–16 as written.*seventh attempt requires a separate owner-authored PR/is);
+  assert.match(retry, /approval is created only after the plan push updates PR #175 and its new current-head checks pass/i);
+  assert.match(retry, /hold remains `true`.*legacy authority remains active except disabled `adw-release`.*no seventh cutover, deployment proof, complete reconciliation, scheduled-cycle proof, or Phase 5 completion/is);
+  assert.doesNotMatch(retry, /Do not execute Tasks 8–16 as written/);
   const task12 = plan.slice(plan.indexOf("### Task 12:"), plan.indexOf("### Task 13:"));
   assert.match(task12, /30787720045.*succeeded.*complete/is);
   assert.match(task12, /30788000713.*failed in prepare.*zero artifacts/is);
