@@ -575,7 +575,7 @@ test("Phase 5 records all seven rolled-back cutovers and blocks completion claim
   assert.doesNotMatch(plan, /Expected: Phase 5 complete/);
 });
 
-test("Phase 5 preserves prior history and binds eighth-attempt commands", async () => {
+test("Phase 5 preserves prior history and binds PR #176 future commands", async () => {
   const plan = await readFile(phase5Plan, "utf8");
   const retry = plan.slice(plan.indexOf("## Current post-rollback baseline"));
   assert.match(retry, /PR #168.*`adw\/mjs-phase5-retry`/s);
@@ -599,18 +599,21 @@ test("Phase 5 preserves prior history and binds eighth-attempt commands", async 
   assert.match(retry, /f1c691984e539f1afd0d2f6569d7ffecf1262ad4/);
   assert.match(retry, /737402d1de1ce57cbdcd8553c3a9829f91be4847/);
   assert.match(retry, /30854346376.*325210492.*db80fd48c1c5fb7bd5a076f1c6b0571c3586361c/s);
-  assert.match(retry, /`adw\/mjs-phase5-retry7`.*signed seventh rollback `db80fd48c1c5fb7bd5a076f1c6b0571c3586361c`/s);
-  assert.match(retry, /AGGREGATE=\$\(git rev-parse HEAD\)/);
+  assert.match(retry, /PR #176.*`adw\/mjs-phase5-retry7`.*signed seventh rollback `db80fd48c1c5fb7bd5a076f1c6b0571c3586361c`/s);
+  assert.match(retry, /signed aggregate `cb8e61eb900e289263e166a37673e0ea5ccad692`/);
   assert.match(retry, /BASE=db80fd48c1c5fb7bd5a076f1c6b0571c3586361c/);
+  assert.match(retry, /AGGREGATE=cb8e61eb900e289263e166a37673e0ea5ccad692/);
+  assert.match(retry, /PLAN_HEAD=\$\(git rev-parse HEAD\)/);
   assert.match(retry, /CUTOVER_BASE=db80fd48c1c5fb7bd5a076f1c6b0571c3586361c/);
-  assert.match(retry, /PR=\$\{PR_URL##\*\/\}/);
-  assert.doesNotMatch(plan.slice(plan.indexOf("### Task 8:"), plan.indexOf("### Task 9:")), /PR=[0-9]+/);
+  const task8 = plan.slice(plan.indexOf("### Task 8:"), plan.indexOf("### Task 9:"));
+  assert.match(task8, /PR=176/);
+  assert.doesNotMatch(task8, /PR_URL|gh pr create/);
   assert.match(retry, /HEAD:refs\/heads\/adw\/mjs-phase5-retry7/);
   assert.match(retry, /fix\/rollback-adw-mjs-phase5-retry7/);
   assert.match(retry, /git diff --binary "\$CUTOVER_BASE" "\$PR_HEAD"/);
   assert.match(retry, /git diff --binary -R "\$CUTOVER_BASE" "\$PR_HEAD"/);
-  assert.match(retry, /Only after push and checks, record the exact-head owner approval marker/);
-  assert.match(retry, /approval is created only after the aggregate push creates the PR and its current-head checks pass/i);
+  assert.match(retry, /Only after the corrected head is pushed and checked, record the exact-head owner approval marker/);
+  assert.match(retry, /approval is created only after the signed planning head is pushed to PR #176 and its current-head checks pass/i);
   assert.match(retry, /hold remains `true`.*legacy authority remains active except disabled `adw-release`.*no eighth cutover, deployment proof, complete reconciliation, scheduled-cycle proof, or Phase 5 completion/is);
   assert.match(retry, /30854346376.*completed.*skipped.*zero artifacts.*zero jobs or only skipped jobs/is);
   assert.match(retry, /if the old run remains queued.*hold retained.*rollback/is);

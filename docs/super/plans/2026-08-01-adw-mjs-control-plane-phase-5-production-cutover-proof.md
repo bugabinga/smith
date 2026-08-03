@@ -153,7 +153,7 @@ The rolled-back sixth attempt used owner-authored PR #173 from `adw/mjs-phase5-r
 
 The rolled-back seventh attempt used owner-authored PR #175 from `adw/mjs-phase5-retry6`, based on signed sixth rollback `6538fd7cc4ad1a97c64a87539273c55469f51cd8`. Signed direct-child aggregate `26283a9015dc44f0f5770f69b3618ba96bf1b1c0`, signed planning head `f1c691984e539f1afd0d2f6569d7ffecf1262ad4`, cutover `737402d1de1ce57cbdcd8553c3a9829f91be4847`, queued audit `30854346376`, deleted workflow record `325210492`, and signed rollback `db80fd48c1c5fb7bd5a076f1c6b0571c3586361c` are historical evidence.
 
-The eighth candidate is local branch `adw/mjs-phase5-retry7`, based on signed seventh rollback `db80fd48c1c5fb7bd5a076f1c6b0571c3586361c`. Its signed aggregate reintroduces the unchanged current MJS tree plus this eighth-attempt plan. The hold remains `true`, legacy authority remains active except disabled `adw-release`, no remote branch or PR is assumed, exact-head approval must follow the future push and checks, and no eighth cutover, deployment proof, complete reconciliation, scheduled-cycle proof, or Phase 5 completion has occurred.
+Eighth-attempt PR #176 uses branch `adw/mjs-phase5-retry7`, based on signed seventh rollback `db80fd48c1c5fb7bd5a076f1c6b0571c3586361c`. Signed aggregate `cb8e61eb900e289263e166a37673e0ea5ccad692` reintroduces the unchanged current MJS tree plus the eighth-attempt plan; the next signed planning head only binds PR #176's future commands. The hold remains `true`, legacy authority remains active except disabled `adw-release`, and exact-head approval must follow that planning head's future push and current-head checks. No eighth cutover, deployment proof, complete reconciliation, scheduled-cycle proof, or Phase 5 completion has occurred.
 
 ## File map
 
@@ -1226,31 +1226,35 @@ Global preconditions and the `runs` projection remain unchanged and authoritativ
 
 Focused core/scenario coverage requires one canonical dispatch and `sync_labels` plus one rerun with dispatch suppressed. Full Node, changed MJS syntax, `git diff --check`, and one signed commit with exactly one `Anchor:` trailer are required. No GitHub object is mutated and nothing is pushed.
 
-### Task 8: Push the eighth-attempt aggregate and record owner approval on its exact checked head
+### Task 8: Push the signed PR #176 planning head and record owner approval on its exact checked head
 
 **Files:** none
 
 **Historical seventh-attempt procedure:** PR #175 and branch `adw/mjs-phase5-retry6` advanced from signed aggregate `26283a9015dc44f0f5770f69b3618ba96bf1b1c0` to signed planning head `f1c691984e539f1afd0d2f6569d7ffecf1262ad4` before seventh cutover `737402d1de1ce57cbdcd8553c3a9829f91be4847`, queued audit `30854346376`, and signed rollback `db80fd48c1c5fb7bd5a076f1c6b0571c3586361c`. Those identifiers and `fix/rollback-adw-mjs-phase5-retry6` remain immutable history.
 
-Branch `adw/mjs-phase5-retry7` is local only. The hold is already armed, but it must be revalidated before the first push. This one signed aggregate is the eighth-attempt PR head; every step remains unchecked until executed in order, and no approval marker may be posted before the push and current-head checks.
+Branch `adw/mjs-phase5-retry7` and owner-authored PR #176 already exist at signed aggregate `cb8e61eb900e289263e166a37673e0ea5ccad692`. The hold remains armed. The next signed one-anchor planning commit supersedes that aggregate only as PR #176's head; every future step remains unchecked until executed in order, and no approval marker for the corrected head may be posted before its push and current-head checks.
 
 - [ ] **Step 1: Revalidate the signed local retry candidate**
 
 ```bash
+PR=176
 BASE=db80fd48c1c5fb7bd5a076f1c6b0571c3586361c
-AGGREGATE=$(git rev-parse HEAD)
+AGGREGATE=cb8e61eb900e289263e166a37673e0ea5ccad692
+PLAN_HEAD=$(git rev-parse HEAD)
 test "$(git rev-parse origin/main)" = "$BASE"
-test "$(git merge-base origin/main HEAD)" = "$BASE"
+test "$(git merge-base origin/main "$PLAN_HEAD")" = "$BASE"
 test "$(git show -s --format=%P "$AGGREGATE")" = "$BASE"
+test "$(git show -s --format=%P "$PLAN_HEAD")" = "$AGGREGATE"
 git verify-commit "$BASE"
 git verify-commit "$AGGREGATE"
+git verify-commit "$PLAN_HEAD"
 node --test adw/test/*.test.mjs
 find adw -type f -name '*.mjs' -print0 | xargs -0 -n1 node --check
 git diff --check
 test -z "$(git status --porcelain)"
 ```
 
-Expected: rollback base and main are exactly `db80fd48c1c5fb7bd5a076f1c6b0571c3586361c`; the signed aggregate is its direct child; full Node, MJS syntax, diff, signature, and clean-tree checks pass. Do not amend, merge, or rebase after exact-head approval.
+Expected: rollback base and main are exactly `db80fd48c1c5fb7bd5a076f1c6b0571c3586361c`; signed aggregate `cb8e61eb900e289263e166a37673e0ea5ccad692` is its direct child and the signed one-anchor planning head is the aggregate's direct child; full Node, MJS syntax, diff, signature, and clean-tree checks pass. Do not amend, merge, or rebase after exact-head approval.
 
 - [ ] **Step 2: Revalidate the already-armed hold immediately before push**
 
@@ -1260,37 +1264,32 @@ test "$(gh variable get ADW_CUTOVER_HOLD --repo bugabinga/smith)" = true
 
 Expected: the existing retry hold is still exactly `true`. Do not mutate any variable in this step.
 
-- [ ] **Step 3: Push only the signed eighth-attempt branch**
+- [ ] **Step 3: Push only the corrected signed head to PR #176's branch**
 
 ```bash
-test -z "$(git ls-remote --heads origin refs/heads/adw/mjs-phase5-retry7)"
+PR=176
+test "$(git ls-remote origin refs/heads/adw/mjs-phase5-retry7 | cut -f1)" = "$AGGREGATE"
 git push origin HEAD:refs/heads/adw/mjs-phase5-retry7
 PR_HEAD=$(git rev-parse HEAD)
+test "$PR_HEAD" = "$PLAN_HEAD"
 test "$PR_HEAD" = \
   "$(git ls-remote origin refs/heads/adw/mjs-phase5-retry7 | cut -f1)"
 ```
 
-Expected: the remote retry branch and signed local aggregate name one exact head. No other ref or GitHub object is mutated in this step.
+Expected: PR #176's remote retry branch and signed local planning head name one exact head. No other ref or GitHub object is mutated in this step.
 
-- [ ] **Step 4: Open and validate the owner-authored eighth-attempt PR**
+- [ ] **Step 4: Validate existing owner-authored PR #176 on the corrected head**
 
 ```bash
-test -z "$(gh pr list --repo bugabinga/smith --state all \
-  --head adw/mjs-phase5-retry7 --json number --jq '.[].number')"
-PR_URL=$(gh pr create --repo bugabinga/smith \
-  --head adw/mjs-phase5-retry7 --base main \
-  --title 'Retry ADW cutover after forge queue containment' \
-  --body 'Eighth Phase 5 retry. Keep ADW_CUTOVER_HOLD=true; old run 30854346376 must become completed/skipped before hold release.')
-PR=${PR_URL##*/}
-[[ $PR =~ ^[1-9][0-9]*$ ]]
+PR=176
 gh pr view "$PR" --repo bugabinga/smith \
   --json number,state,headRefName,headRefOid,baseRefName,author |
-  jq -e --arg head "$PR_HEAD" '.number > 0 and .state == "OPEN" and
+  jq -e --arg head "$PR_HEAD" '.number == 176 and .state == "OPEN" and
         .headRefName == "adw/mjs-phase5-retry7" and .headRefOid == $head and
         .baseRefName == "main" and .author.login == "bugabinga"' >/dev/null
 ```
 
-Expected: exactly one open owner-authored PR targets `main` from the exact eighth-attempt branch and signed aggregate. Record its forge-derived numeric `PR`; never predict or hard-code it.
+Expected: existing owner-authored PR #176 targets `main` from the exact eighth-attempt branch and signed planning head; no new PR is created.
 
 - [ ] **Step 5: Validate current-head checks and explicit owner bypass**
 
@@ -1310,7 +1309,7 @@ test "$PR_HEAD" = "$(gh pr view "$PR" --repo bugabinga/smith --json headRefOid -
 
 Expected: the pushed aggregate has a green product `check`; legacy `merge-gate` is intentionally absent and covered only by confirmed owner bypass, never by weakening the ruleset.
 
-- [ ] **Step 6: Only after push and checks, record the exact-head owner approval marker**
+- [ ] **Step 6: Only after the corrected head is pushed and checked, record the exact-head owner approval marker**
 
 From the authenticated owner shell, post exactly one approval comment and retain its immutable REST coordinates:
 
@@ -1343,7 +1342,7 @@ printf 'pr=%s\nowner_approval_comment_id=%s\nowner_approval_created_at=%s\nowner
   "$OWNER_APPROVAL_MARKER"
 ```
 
-Expected: approval is created only after the aggregate push creates the PR and its current-head checks pass; it names forge-derived `PR` and exact `PR_HEAD`. Any identity, body, issue binding, head, or creation-time mismatch stops cutover.
+Expected: approval is created only after the signed planning head is pushed to PR #176 and its current-head checks pass; it names PR #176 and exact `PR_HEAD`. Any identity, body, issue binding, head, or creation-time mismatch stops cutover.
 
 ### Task 9: Seed production identity and prepare signed rollback
 
@@ -2297,4 +2296,4 @@ Expected: MJS is disabled and drained before rollback selection. Unchanged main 
 
 ## Phase boundary
 
-Phase 5 remains incomplete after seven cutovers through `737402d` and signed rollbacks through `db80fd4`. Fourth-attempt audit `30787720045` succeeded complete. Fifth-attempt audit retry `30798105635` retained two complete operation receipts before flat receipt recovery failed. Sixth-attempt audits `30849959379` and `30850408903` succeeded; reconciliation `30850775894` delivered operation 0, then correctly rejected operation 1 stale. Seventh-attempt audit `30854346376` remained queued for more than 30 minutes with zero jobs/artifacts; normal and force cancellation returned HTTP 500, DELETE returned HTTP 403, workflow record `325210492` was deleted, and signed rollback `db80fd4` restored legacy authority under the retained hold. No seventh-attempt control defect or write was observed. Full Node, bash, diff, and signature verification remain eighth-retry prerequisites. The eighth retry remains unexecuted and must not release the hold unless old run `30854346376` is `completed`/`skipped`, zero-artifact, and zero-job or all-skipped; otherwise it rolls back again. Phase 5 can end only after a future GitHub-verified cutover leaves three MJS operational wrappers plus self-test as sole ADW authority, a parent-correct signed rollback available, all required positive production receipts captured, explicit behind/dirty candidates fail-closed, and two consecutive scheduled reconciliation cycles green. Prior audits, probes, partial receipts, queue failures, and correct stale failures remain retry evidence, not phase-completion evidence; Phase 6 remains separate.
+Phase 5 remains incomplete after seven cutovers through `737402d` and signed rollbacks through `db80fd4`. Fourth-attempt audit `30787720045` succeeded complete. Fifth-attempt audit retry `30798105635` retained two complete operation receipts before flat receipt recovery failed. Sixth-attempt audits `30849959379` and `30850408903` succeeded; reconciliation `30850775894` delivered operation 0, then correctly rejected operation 1 stale. Seventh-attempt audit `30854346376` remained queued for more than 30 minutes with zero jobs/artifacts; normal and force cancellation returned HTTP 500, DELETE returned HTTP 403, workflow record `325210492` was deleted, and signed rollback `db80fd4` restored legacy authority under the retained hold. No seventh-attempt control defect or write was observed. Eighth-attempt PR #176 exists, but no cutover or deployment has occurred; exact-head approval follows its future corrected-head push and checks. Full Node, bash, grep, diff, and signature verification remain eighth-retry prerequisites. The eighth retry remains unexecuted and must not release the hold unless old run `30854346376` is `completed`/`skipped`, zero-artifact, and zero-job or all-skipped; otherwise it rolls back again. Phase 5 can end only after a future GitHub-verified cutover leaves three MJS operational wrappers plus self-test as sole ADW authority, a parent-correct signed rollback available, all required positive production receipts captured, explicit behind/dirty candidates fail-closed, and two consecutive scheduled reconciliation cycles green. Prior audits, probes, partial receipts, queue failures, and correct stale failures remain retry evidence, not phase-completion evidence; Phase 6 remains separate.
