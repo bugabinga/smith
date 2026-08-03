@@ -568,7 +568,7 @@ test("Phase 5 records all five rolled-back cutovers and blocks completion claims
   assert.doesNotMatch(plan, /Expected: Phase 5 complete/);
 });
 
-test("Phase 5 preserves PR 168/170/171 history and records PR 172 rollback material", async () => {
+test("Phase 5 preserves prior history and binds future commands to PR 173", async () => {
   const plan = await readFile(phase5Plan, "utf8");
   const retry = plan.slice(plan.indexOf("## Current post-rollback baseline"));
   assert.match(retry, /PR #168.*`adw\/mjs-phase5-retry`/s);
@@ -583,14 +583,20 @@ test("Phase 5 preserves PR 168/170/171 history and records PR 172 rollback mater
   assert.match(retry, /e91e4a17d447dc5f18417f77907e77088d955356/);
   assert.match(retry, /64a4515225f8f988989d38e21657bde97177202b/);
   assert.match(retry, /PR #172.*`adw\/mjs-phase5-retry4`/s);
+  assert.match(retry, /5343ec254bdf63b0e1617ec345a139764f544c02/);
   assert.match(retry, /2917520ee4842a8dbc9e57cce829a51710e5acff/);
-  assert.match(retry, /6c9a656c66b38b8bf4771ad47a79fab8bd617bba/);
-  assert.match(retry, /AGGREGATE=5343ec254bdf63b0e1617ec345a139764f544c02/);
-  assert.match(retry, /BASE=64a4515225f8f988989d38e21657bde97177202b/);
-  assert.match(retry, /CUTOVER_BASE=64a4515225f8f988989d38e21657bde97177202b/);
+  assert.match(retry, /PR #173.*`adw\/mjs-phase5-retry5`/s);
+  assert.match(retry, /AGGREGATE=60d471bab66f6bafc1774281b5bbc6d422250944/);
+  assert.match(retry, /BASE=6c9a656c66b38b8bf4771ad47a79fab8bd617bba/);
+  assert.match(retry, /CUTOVER_BASE=6c9a656c66b38b8bf4771ad47a79fab8bd617bba/);
+  assert.match(retry, /PR=173/);
+  assert.match(retry, /HEAD:refs\/heads\/adw\/mjs-phase5-retry5/);
+  assert.match(retry, /fix\/rollback-adw-mjs-phase5-retry5/);
   assert.match(retry, /git diff --binary "\$CUTOVER_BASE" "\$PR_HEAD"/);
   assert.match(retry, /git diff --binary -R "\$CUTOVER_BASE" "\$PR_HEAD"/);
   assert.match(retry, /Only after push and checks, record the exact-head owner approval marker/);
+  assert.match(retry, /approval is created only after the plan push updates PR #173 and its new current-head checks pass/i);
+  assert.match(retry, /hold remains `true`.*legacy authority remains active except disabled `adw-release`.*no sixth cutover, deployment, production proof, or Phase 5 completion/is);
   const task12 = plan.slice(plan.indexOf("### Task 12:"), plan.indexOf("### Task 13:"));
   assert.match(task12, /30787720045.*succeeded.*complete/is);
   assert.match(task12, /30788000713.*failed in prepare.*zero artifacts/is);
