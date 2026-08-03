@@ -475,16 +475,16 @@ test("trusted workflow SHA controls orchestration while entity head remains the 
   assert.doesNotMatch(inputLine(pullLane, "target_sha"), /workflow_sha|pull_request\.base\.sha/);
 });
 
-test("Phase 5 plan preserves pre-hold history and keeps rolled-back third-attempt deployment unchecked", async () => {
+test("Phase 5 plan preserves pre-hold history and keeps the fourth-attempt candidate unchecked", async () => {
   const plan = await readFile(phase5Plan, "utf8");
   assert.match(plan, /`ADW_CUTOVER_HOLD=true` must be armed before the first branch push/);
   for (const run of ["30713498516", "30713534731", "30713534847", "30713540804", "30713540946"]) assert.match(plan, new RegExp(run));
   assert.match(plan, /four pull runs minted App read tokens, then prepare failed on old control/i);
   assert.match(plan, /zero artifacts and zero writes/i);
   assert.match(plan, /Current `origin\/main` is signed third rollback `58ff44b186d7ffa5c2d5530ca089ee925b29d4a1`/);
-  assert.match(plan, /Legacy writers are active except deferred `adw-release`/);
+  assert.match(plan, /legacy writers are active except deferred `adw-release`/i);
   const task8 = plan.slice(plan.indexOf("### Task 8:"), plan.indexOf("### Task 9:"));
-  assert.match(task8, /PR #170 and branch `adw\/mjs-phase5-retry2` already exist/);
+  assert.match(task8, /PR #171 and branch `adw\/mjs-phase5-retry3` already exist/);
   assert.match(task8, /- \[ \] \*\*Step 2: Revalidate the already-armed hold immediately before push\*\*/);
   assert.match(task8, /- \[ \] \*\*Step 3: Push the signed plan commit and bind the retry head\*\*/);
   assert.doesNotMatch(task8, /- \[x\]/);
@@ -560,7 +560,7 @@ test("Phase 5 records all three rolled-back cutovers and blocks completion claim
   assert.match(plan, /30768604275.*zero receipts/is);
   assert.match(plan, /30771214058.*isolated.*#169/is);
   assert.match(plan, /semantic marker.*control SHA.*duplicate drift issues/is);
-  assert.match(plan, /future retry.*new protected PR.*fresh current-main base.*parent-correct.*rollback/is);
+  assert.match(plan, /fourth retry.*PR #171.*signed rollback base.*parent-correct signed rollback material/is);
   assert.match(plan, /operation 0 `report_drift` completed.*operation 1 `sync_labels` failed/is);
   assert.match(plan, /148 Unicode characters.*100-character label-description limit/is);
   assert.match(plan, /p38-adw-label-write-probe\.yml.*deleted/is);
@@ -570,7 +570,7 @@ test("Phase 5 records all three rolled-back cutovers and blocks completion claim
   assert.doesNotMatch(plan, /Expected: Phase 5 complete/);
 });
 
-test("Phase 5 preserves PR 168 history and binds PR 170 rollback material", async () => {
+test("Phase 5 preserves PR 168/170 history and binds PR 171 rollback material", async () => {
   const plan = await readFile(phase5Plan, "utf8");
   const retry = plan.slice(plan.indexOf("## Current post-rollback baseline"));
   assert.match(retry, /PR #168.*`adw\/mjs-phase5-retry`/s);
@@ -580,9 +580,10 @@ test("Phase 5 preserves PR 168 history and binds PR 170 rollback material", asyn
   assert.match(retry, /PR #170.*`adw\/mjs-phase5-retry2`/s);
   assert.match(retry, /273dda4cd2a9dc77fc2193498886a5badc389895/);
   assert.match(retry, /7ec4fbf0e89e498d679a8e2f8dfd9feaf70f470e/);
-  assert.match(retry, /58ff44b186d7ffa5c2d5530ca089ee925b29d4a1/);
-  assert.match(retry, /BASE=2f3d9c98b9f678139b0f8cd2e671afde16ffbc98/);
-  assert.match(retry, /CUTOVER_BASE=2f3d9c98b9f678139b0f8cd2e671afde16ffbc98/);
+  assert.match(retry, /PR #171.*`adw\/mjs-phase5-retry3`/s);
+  assert.match(retry, /fe3dfa00029cc588996486386daab7dc791fd27b/);
+  assert.match(retry, /BASE=58ff44b186d7ffa5c2d5530ca089ee925b29d4a1/);
+  assert.match(retry, /CUTOVER_BASE=58ff44b186d7ffa5c2d5530ca089ee925b29d4a1/);
   assert.match(retry, /git diff --binary "\$CUTOVER_BASE" "\$PR_HEAD"/);
   assert.match(retry, /git diff --binary -R "\$CUTOVER_BASE" "\$PR_HEAD"/);
   assert.match(retry, /Only after push and checks, record the exact-head owner approval marker/);
