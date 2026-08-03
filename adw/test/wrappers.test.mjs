@@ -475,19 +475,20 @@ test("trusted workflow SHA controls orchestration while entity head remains the 
   assert.doesNotMatch(inputLine(pullLane, "target_sha"), /workflow_sha|pull_request\.base\.sha/);
 });
 
-test("Phase 5 plan preserves pre-hold history and records the fourth rollback", async () => {
+test("Phase 5 plan preserves pre-hold history and keeps the fifth-attempt candidate unchecked", async () => {
   const plan = await readFile(phase5Plan, "utf8");
   assert.match(plan, /`ADW_CUTOVER_HOLD=true` must be armed before the first branch push/);
   for (const run of ["30713498516", "30713534731", "30713534847", "30713540804", "30713540946"]) assert.match(plan, new RegExp(run));
   assert.match(plan, /four pull runs minted App read tokens, then prepare failed on old control/i);
   assert.match(plan, /zero artifacts and zero writes/i);
   assert.match(plan, /Current `origin\/main` is signed fourth rollback `64a4515225f8f988989d38e21657bde97177202b`/);
-  assert.match(plan, /legacy authority.*restored.*`adw-release`.*disabled/is);
+  assert.match(plan, /`ADW_CUTOVER_HOLD=true` remains armed.*legacy writers are active except.*`adw-release`/is);
   const task8 = plan.slice(plan.indexOf("### Task 8:"), plan.indexOf("### Task 9:"));
-  assert.match(task8, /PR #171.*exact signed head `e0d351da4c96ad5020155a303a436a54746345f2`/s);
-  assert.match(task8, /- \[x\] \*\*Step 2: Revalidate the already-armed hold immediately before push\*\*/);
-  assert.match(task8, /- \[x\] \*\*Step 3: Push the signed plan commit and bind the retry head\*\*/);
-  assert.doesNotMatch(task8, /- \[ \]/);
+  assert.match(task8, /PR #172 and branch `adw\/mjs-phase5-retry4` already exist/);
+  assert.match(task8, /aggregate commit `5343ec254bdf63b0e1617ec345a139764f544c02`/);
+  assert.match(task8, /- \[ \] \*\*Step 2: Revalidate the already-armed hold immediately before push\*\*/);
+  assert.match(task8, /- \[ \] \*\*Step 3: Push the signed plan commit and bind the retry head\*\*/);
+  assert.doesNotMatch(task8, /- \[x\]/);
 });
 
 test("Phase 5 binds dispatch preconditions, delivery, and failed-child recovery", async () => {
@@ -571,7 +572,7 @@ test("Phase 5 records all four rolled-back cutovers and blocks completion claims
   assert.doesNotMatch(plan, /Expected: Phase 5 complete/);
 });
 
-test("Phase 5 preserves PR 168/170 history and records PR 171 rollback material", async () => {
+test("Phase 5 preserves PR 168/170/171 history and binds PR 172 rollback material", async () => {
   const plan = await readFile(phase5Plan, "utf8");
   const retry = plan.slice(plan.indexOf("## Current post-rollback baseline"));
   assert.match(retry, /PR #168.*`adw\/mjs-phase5-retry`/s);
@@ -585,15 +586,17 @@ test("Phase 5 preserves PR 168/170 history and records PR 171 rollback material"
   assert.match(retry, /fe3dfa00029cc588996486386daab7dc791fd27b/);
   assert.match(retry, /e91e4a17d447dc5f18417f77907e77088d955356/);
   assert.match(retry, /64a4515225f8f988989d38e21657bde97177202b/);
-  assert.match(retry, /BASE=58ff44b186d7ffa5c2d5530ca089ee925b29d4a1/);
-  assert.match(retry, /CUTOVER_BASE=58ff44b186d7ffa5c2d5530ca089ee925b29d4a1/);
+  assert.match(retry, /PR #172.*`adw\/mjs-phase5-retry4`/s);
+  assert.match(retry, /AGGREGATE=5343ec254bdf63b0e1617ec345a139764f544c02/);
+  assert.match(retry, /BASE=64a4515225f8f988989d38e21657bde97177202b/);
+  assert.match(retry, /CUTOVER_BASE=64a4515225f8f988989d38e21657bde97177202b/);
   assert.match(retry, /git diff --binary "\$CUTOVER_BASE" "\$PR_HEAD"/);
   assert.match(retry, /git diff --binary -R "\$CUTOVER_BASE" "\$PR_HEAD"/);
   assert.match(retry, /Only after push and checks, record the exact-head owner approval marker/);
   const task12 = plan.slice(plan.indexOf("### Task 12:"), plan.indexOf("### Task 13:"));
   assert.match(task12, /30787720045.*succeeded.*complete/is);
   assert.match(task12, /30788000713.*failed in prepare.*zero artifacts/is);
-  assert.match(task12, /- \[ \] \*\*Step 5: Dispatch owner manual reconciliation\*\*/);
+  assert.doesNotMatch(task12, /- \[x\]/);
 });
 
 test("Phase 5 binds the repaired urgent description and disposable probe outcome exactly", async () => {
