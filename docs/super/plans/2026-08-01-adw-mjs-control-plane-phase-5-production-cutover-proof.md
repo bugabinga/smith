@@ -162,7 +162,7 @@ The tenth attempt for PR #178 produced complete audit and reconciliation receipt
 - Dispatched docs-writer child [`30904879401`](https://github.com/bugabinga/smith/actions/runs/30904879401) failed prepare at `verification:git` before any provider job. Its downloaded `adw-target` contained `.git/objects`, `.git/config`, and `.git/HEAD`, but no `.git/refs`; `/usr/bin/git rev-parse` therefore rejected it as not a repository. The immutable checkout had packed refs and an empty `.git/refs`; artifact transport drops the empty `.git/refs` directory.
 - No provider credential was exposed to prepare, no provider executed, and the reconciliation receipt proves dispatch delivery only. Signed direct-child rollback `1c23f5000ecdf049b31f089527dd4c2e557bf582` restored legacy authority over cutover `09d862682763b1b15f6f475a8fa7d0a14c54cbdb`.
 
-**Current prerequisite and probe status:** Phase 5 remains incomplete and all ten cutovers are rolled back. Credential-free artifact roundtrip run [`30906840585`](https://github.com/bugabinga/smith/actions/runs/30906840585) completed with both `stage` and `verify` successful: the staged checkout carried explicit `refs/heads/adw-target`, that ref survived upload/download, and post-download Git verification resolved it to the exact probe SHA `ec3e84e9ce6125897467681c1fbf6a412b197a34`. The disposable `.github/workflows/p38-target-artifact-probe.yml` is deleted under promote-or-delete. Earlier disposable probes, temporary `.github/workflows/p38-adw-issue-write-probe.yml`, `adw/test/live-apply-record-probe.mjs`, and the ninth-attempt Claude classifiers remain deleted. Fourth-, fifth-, sixth-, ninth-, and tenth-attempt positive/partial receipts remain historical evidence; runs `30854346376` and `30859128166` remain immutable queue evidence at the corrupted old identity. The roundtrip closes only the credential-free artifact-transport prerequisite. A corrected retry remains required: the eleventh attempt; its PR is unknown, and no eleventh cutover, scheduled-cycle proof, or Phase 5 completion exists.
+**Current prerequisite and probe status:** Phase 5 remains incomplete and all ten cutovers are rolled back. Credential-free artifact roundtrip run [`30906840585`](https://github.com/bugabinga/smith/actions/runs/30906840585) completed with both `stage` and `verify` successful: the staged checkout carried explicit `refs/heads/adw-target`, that ref survived upload/download, and post-download Git verification resolved it to the exact probe SHA `ec3e84e9ce6125897467681c1fbf6a412b197a34`. The disposable `.github/workflows/p38-target-artifact-probe.yml` is deleted under promote-or-delete. Earlier disposable probes, temporary `.github/workflows/p38-adw-issue-write-probe.yml`, `adw/test/live-apply-record-probe.mjs`, and the ninth-attempt Claude classifiers remain deleted. Fourth-, fifth-, sixth-, ninth-, and tenth-attempt positive/partial receipts remain historical evidence; runs `30854346376` and `30859128166` remain immutable queue evidence at the corrupted old identity. Signed aggregate `807c8a0f77a9e2290a12599c47749779f62ea4cb` and signed proof record `96ad2e15a16fcb194449bc8f730b7873c07b4350` remain preserved. The roundtrip closes only the credential-free artifact-transport prerequisite. A corrected retry remains required: owner-created PR #179 is the eleventh attempt, and no eleventh cutover, scheduled-cycle proof, or Phase 5 completion exists.
 
 ## Current post-rollback baseline
 
@@ -186,7 +186,7 @@ The rolled-back tenth attempt used owner-authored PR #178 from `adw/mjs-phase5-r
 
 Credential-free disposable artifact roundtrip run `30906840585` succeeded in both `stage` and `verify`; explicit `refs/heads/adw-target` survived upload/download and resolved after download to exact pushed probe SHA `ec3e84e9ce6125897467681c1fbf6a412b197a34`. The temporary `.github/workflows/p38-target-artifact-probe.yml` is deleted under promote-or-delete. This is retry-prerequisite evidence only.
 
-The eleventh retry uses local branch `adw/mjs-phase5-retry10` directly over signed tenth rollback `1c23f5000ecdf049b31f089527dd4c2e557bf582`; its PR is unknown until the owner creates it after the signed aggregate exists. `ADW_CUTOVER_HOLD=true` remains permanent, `ADW_MJS_CUTOVER_HOLD=true` remains the current eleventh-retry barrier, legacy authority remains active except disabled `adw-release`, and no eleventh cutover or deployment proof has occurred. No scheduled-cycle proof or completion claim exists.
+The eleventh retry uses branch `adw/mjs-phase5-retry10` over signed tenth rollback `1c23f5000ecdf049b31f089527dd4c2e557bf582`. Signed aggregate `807c8a0f77a9e2290a12599c47749779f62ea4cb` and signed proof record `96ad2e15a16fcb194449bc8f730b7873c07b4350` preserve separate immutable provenance directly over that rollback; owner-created PR #179 currently records the proof head, and the future fast-forward command binds its exact signed planning head after this plan commit. `ADW_CUTOVER_HOLD=true` remains permanent, `ADW_MJS_CUTOVER_HOLD=true` remains the current eleventh-retry barrier, legacy authority remains active except disabled `adw-release`, and no eleventh cutover or deployment proof has occurred. No scheduled-cycle proof or completion claim exists.
 
 ## File map
 
@@ -1280,31 +1280,38 @@ Target preparation creates `refs/heads/adw-target` with hardened credential-free
 
 - [x] **Step 3: Record the credential-free Actions proof and retire the probe**
 
-Disposable run [`30906840585`](https://github.com/bugabinga/smith/actions/runs/30906840585) completed successfully with both `stage` and dependent `verify` successful under empty/default-minimal permissions and `persist-credentials: false`. `stage` created and checked explicit `refs/heads/adw-target` at probe SHA `ec3e84e9ce6125897467681c1fbf6a412b197a34`; after artifact upload/download, `verify` resolved that exact full ref to the same exact SHA. The temporary `.github/workflows/p38-target-artifact-probe.yml` is deleted under promote-or-delete. This proves only the credential-free artifact roundtrip prerequisite: the eleventh retry remains incomplete and its PR remains unknown.
+Disposable run [`30906840585`](https://github.com/bugabinga/smith/actions/runs/30906840585) completed successfully with both `stage` and dependent `verify` successful under empty/default-minimal permissions and `persist-credentials: false`. `stage` created and checked explicit `refs/heads/adw-target` at probe SHA `ec3e84e9ce6125897467681c1fbf6a412b197a34`; after artifact upload/download, `verify` resolved that exact full ref to the same exact SHA. The temporary `.github/workflows/p38-target-artifact-probe.yml` is deleted under promote-or-delete. This proves only the credential-free artifact roundtrip prerequisite: owner-created PR #179 is the still-incomplete eleventh retry.
 
-- [x] **Step 4: Verify the signed one-anchor aggregate**
+- [x] **Step 4: Verify the signed aggregate and proof record**
 
-Full Node, actionlint, every YAML parse, changed MJS syntax, all Bash shellcheck, target-artifact simulation, promoted-wrapper byte comparison, grep, diff checks, and signature verification are required. The final aggregate must be one signed direct child of `1c23f5000ecdf049b31f089527dd4c2e557bf582` with exactly one `Anchor:` trailer. No GitHub object is mutated and nothing is pushed.
+Full Node, actionlint, every YAML parse, changed MJS syntax, all Bash shellcheck, target-artifact simulation, promoted-wrapper byte comparison, grep, diff checks, and signature verification are required. Signed aggregate `807c8a0f77a9e2290a12599c47749779f62ea4cb` and signed proof record `96ad2e15a16fcb194449bc8f730b7873c07b4350` are preserved direct children of `1c23f5000ecdf049b31f089527dd4c2e557bf582`; the proof record retains the successful credential-free result while deleting its disposable workflow. The final planning update is one signed child of the proof record with exactly one `Anchor:` trailer. No GitHub object is mutated and nothing is pushed.
 
-### Task 8: Push the signed eleventh-retry aggregate and bind owner approval
+### Task 8: Fast-forward the signed eleventh-retry planning head and bind PR #179 owner approval
 
 **Files:** none
 
 **Historical seventh through tenth procedure:** PR #175 on `adw/mjs-phase5-retry6`, PR #176 on `adw/mjs-phase5-retry7`, PR #177 on `adw/mjs-phase5-retry8`, and PR #178 on `adw/mjs-phase5-retry9` ended at signed rollbacks `db80fd48c1c5fb7bd5a076f1c6b0571c3586361c`, `3e91aac769c8010a50f58c0a0c75e3aa85d3f817`, `9a5d2caeefbf1cd23ec7ee90045a9655676cf8bd`, and `1c23f5000ecdf049b31f089527dd4c2e557bf582`. Those branches, PRs, rollback refs, and orphaned runs remain immutable history.
 
-Branch `adw/mjs-phase5-retry10` is local directly over signed tenth rollback `1c23f5000ecdf049b31f089527dd4c2e557bf582`. The eleventh-retry PR number is unknown until the owner creates it after the signed one-anchor aggregate is pushed. Both holds are already armed; every future step remains unchecked until executed in order, and no approval marker may be posted before branch push, owner PR creation, and current-head checks.
+Branch `adw/mjs-phase5-retry10` and owner-created PR #179 currently preserve signed proof record `96ad2e15a16fcb194449bc8f730b7873c07b4350`; signed aggregate `807c8a0f77a9e2290a12599c47749779f62ea4cb` remains immutable implementation provenance. The final signed one-anchor planning commit is a child of the proof record, and the future fast-forward records its exact SHA as `PLAN_HEAD`. Both holds are already armed; every future step remains unchecked until executed in order, and no approval marker may be posted before that exact head is pushed and current-head checks pass.
 
-- [ ] **Step 1: Revalidate the signed aggregate**
+- [ ] **Step 1: Revalidate aggregate, proof record, and exact planning head**
 
 ```bash
 BRANCH=adw/mjs-phase5-retry10
+PR=179
 BASE=1c23f5000ecdf049b31f089527dd4c2e557bf582
-AGGREGATE=$(git rev-parse HEAD)
+AGGREGATE=807c8a0f77a9e2290a12599c47749779f62ea4cb
+PROOF_RECORD=96ad2e15a16fcb194449bc8f730b7873c07b4350
+PLAN_HEAD=$(git rev-parse HEAD)
 test "$(git branch --show-current)" = "$BRANCH"
 test "$(git rev-parse origin/main)" = "$BASE"
 test "$(git show -s --format=%P "$AGGREGATE")" = "$BASE"
+test "$(git show -s --format=%P "$PROOF_RECORD")" = "$BASE"
+test "$(git show -s --format=%P "$PLAN_HEAD")" = "$PROOF_RECORD"
 git verify-commit "$BASE"
 git verify-commit "$AGGREGATE"
+git verify-commit "$PROOF_RECORD"
+git verify-commit "$PLAN_HEAD"
 node --test adw/test/*.test.mjs
 find adw -type f -name '*.mjs' -print0 | xargs -0 -n1 node --check
 actionlint .github/workflows/adw-{issues,operations,pulls,selftest}.yml .github/workflows/ci.yml
@@ -1317,12 +1324,12 @@ for wrapper in adw-issues.yml adw-operations.yml adw-pulls.yml; do
   cmp "prototypes/p38-adw-disposable/wrappers/$wrapper" ".github/workflows/$wrapper"
 done
 bash adw/test/target-artifact-ref.test.sh
-test "$(git show -s --format=%B "$AGGREGATE" | grep -c '^Anchor:')" = 1
-git diff "$BASE" "$AGGREGATE" --check
+test "$(git show -s --format=%B "$PLAN_HEAD" | grep -c '^Anchor:')" = 1
+git diff "$BASE" "$PLAN_HEAD" --check
 test -z "$(git status --porcelain)"
 ```
 
-Expected: signed tenth rollback is the signed one-anchor aggregate's sole parent. Full Node, actionlint, YAML, MJS, bash, grep, diff, signature, three-wrapper byte parity, artifact simulation, and clean-tree checks pass. Do not amend, merge, or rebase after exact-head approval.
+Expected: signed aggregate and proof record remain direct children of signed tenth rollback; the exact signed one-anchor planning head is the proof record's child. Full Node, actionlint, YAML, MJS, bash, grep, diff, signature, three-wrapper byte parity, artifact simulation, and clean-tree checks pass. Do not amend, merge, or rebase after exact-head approval.
 
 - [ ] **Step 2: Revalidate both already-armed barriers immediately before push**
 
@@ -1333,21 +1340,22 @@ test "$(gh variable get ADW_MJS_CUTOVER_HOLD --repo bugabinga/smith)" = true
 
 Expected: permanent orphan barrier and current-wrapper barrier both remain exactly `true`; do not mutate either variable.
 
-- [ ] **Step 3: Push only the signed aggregate branch**
+- [ ] **Step 3: Fast-forward only the signed planning head**
 
 ```bash
-test -z "$(git ls-remote origin refs/heads/$BRANCH | cut -f1)"
-git push origin "$AGGREGATE:refs/heads/$BRANCH"
-PR_HEAD=$AGGREGATE
+test "$(git ls-remote origin refs/heads/$BRANCH | cut -f1)" = "$PROOF_RECORD"
+git merge-base --is-ancestor "$PROOF_RECORD" "$PLAN_HEAD"
+git push origin "$PLAN_HEAD:refs/heads/$BRANCH"
+PR_HEAD=$PLAN_HEAD
 test "$PR_HEAD" = "$(git ls-remote origin refs/heads/$BRANCH | cut -f1)"
 ```
 
-Expected: the remote eleventh-retry branch names the exact signed aggregate; no other ref changes. The owner creates the PR separately and records its number as `PR`; this plan does not infer or create it.
+Expected: the existing remote eleventh-retry branch fast-forwards from exact proof record to exact signed planning head; no history or other ref changes.
 
-- [ ] **Step 4: Validate the owner-created PR on the signed aggregate**
+- [ ] **Step 4: Validate owner-created PR #179 on the exact planning head**
 
 ```bash
-: "${PR:?set owner-created eleventh-retry PR number}"
+PR=179
 gh pr view "$PR" --repo bugabinga/smith \
   --json number,state,headRefName,headRefOid,baseRefName,author |
   jq -e --argjson pr "$PR" --arg head "$PR_HEAD" --arg branch "$BRANCH" '
@@ -1356,14 +1364,14 @@ gh pr view "$PR" --repo bugabinga/smith \
     .author.login == "bugabinga"' >/dev/null
 ```
 
-Expected: the owner-created PR targets `main` from exact branch `adw/mjs-phase5-retry10` and the signed aggregate; no automation creates a PR.
+Expected: owner-created PR #179 targets `main` from exact branch `adw/mjs-phase5-retry10` and exact signed planning head; no automation creates or replaces the PR.
 
 - [ ] **Step 5: Validate current-head checks and then record exact-head owner approval**
 
 ```bash
-: "${PR:?set owner-created eleventh-retry PR number}"
+PR=179
 PR_HEAD=$(git rev-parse HEAD)
-test "$PR_HEAD" = "$AGGREGATE"
+test "$PR_HEAD" = "$PLAN_HEAD"
 test "$PR_HEAD" = "$(git ls-remote origin refs/heads/$BRANCH | cut -f1)"
 test "$PR_HEAD" = "$(gh pr view "$PR" --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
 checks=$(gh api "repos/bugabinga/smith/commits/$PR_HEAD/check-runs?filter=latest&per_page=100")
@@ -1376,19 +1384,19 @@ test "$(jq --arg head "$PR_HEAD" \
   <<<"$checks")" = 0
 test "$(gh api repos/bugabinga/smith/rulesets/19155559 --jq .current_user_can_bypass)" = always
 gh api user | jq -e '.id == 876467 and .login == "bugabinga"' >/dev/null
-OWNER_APPROVAL_MARKER="Owner approval: quiet-window MJS production cutover eleventh attempt and positive-only proof on PR #$PR exact head $PR_HEAD."
+OWNER_APPROVAL_MARKER="Owner approval: quiet-window MJS production cutover eleventh attempt and positive-only proof on PR #179 exact head $PR_HEAD."
 OWNER_APPROVAL_COMMENT_JSON=$(gh api --method POST \
-  "repos/bugabinga/smith/issues/$PR/comments" -f body="$OWNER_APPROVAL_MARKER")
+  "repos/bugabinga/smith/issues/179/comments" -f body="$OWNER_APPROVAL_MARKER")
 OWNER_APPROVAL_COMMENT_ID=$(jq -er '.id' <<<"$OWNER_APPROVAL_COMMENT_JSON")
 OWNER_APPROVAL_COMMENT_CREATED_AT=$(jq -er '.created_at' <<<"$OWNER_APPROVAL_COMMENT_JSON")
-jq -e --arg body "$OWNER_APPROVAL_MARKER" --arg issue "https://api.github.com/repos/bugabinga/smith/issues/$PR" '
+jq -e --arg body "$OWNER_APPROVAL_MARKER" --arg issue "https://api.github.com/repos/bugabinga/smith/issues/179" '
   .id > 0 and .user.id == 876467 and .user.login == "bugabinga" and
   .author_association == "OWNER" and .body == $body and
   .created_at == .updated_at and .issue_url == $issue
 ' <<<"$OWNER_APPROVAL_COMMENT_JSON" >/dev/null
 ```
 
-Expected: legacy `merge-gate` is intentionally absent and explicit owner bypass remains mandatory. Approval follows signed aggregate push and current-head checks; its body binds the owner-created PR and exact `PR_HEAD`. Any mismatch stops cutover.
+Expected: legacy `merge-gate` is intentionally absent and explicit owner bypass remains mandatory. Approval follows the exact signed planning-head push and current-head checks; its body binds PR #179 and exact `PR_HEAD`. Any mismatch stops cutover.
 
 ### Task 9: Seed production identity and prepare signed rollback
 
@@ -1424,8 +1432,8 @@ The first-attempt read is retained above as history and does not complete this r
 - [ ] **Step 3: Freeze and recheck the owner-approved head**
 
 ```bash
-: "${PR:?set owner-created eleventh-retry PR number}"
-test "$PR_HEAD" = "$AGGREGATE"
+PR=179
+test "$PR_HEAD" = "$PLAN_HEAD"
 test "$PR_HEAD" = "$(gh pr view "$PR" --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
 test "$(git rev-parse origin/main)" = "$(gh api repos/bugabinga/smith/commits/main --jq .sha)"
 test "$(git rev-parse origin/main)" = "1c23f5000ecdf049b31f089527dd4c2e557bf582"
@@ -1436,6 +1444,7 @@ Expected: the owner-created PR remains on its exact owner-approved signed aggreg
 - [ ] **Step 4: Create an encrypted/private rollback workspace and reverse patch**
 
 ```bash
+PR=179
 ROLLBACK_ROOT="$HOME/.local/state/smith-adw-phase5-retry10-rollback"
 mkdir -p "$ROLLBACK_ROOT"
 chmod 700 "$ROLLBACK_ROOT"
@@ -1561,8 +1570,8 @@ Expected: zero active legacy runs, all legacy workflows disabled, self-test acti
 
 ```bash
 set -euo pipefail
-: "${PR:?set owner-created eleventh-retry PR number}"
-test "$PR_HEAD" = "$AGGREGATE"
+PR=179
+test "$PR_HEAD" = "$PLAN_HEAD"
 test "$PR_HEAD" = "$(gh pr view "$PR" --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
 test "$CUTOVER_BASE" = 1c23f5000ecdf049b31f089527dd4c2e557bf582
 test "$CUTOVER_BASE" = "$(gh api repos/bugabinga/smith/commits/main --jq .sha)"
@@ -2186,7 +2195,7 @@ label drift repair result and settings/ruleset drift report URL
 statement that no secret was rotated and no malformed/stale/failure/partial production injection occurred
 ```
 
-Use `gh pr comment "$PR" --repo bugabinga/smith --body-file <generated-redacted-summary>`.
+Use `PR=179; gh pr comment "$PR" --repo bugabinga/smith --body-file <generated-redacted-summary>`.
 
 - [ ] **Step 3: Close quiet window only after owner acceptance**
 
@@ -2219,7 +2228,7 @@ Rollback from the owner shell:
 ```bash
 set -euo pipefail
 REPO=bugabinga/smith
-: "${PR:?set owner-created eleventh-retry PR number}"
+PR=179
 gh pr view "$PR" --repo "$REPO" --json number,headRefName,baseRefName |
   jq -e --argjson pr "$PR" '.number == $pr and .headRefName == "adw/mjs-phase5-retry10" and .baseRefName == "main"' >/dev/null
 ROLLBACK_ROOT="$HOME/.local/state/smith-adw-phase5-retry10-rollback"
@@ -2347,4 +2356,4 @@ Expected: MJS is disabled and drained before rollback selection. Unchanged main 
 
 ## Phase boundary
 
-Phase 5 remains incomplete after ten cutovers through `09d8626` and signed rollbacks through `1c23f50`. Tenth audit `30904565314` and reconciliation `30904705508` are positive complete-receipt evidence, but docs-writer child `30904879401` failed prepare at `verification:git` before provider execution because artifact transport dropped empty `.git/refs`. Credential-free roundtrip run `30906840585` then completed both `stage` and `verify` successfully: explicit `refs/heads/adw-target` survived artifact upload/download and post-download verification resolved it to exact probe SHA `ec3e84e9ce6125897467681c1fbf6a412b197a34`. The disposable probe workflow and all temporary classifier files are absent. This is prerequisite evidence only. The eleventh retry uses `adw/mjs-phase5-retry10` over signed rollback `1c23f5000ecdf049b31f089527dd4c2e557bf582`; it remains incomplete and its PR remains unknown until owner creation after the signed aggregate. `ADW_CUTOVER_HOLD=true` permanently contains corrupted identity `325210492`; `ADW_MJS_CUTOVER_HOLD=true` remains the current eleventh-retry barrier. No eleventh cutover, scheduled-cycle proof, or completion claim exists. Phase 5 still requires a future GitHub-verified cutover, parent-correct signed rollback, positive receipts, fail-closed candidates, and two green scheduled cycles; Phase 6 remains separate.
+Phase 5 remains incomplete after ten cutovers through `09d8626` and signed rollbacks through `1c23f50`. Tenth audit `30904565314` and reconciliation `30904705508` are positive complete-receipt evidence, but docs-writer child `30904879401` failed prepare at `verification:git` before provider execution because artifact transport dropped empty `.git/refs`. Credential-free roundtrip run `30906840585` then completed both `stage` and `verify` successfully: explicit `refs/heads/adw-target` survived artifact upload/download and post-download verification resolved it to exact probe SHA `ec3e84e9ce6125897467681c1fbf6a412b197a34`. The disposable probe workflow and all temporary classifier files are absent. Signed aggregate `807c8a0f77a9e2290a12599c47749779f62ea4cb` and signed proof record `96ad2e15a16fcb194449bc8f730b7873c07b4350` remain immutable prerequisite provenance only. Owner-created PR #179 is the eleventh retry on `adw/mjs-phase5-retry10` over signed rollback `1c23f5000ecdf049b31f089527dd4c2e557bf582`; it remains incomplete, and future commands fast-forward it to this plan commit's exact signed head before exact-head approval. `ADW_CUTOVER_HOLD=true` permanently contains corrupted identity `325210492`; `ADW_MJS_CUTOVER_HOLD=true` remains the current eleventh-retry barrier. No eleventh cutover, scheduled-cycle proof, or completion claim exists. Phase 5 still requires a future GitHub-verified cutover, parent-correct signed rollback, positive receipts, fail-closed candidates, and two green scheduled cycles; Phase 6 remains separate.

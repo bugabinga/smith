@@ -612,15 +612,22 @@ test("Phase 5 preserves prior history and binds the eleventh retry to signed ten
     "28f84ba7055b437fb95fb4a5462da89b6d6d3e6b", "1266869", "09d8626", "30904565314",
     "30904705508", "30904879401", "1c23f50", "30906840585",
     "ec3e84e9ce6125897467681c1fbf6a412b197a34",
+    "807c8a0f77a9e2290a12599c47749779f62ea4cb",
+    "96ad2e15a16fcb194449bc8f730b7873c07b4350", "PR #179",
   ]) assert.match(retry, new RegExp(evidence));
   assert.match(retry, /tenth attempt.*PR #178.*complete audit.*complete dispatch receipt.*docs-writer.*`verification:git`.*before provider/is);
   assert.match(retry, /artifact transport drops.*empty `.git\/refs`/is);
   assert.match(retry, /credential-free.*30906840585.*`stage`.*`verify`.*successful.*refs\/heads\/adw-target.*survived.*upload\/download.*exact.*ec3e84e9ce6125897467681c1fbf6a412b197a34/is);
   assert.match(retry, /all ten cutovers are rolled back/i);
   assert.match(retry, /Current `origin\/main` is signed tenth rollback `1c23f50/);
-  assert.match(retry, /eleventh.*PR.*unknown/i);
+  assert.match(retry, /owner-created PR #179.*eleventh/is);
+  assert.doesNotMatch(retry, /PR (?:remains|is) unknown/i);
   assert.match(retry, /BRANCH=adw\/mjs-phase5-retry10/);
+  assert.match(retry, /^PR=179$/m);
   assert.match(retry, /BASE=1c23f50/);
+  assert.match(retry, /AGGREGATE=807c8a0f77a9e2290a12599c47749779f62ea4cb/);
+  assert.match(retry, /PROOF_RECORD=96ad2e15a16fcb194449bc8f730b7873c07b4350/);
+  assert.match(retry, /PLAN_HEAD=\$\(git rev-parse HEAD\)/);
   assert.match(retry, /CUTOVER_BASE=1c23f50/);
   assert.match(retry, /fix\/rollback-adw-mjs-phase5-retry10/);
   assert.match(retry, /git diff --binary "\$CUTOVER_BASE" "\$PR_HEAD"/);
@@ -629,6 +636,7 @@ test("Phase 5 preserves prior history and binds the eleventh retry to signed ten
   assert.doesNotMatch(retry, /gh variable set ADW_MJS_CUTOVER_HOLD/);
   assert.doesNotMatch(retry, /gh pr create/);
   assert.doesNotMatch(retry, /^PR=178$/m);
+  assert.match(retry, /Owner approval:.*PR #179 exact head \$PR_HEAD/);
   assert.match(retry, /ADW_CUTOVER_HOLD=true.*permanent/is);
   assert.match(retry, /ADW_MJS_CUTOVER_HOLD=true.*current eleventh-retry barrier/is);
   assert.match(retry, /No scheduled-cycle proof or completion claim exists/i);
