@@ -593,24 +593,26 @@ test("Phase 5 records all nine rolled-back cutovers and blocks completion claims
   assert.doesNotMatch(plan, /Expected: Phase 5 complete/);
 });
 
-test("Phase 5 preserves prior history and records tenth-retry commands", async () => {
+test("Phase 5 preserves prior history and binds tenth-retry commands to PR #178", async () => {
   const plan = await readFile(phase5Plan, "utf8");
   const retry = plan.slice(plan.indexOf("## Current post-rollback baseline"));
   for (const evidence of [
-    "PR #168", "PR #170", "PR #171", "PR #172", "PR #173", "PR #175", "PR #176", "PR #177",
+    "PR #168", "PR #170", "PR #171", "PR #172", "PR #173", "PR #175", "PR #176", "PR #177", "PR #178",
     "30854346376", "30859128166", "30859241539", "325210492",
     "91aff7927e17cc5d84288455ea336512c255a7df", "3e91aac769c8010a50f58c0a0c75e3aa85d3f817",
     "870d77069c9054dd9f040803940df796da3f4a6e", "30886814052", "30887204135",
     "30887382006", "30888153701", "30888436716", "30889239515",
+    "28f84ba7055b437fb95fb4a5462da89b6d6d3e6b",
   ]) assert.match(retry, new RegExp(evidence));
   assert.match(retry, /rolled-back ninth attempt used owner-authored PR #177 from `adw\/mjs-phase5-retry8`/i);
+  assert.match(retry, /tenth-attempt owner-authored PR #178 uses branch `adw\/mjs-phase5-retry9` directly over signed ninth rollback/i);
   assert.match(retry, /7497f61b712d24a056b32fae3c2e5b4be3a01d98/);
   assert.match(retry, /9a5d2caeefbf1cd23ec7ee90045a9655676cf8bd/);
-  assert.match(retry, /PR number is not yet known/i);
   assert.match(retry, /BRANCH=adw\/mjs-phase5-retry9/);
   assert.match(retry, /BASE=9a5d2caeefbf1cd23ec7ee90045a9655676cf8bd/);
-  assert.match(retry, /AGGREGATE=\$\(git rev-parse HEAD\)/);
-  assert.match(retry, /PLAN_HEAD=\$AGGREGATE/);
+  assert.match(retry, /AGGREGATE=28f84ba7055b437fb95fb4a5462da89b6d6d3e6b/);
+  assert.match(retry, /PLAN_HEAD=\$\(git rev-parse HEAD\)/);
+  assert.match(retry, /format=%P "\$PLAN_HEAD"\)" = "\$AGGREGATE"/);
   assert.match(retry, /CUTOVER_BASE=9a5d2caeefbf1cd23ec7ee90045a9655676cf8bd/);
   assert.match(retry, /\$PLAN_HEAD:refs\/heads\/\$BRANCH/);
   assert.match(retry, /fix\/rollback-adw-mjs-phase5-retry9/);
@@ -619,10 +621,11 @@ test("Phase 5 preserves prior history and records tenth-retry commands", async (
   assert.match(retry, /gh variable get ADW_MJS_CUTOVER_HOLD/);
   assert.doesNotMatch(retry, /gh variable set ADW_MJS_CUTOVER_HOLD/);
   assert.doesNotMatch(retry, /gh pr create/);
+  assert.match(retry, /^PR=178$/m);
   assert.doesNotMatch(retry, /^PR=177$/m);
-  assert.match(retry, /Owner approval: quiet-window MJS production cutover tenth attempt and positive-only proof on PR #\$PR exact head \$PR_HEAD\./);
+  assert.match(retry, /Owner approval: quiet-window MJS production cutover tenth attempt and positive-only proof on PR #178 exact head \$PR_HEAD\./);
   assert.match(retry, /ADW_CUTOVER_HOLD=true.*permanent/is);
-  assert.match(retry, /ADW_MJS_CUTOVER_HOLD=true.*future tenth retry/is);
+  assert.match(retry, /ADW_MJS_CUTOVER_HOLD=true.*current tenth-retry barrier/is);
   assert.match(retry, /No scheduled-cycle proof or completion claim exists/i);
   assert.doesNotMatch(retry, /Do not execute Tasks 8–16 as written/);
   for (const probe of [

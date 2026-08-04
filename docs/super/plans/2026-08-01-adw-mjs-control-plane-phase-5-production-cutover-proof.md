@@ -175,6 +175,8 @@ The rolled-back eighth attempt used owner-authored PR #176 from `adw/mjs-phase5-
 
 The rolled-back ninth attempt used owner-authored PR #177 from `adw/mjs-phase5-retry8`, based on signed eighth rollback `3e91aac769c8010a50f58c0a0c75e3aa85d3f817`. Signed aggregate `870d77069c9054dd9f040803940df796da3f4a6e`, cutover `7497f61b712d24a056b32fae3c2e5b4be3a01d98`, complete audit `30884816241`, reconciliation delivery receipt `30884990977`, failed child `30885142692`, and signed rollback `9a5d2caeefbf1cd23ec7ee90045a9655676cf8bd` are historical evidence. Diagnostics `30886814052`, `30887204135`, `30887382006`, `30888153701`, and `30888436716` isolated the pinned Claude draft incompatibility; no-forge replay `30889239515` completed `invoke=success` after removing only explicit draft-2020 `$schema`. This does not complete Phase 5.
 
+Tenth-attempt owner-authored PR #178 uses branch `adw/mjs-phase5-retry9` directly over signed ninth rollback `9a5d2caeefbf1cd23ec7ee90045a9655676cf8bd`. Signed aggregate `28f84ba7055b437fb95fb4a5462da89b6d6d3e6b` is staging provenance only; the next signed one-anchor planning head binds PR #178's future commands and exact-head approval. `ADW_CUTOVER_HOLD=true` remains permanent, `ADW_MJS_CUTOVER_HOLD=true` remains the current barrier, legacy authority remains active except disabled `adw-release`, and no tenth cutover, deployment proof, scheduled-cycle proof, or Phase 5 completion has occurred.
+
 ## File map
 
 ### Control-plane production readiness
@@ -1246,26 +1248,28 @@ Global preconditions and the `runs` projection remain unchanged and authoritativ
 
 Focused core/scenario coverage requires one canonical dispatch and `sync_labels` plus one rerun with dispatch suppressed. Full Node, changed MJS syntax, `git diff --check`, and one signed commit with exactly one `Anchor:` trailer are required. This correction was the prerequisite for the eighth retry. No GitHub object is mutated and nothing is pushed.
 
-### Task 8: Push the signed tenth-retry aggregate and bind owner approval
+### Task 8: Push the signed PR #178 planning head and bind owner approval
 
 **Files:** none
 
-**Historical seventh through ninth procedure:** PR #175 on `adw/mjs-phase5-retry6`, PR #176 on `adw/mjs-phase5-retry7`, and PR #177 on `adw/mjs-phase5-retry8` ended at signed rollbacks `db80fd48c1c5fb7bd5a076f1c6b0571c3586361c`, `3e91aac769c8010a50f58c0a0c75e3aa85d3f817`, and `9a5d2caeefbf1cd23ec7ee90045a9655676cf8bd`. Those branches, PRs, and rollback refs remain immutable history.
+**Historical seventh through ninth procedure:** PR #175 on `adw/mjs-phase5-retry6`, PR #176 on `adw/mjs-phase5-retry7`, and PR #177 on `adw/mjs-phase5-retry8` ended at signed rollbacks `db80fd48c1c5fb7bd5a076f1c6b0571c3586361c`, `3e91aac769c8010a50f58c0a0c75e3aa85d3f817`, and `9a5d2caeefbf1cd23ec7ee90045a9655676cf8bd`. Those branches, PRs, rollback refs, and orphaned runs remain immutable history.
 
-The future tenth retry uses clean branch `adw/mjs-phase5-retry9` directly over signed ninth rollback `9a5d2caeefbf1cd23ec7ee90045a9655676cf8bd`. Its PR number is not yet known. Every command remains unchecked until separately owner-authorized and executed in order.
+Branch `adw/mjs-phase5-retry9` and owner-authored PR #178 already exist at signed aggregate `28f84ba7055b437fb95fb4a5462da89b6d6d3e6b` directly over signed ninth rollback `9a5d2caeefbf1cd23ec7ee90045a9655676cf8bd`. Both holds are already armed. The next signed one-anchor planning commit supersedes that aggregate only as PR #178's exact head; every future step remains unchecked until executed in order, and no approval marker may be posted before its push and current-head checks.
 
-- [ ] **Step 1: Revalidate the signed aggregate head**
+- [ ] **Step 1: Revalidate the signed aggregate and local planning head**
 
 ```bash
 BRANCH=adw/mjs-phase5-retry9
 BASE=9a5d2caeefbf1cd23ec7ee90045a9655676cf8bd
-AGGREGATE=$(git rev-parse HEAD)
-PLAN_HEAD=$AGGREGATE
+AGGREGATE=28f84ba7055b437fb95fb4a5462da89b6d6d3e6b
+PLAN_HEAD=$(git rev-parse HEAD)
 test "$(git branch --show-current)" = "$BRANCH"
 test "$(git rev-parse origin/main)" = "$BASE"
 test "$(git show -s --format=%P "$AGGREGATE")" = "$BASE"
+test "$(git show -s --format=%P "$PLAN_HEAD")" = "$AGGREGATE"
 git verify-commit "$BASE"
 git verify-commit "$AGGREGATE"
+git verify-commit "$PLAN_HEAD"
 node --test adw/test/*.test.mjs
 find adw -type f -name '*.mjs' -print0 | xargs -0 -n1 node --check
 actionlint .github/workflows/adw-{issues,operations,pulls,selftest}.yml .github/workflows/ci.yml
@@ -1275,12 +1279,12 @@ while IFS= read -r yaml; do yq eval '.' "$yaml" >/dev/null; done < <(
 mapfile -t bash_files < <(find . -type f \( -name '*.sh' -o -name '*.bash' \) -not -path './.git/*' -not -path './target/*' | sort)
 if test "${#bash_files[@]}" -gt 0; then shellcheck "${bash_files[@]}"; fi
 cmp prototypes/p38-adw-disposable/wrappers/adw-operations.yml .github/workflows/adw-operations.yml
-test "$(git show -s --format=%B "$AGGREGATE" | grep -c '^Anchor:')" = 1
-git diff "$BASE" "$AGGREGATE" --check
+test "$(git show -s --format=%B "$PLAN_HEAD" | grep -c '^Anchor:')" = 1
+git diff "$BASE" "$PLAN_HEAD" --check
 test -z "$(git status --porcelain)"
 ```
 
-Expected: signed ninth rollback is the signed one-anchor aggregate's sole parent. Full Node, actionlint, YAML, MJS, bash, grep, diff, signature, promotion, and clean-tree checks pass. Do not amend, merge, or rebase after exact-head approval.
+Expected: signed ninth rollback is aggregate `28f84ba`'s sole parent and the signed one-anchor planning head is the aggregate's sole child. Full Node, actionlint, YAML, MJS, bash, grep, diff, signature, promotion, and clean-tree checks pass. Do not amend, merge, or rebase after exact-head approval.
 
 - [ ] **Step 2: Revalidate both already-armed barriers immediately before push**
 
@@ -1291,39 +1295,40 @@ test "$(gh variable get ADW_MJS_CUTOVER_HOLD --repo bugabinga/smith)" = true
 
 Expected: permanent orphan barrier and current-wrapper barrier both remain exactly `true`; do not mutate either variable.
 
-- [ ] **Step 3: Push only the signed tenth-retry head**
+- [ ] **Step 3: Push only the corrected signed head to PR #178's branch**
 
 ```bash
-test -z "$(git ls-remote origin refs/heads/$BRANCH | cut -f1)"
+PR=178
+test "$(git ls-remote origin refs/heads/$BRANCH | cut -f1)" = "$AGGREGATE"
 git push origin "$PLAN_HEAD:refs/heads/$BRANCH"
 PR_HEAD=$PLAN_HEAD
 test "$PR_HEAD" = "$(git ls-remote origin refs/heads/$BRANCH | cut -f1)"
 ```
 
-Expected: the new remote branch and signed local aggregate name one exact head; no other ref changes.
+Expected: PR #178's remote branch and signed local planning head name one exact head; no other ref changes.
 
-- [ ] **Step 4: Validate the owner-authored tenth-retry PR once its number exists**
+- [ ] **Step 4: Validate existing owner-authored PR #178 on the corrected head**
 
 ```bash
-: "${PR:?set owner-authored tenth-retry PR number}"
+PR=178
 gh pr view "$PR" --repo bugabinga/smith \
   --json number,state,headRefName,headRefOid,baseRefName,author |
-  jq -e --argjson pr "$PR" --arg head "$PR_HEAD" --arg branch "$BRANCH" '
-    .number == $pr and .state == "OPEN" and .headRefName == $branch and
+  jq -e --arg head "$PR_HEAD" --arg branch "$BRANCH" '
+    .number == 178 and .state == "OPEN" and .headRefName == $branch and
     .headRefOid == $head and .baseRefName == "main" and
     .author.login == "bugabinga"' >/dev/null
 ```
 
-Expected: the owner-authored PR targets `main` from exact branch `adw/mjs-phase5-retry9` and signed aggregate; no PR number is assumed here.
+Expected: existing owner-authored PR #178 targets `main` from exact branch `adw/mjs-phase5-retry9` and signed planning head; no new PR is created.
 
 - [ ] **Step 5: Validate current-head checks and then record exact-head owner approval**
 
 ```bash
-: "${PR:?set owner-authored tenth-retry PR number}"
+PR=178
 PR_HEAD=$(git rev-parse HEAD)
 test "$PR_HEAD" = "$PLAN_HEAD"
 test "$PR_HEAD" = "$(git ls-remote origin refs/heads/$BRANCH | cut -f1)"
-test "$PR_HEAD" = "$(gh pr view "$PR" --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
+test "$PR_HEAD" = "$(gh pr view 178 --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
 checks=$(gh api "repos/bugabinga/smith/commits/$PR_HEAD/check-runs?filter=latest&per_page=100")
 jq -e --arg head "$PR_HEAD" '
   [.check_runs[] | select(.name == "check" and .head_sha == $head and
@@ -1334,19 +1339,20 @@ test "$(jq --arg head "$PR_HEAD" \
   <<<"$checks")" = 0
 test "$(gh api repos/bugabinga/smith/rulesets/19155559 --jq .current_user_can_bypass)" = always
 gh api user | jq -e '.id == 876467 and .login == "bugabinga"' >/dev/null
-OWNER_APPROVAL_MARKER="Owner approval: quiet-window MJS production cutover tenth attempt and positive-only proof on PR #$PR exact head $PR_HEAD."
+OWNER_APPROVAL_MARKER="Owner approval: quiet-window MJS production cutover tenth attempt and positive-only proof on PR #178 exact head $PR_HEAD."
 OWNER_APPROVAL_COMMENT_JSON=$(gh api --method POST \
-  "repos/bugabinga/smith/issues/$PR/comments" -f body="$OWNER_APPROVAL_MARKER")
+  "repos/bugabinga/smith/issues/178/comments" -f body="$OWNER_APPROVAL_MARKER")
 OWNER_APPROVAL_COMMENT_ID=$(jq -er '.id' <<<"$OWNER_APPROVAL_COMMENT_JSON")
 OWNER_APPROVAL_COMMENT_CREATED_AT=$(jq -er '.created_at' <<<"$OWNER_APPROVAL_COMMENT_JSON")
-jq -e --arg body "$OWNER_APPROVAL_MARKER" --arg issue "https://api.github.com/repos/bugabinga/smith/issues/$PR" '
+jq -e --arg body "$OWNER_APPROVAL_MARKER" '
   .id > 0 and .user.id == 876467 and .user.login == "bugabinga" and
   .author_association == "OWNER" and .body == $body and
-  .created_at == .updated_at and .issue_url == $issue
+  .created_at == .updated_at and
+  .issue_url == "https://api.github.com/repos/bugabinga/smith/issues/178"
 ' <<<"$OWNER_APPROVAL_COMMENT_JSON" >/dev/null
 ```
 
-Expected: legacy `merge-gate` is intentionally absent and explicit owner bypass remains mandatory. Approval follows push and current-head checks; its body binds the supplied PR and exact `PR_HEAD`. Any mismatch stops cutover.
+Expected: legacy `merge-gate` is intentionally absent and explicit owner bypass remains mandatory. Approval follows the signed planning-head push and current-head checks; its body binds PR #178 and exact post-commit `PR_HEAD`. Any mismatch stops cutover.
 
 ### Task 9: Seed production identity and prepare signed rollback
 
@@ -1382,12 +1388,14 @@ The first-attempt read is retained above as history and does not complete this r
 - [ ] **Step 3: Freeze and recheck the owner-approved head**
 
 ```bash
-test "$PR_HEAD" = "$(gh pr view "$PR" --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
+PR=178
+test "$PR_HEAD" = "$PLAN_HEAD"
+test "$PR_HEAD" = "$(gh pr view 178 --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
 test "$(git rev-parse origin/main)" = "$(gh api repos/bugabinga/smith/commits/main --jq .sha)"
 test "$(git rev-parse origin/main)" = "9a5d2caeefbf1cd23ec7ee90045a9655676cf8bd"
 ```
 
-Expected: the supplied tenth-retry PR remains on its exact owner-approved aggregate and main remains exactly signed ninth rollback `9a5d2caeefbf1cd23ec7ee90045a9655676cf8bd`.
+Expected: PR #178 remains on its exact owner-approved signed planning head and main remains exactly signed ninth rollback `9a5d2caeefbf1cd23ec7ee90045a9655676cf8bd`.
 
 - [ ] **Step 4: Create an encrypted/private rollback workspace and reverse patch**
 
@@ -1398,7 +1406,7 @@ chmod 700 "$ROLLBACK_ROOT"
 CUTOVER_BASE=9a5d2caeefbf1cd23ec7ee90045a9655676cf8bd
 test "$(git rev-parse origin/main)" = "$CUTOVER_BASE"
 test "$(git merge-base origin/main "$PR_HEAD")" = "$CUTOVER_BASE"
-test "$PR_HEAD" = "$(gh pr view "$PR" --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
+test "$PR_HEAD" = "$(gh pr view 178 --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
 git diff --binary "$CUTOVER_BASE" "$PR_HEAD" > "$ROLLBACK_ROOT/cutover.patch"
 git diff --binary -R "$CUTOVER_BASE" "$PR_HEAD" > "$ROLLBACK_ROOT/rollback.patch"
 sha256sum "$ROLLBACK_ROOT"/*.patch > "$ROLLBACK_ROOT/SHA256SUMS"
@@ -1433,7 +1441,7 @@ Expected: signed rehearsal commit verifies and its tree equals the pre-cutover t
 
 **Files:** none
 
-Legacy writers are currently active except `adw-release`; that rollback state is not a tenth-attempt drain. Disable and observe all 21 paths again inside the future tenth-retry PR's quiet window.
+Legacy writers are currently active except `adw-release`; that rollback state is not a tenth-attempt drain. Disable and observe all 21 paths again inside PR #178's quiet window.
 
 - [ ] **Step 1: Enter the owner-announced quiet window**
 
@@ -1517,12 +1525,13 @@ Expected: zero active legacy runs, all legacy workflows disabled, self-test acti
 
 ```bash
 set -euo pipefail
-: "${PR:?set owner-authored tenth-retry PR number}"
-test "$PR_HEAD" = "$(gh pr view "$PR" --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
+PR=178
+test "$PR_HEAD" = "$PLAN_HEAD"
+test "$PR_HEAD" = "$(gh pr view 178 --repo bugabinga/smith --json headRefOid --jq .headRefOid)"
 test "$CUTOVER_BASE" = 9a5d2caeefbf1cd23ec7ee90045a9655676cf8bd
 test "$CUTOVER_BASE" = "$(gh api repos/bugabinga/smith/commits/main --jq .sha)"
 test "$CUTOVER_BASE" = "$(git rev-parse origin/main)"
-test "$(gh pr view "$PR" --repo bugabinga/smith --json mergeable --jq .mergeable)" = MERGEABLE
+test "$(gh pr view 178 --repo bugabinga/smith --json mergeable --jq .mergeable)" = MERGEABLE
 CUTOVER_CHECKS=$(gh api "repos/bugabinga/smith/commits/$PR_HEAD/check-runs?filter=latest&per_page=100")
 jq -e --arg head "$PR_HEAD" '
   [.check_runs[] | select(.name == "check" and .head_sha == $head and
@@ -1533,14 +1542,13 @@ OWNER_APPROVAL_COMMENT_JSON=$(gh api \
 jq -e --argjson id "$OWNER_APPROVAL_COMMENT_ID" \
   --arg body "$OWNER_APPROVAL_MARKER" \
   --arg created "$OWNER_APPROVAL_COMMENT_CREATED_AT" \
-  --arg head "$PR_HEAD" --arg pr "$PR" \
-  --arg issue "https://api.github.com/repos/bugabinga/smith/issues/$PR" '
+  --arg head "$PR_HEAD" '
     .id == $id and
     .user.id == 876467 and .user.login == "bugabinga" and
     .author_association == "OWNER" and .body == $body and
-    .body == ("Owner approval: quiet-window MJS production cutover tenth attempt and positive-only proof on PR #" + $pr + " exact head " + $head + ".") and
+    .body == ("Owner approval: quiet-window MJS production cutover tenth attempt and positive-only proof on PR #178 exact head " + $head + ".") and
     .created_at == $created and .updated_at == $created and
-    .issue_url == $issue
+    .issue_url == "https://api.github.com/repos/bugabinga/smith/issues/178"
   ' <<<"$OWNER_APPROVAL_COMMENT_JSON" >/dev/null
 test "$(sha256sum "$ROLLBACK_ROOT/cutover.patch" "$ROLLBACK_ROOT/rollback.patch")" = \
   "$(cat "$ROLLBACK_ROOT/SHA256SUMS")"
@@ -2176,9 +2184,9 @@ Rollback from the owner shell:
 ```bash
 set -euo pipefail
 REPO=bugabinga/smith
-: "${PR:?set owner-authored tenth-retry PR number}"
+PR=178
 gh pr view "$PR" --repo "$REPO" --json number,headRefName,baseRefName |
-  jq -e --argjson pr "$PR" '.number == $pr and .headRefName == "adw/mjs-phase5-retry9" and .baseRefName == "main"' >/dev/null
+  jq -e '.number == 178 and .headRefName == "adw/mjs-phase5-retry9" and .baseRefName == "main"' >/dev/null
 ROLLBACK_ROOT="$HOME/.local/state/smith-adw-phase5-retry9-rollback"
 EXPECTED_CUTOVER_BASE=9a5d2caeefbf1cd23ec7ee90045a9655676cf8bd
 mjs=(adw-issues.yml adw-pulls.yml adw-operations.yml)
@@ -2304,4 +2312,4 @@ Expected: MJS is disabled and drained before rollback selection. Unchanged main 
 
 ## Phase boundary
 
-Phase 5 remains incomplete after nine cutovers through `7497f61` and signed rollbacks through `9a5d2ca`. Ninth audit `30884816241` and reconciliation `30884990977` are positive receipt evidence, but Claude child `30885142692` failed before assessment. Diagnostics `30886814052`, `30887204135`, `30887382006`, `30888153701`, and `30888436716` isolated explicit draft-2020 `$schema`; exact no-forge replay `30889239515` completed `invoke=success` after removing only that declaration. All temporary classifier files are absent. `ADW_CUTOVER_HOLD=true` permanently contains corrupted identity `325210492`; `ADW_MJS_CUTOVER_HOLD=true` remains armed for the future tenth retry. No scheduled-cycle proof or completion claim exists. Phase 5 still requires a future GitHub-verified cutover, parent-correct signed rollback, positive receipts, fail-closed candidates, and two green scheduled cycles; Phase 6 remains separate.
+Phase 5 remains incomplete after nine cutovers through `7497f61` and signed rollbacks through `9a5d2ca`. Ninth audit `30884816241` and reconciliation `30884990977` are positive receipt evidence, but Claude child `30885142692` failed before assessment. Diagnostics `30886814052`, `30887204135`, `30887382006`, `30888153701`, and `30888436716` isolated explicit draft-2020 `$schema`; exact no-forge replay `30889239515` completed `invoke=success` after removing only that declaration. All temporary classifier files are absent. Owner-authored PR #178 on `adw/mjs-phase5-retry9` remains at signed aggregate `28f84ba7055b437fb95fb4a5462da89b6d6d3e6b` until the future signed planning-head push and exact-head approval. `ADW_CUTOVER_HOLD=true` permanently contains corrupted identity `325210492`; `ADW_MJS_CUTOVER_HOLD=true` remains the current tenth-retry barrier. No scheduled-cycle proof or completion claim exists. Phase 5 still requires a future GitHub-verified cutover, parent-correct signed rollback, positive receipts, fail-closed candidates, and two green scheduled cycles; Phase 6 remains separate.
