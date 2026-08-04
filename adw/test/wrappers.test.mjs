@@ -595,22 +595,27 @@ test("Phase 5 preserves prior history and binds ninth-attempt commands", async (
   const plan = await readFile(phase5Plan, "utf8");
   const retry = plan.slice(plan.indexOf("## Current post-rollback baseline"));
   for (const evidence of [
-    "PR #168", "PR #170", "PR #171", "PR #172", "PR #173", "PR #175", "PR #176",
+    "PR #168", "PR #170", "PR #171", "PR #172", "PR #173", "PR #175", "PR #176", "PR #177",
     "30854346376", "30859128166", "30859241539", "325210492",
     "91aff7927e17cc5d84288455ea336512c255a7df", "3e91aac769c8010a50f58c0a0c75e3aa85d3f817",
+    "870d77069c9054dd9f040803940df796da3f4a6e",
   ]) assert.match(retry, new RegExp(evidence));
-  assert.match(retry, /Ninth-attempt branch `adw\/mjs-phase5-retry8` starts directly from signed eighth rollback/);
+  assert.match(retry, /Ninth-attempt owner-authored PR #177 uses branch `adw\/mjs-phase5-retry8`/);
   assert.match(retry, /clean MJS tree `44a0393` without the probe/);
+  assert.match(retry, /PR=177/);
   assert.match(retry, /BRANCH=adw\/mjs-phase5-retry8/);
   assert.match(retry, /BASE=3e91aac769c8010a50f58c0a0c75e3aa85d3f817/);
-  assert.match(retry, /AGGREGATE=\$\(git rev-parse HEAD\)/);
+  assert.match(retry, /AGGREGATE=870d77069c9054dd9f040803940df796da3f4a6e/);
+  assert.match(retry, /PLAN_HEAD=\$\(git rev-parse HEAD\)/);
   assert.match(retry, /CUTOVER_BASE=3e91aac769c8010a50f58c0a0c75e3aa85d3f817/);
   assert.match(retry, /HEAD:refs\/heads\/adw\/mjs-phase5-retry8/);
   assert.match(retry, /fix\/rollback-adw-mjs-phase5-retry8/);
   assert.match(retry, /git diff --binary "\$CUTOVER_BASE" "\$PR_HEAD"/);
   assert.match(retry, /git diff --binary -R "\$CUTOVER_BASE" "\$PR_HEAD"/);
-  assert.match(retry, /gh variable set ADW_MJS_CUTOVER_HOLD.*--body true/);
-  assert.match(retry, /gh pr create.*adw\/mjs-phase5-retry8/s);
+  assert.match(retry, /gh variable get ADW_MJS_CUTOVER_HOLD/);
+  assert.doesNotMatch(retry, /gh variable set ADW_MJS_CUTOVER_HOLD/);
+  assert.doesNotMatch(retry, /gh pr create/);
+  assert.match(retry, /Owner approval: quiet-window MJS production cutover ninth attempt and positive-only proof on PR #177 exact head \$PR_HEAD\./);
   assert.match(retry, /ADW_CUTOVER_HOLD=true.*permanent/is);
   assert.match(retry, /No ninth cutover, production receipt, scheduled-cycle proof, or completion claim exists/i);
   assert.doesNotMatch(retry, /Do not execute Tasks 8–16 as written/);
