@@ -326,7 +326,7 @@ Files that coding agents MUST NOT modify without explicit user approval:
   residual). Still never, whatever a work-order asks: `.github/rulesets/**`,
   `.github/CODEOWNERS`, `.github/workflows/adw-gate.yml`,
   `.github/workflows/adw-automerge.yml`, `.github/workflows/adw-issues.yml`,
-  `.github/workflows/adw-pulls.yml`, `.github/workflows/adw-maintenance.yml`,
+  `.github/workflows/adw-pulls.yml`, `.github/workflows/adw-operations.yml`,
   `adw/**`, `.claude/settings.json` — an agent does not widen its own permissions or weaken
   the check that judges it.
 - `Cargo.toml` workspace root

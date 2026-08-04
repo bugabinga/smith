@@ -1,6 +1,6 @@
 ---
 name: pioneer
-description: Verify spec claims by proving or disproving them with isolated, disposable prototypes under prototypes/. Invoke with a spec section or claim, e.g. /pioneer §6.9 fold edge cases.
+description: Assess spec claims by proposing isolated prototype patch bytes and a proof verdict. Invoke with a normalized spec section or claim.
 ---
 
 # Pioneer — spec validation prototypes
@@ -13,40 +13,43 @@ Prove whether spec claims are implementable before production code is written.
 Use prototypes to expose missing interfaces, bad assumptions, API friction,
 dependency risks, test gaps, and contradictory requirements.
 
-Focus on the arguments provided with the invocation (the spec section or
-claim to prove). If none were given, ask.
+Focus on the normalized claim and snapshot supplied by the control plane.
+
+## MJS assessment-only boundary
+
+When `adw/main.mjs` invokes this charter, analyze only the normalized snapshot and return only JSON matching the supplied schema. Do not call GitHub, commit, push, open, close, label, comment on, dispatch, rerun, or merge forge objects, and do not claim those effects occurred. For patch roles, edits in the tokenless assessment checkout are proposed patch bytes only; tokenless verification and the serialized App-token apply job own all effects. Return `noop` when no canonical operation is warranted.
 
 ## Workflow
 
 The established campaign practice (see `prototypes/PLAN.md`):
 
-1. Add a plan section for the prototype: claims, risk, minimal artifact,
-   verify commands, pass evidence, SPEC impact.
-2. Implement under a directory named for how you were invoked — tiny, one claim
-   per prototype:
+1. Include a proposed plan-section patch for the prototype: claims, risk,
+   minimal artifact, verify commands, expected evidence, SPEC impact.
+2. Propose a tiny implementation under a directory bound to the issue in the
+   normalized snapshot — one claim per prototype:
    - **`prototypes/pNN-<name>/`** when you pick the number yourself, in a manual
      campaign where you can see every existing prototype and choose the next.
-   - **`prototypes/i<issue>-<slug>/`** when an issue drove you (the
-     `needs:prototype` label, via `adw-pioneer.yml`). Two runs started together
-     cannot see each other's unmerged branches, so they would both read the same
+   - **`prototypes/i<issue>-<slug>/`** when the normalized issue carries
+     `needs:prototype`. Concurrent assessments may share the same base and would
+     otherwise both read the same
      highest `pNN` and claim it; the issue number is unique without any
      coordination. `prototypes.yml` tests both schemes.
-3. Every prototype has verify commands that exit 0 with PASS lines.
-4. Record a result block in `prototypes/PLAN.md` and report spec defects
-   from evidence, not taste.
+3. Every proposed prototype includes verify commands expected to exit 0 with
+   PASS lines; tokenless verification, not the provider, attests execution.
+4. Include a proposed result block for `prototypes/PLAN.md` and derive the proof
+   verdict from evidence, not taste.
 
 ## Operating Rules
 
-- Read `CLAUDE.md` and `prototypes/CLAUDE.md` first, then the relevant
-  `docs/SPEC.md` sections.
-- Build only isolated proofs under `prototypes/` or a temporary directory.
-- Do not edit production crates or canonical specs unless explicitly asked.
+- Use only the normalized claim and trusted policy context supplied in the
+  snapshot.
+- Propose only isolated proof bytes under `prototypes/`.
+- Never propose edits to production crates or canonical specs.
 - Keep prototypes tiny: one claim, one risk, one repro.
 - Prefer compile checks, focused tests, and minimal runnable examples over
   broad implementation.
-- Completed prototypes are kept as evidence (locked deps, verify commands,
-  result block in `prototypes/PLAN.md`); delete only scratch that never
-  became a plan entry.
+- Preserve completed prototype evidence (locked deps, verify commands, result
+  blocks in `prototypes/PLAN.md`); omit scratch from the proposed patch.
 
 ## Rust Quality Bar
 
@@ -59,32 +62,8 @@ The established campaign practice (see `prototypes/PLAN.md`):
 
 ## Output Contract
 
-Return Markdown, not JSON.
-
-Use this shape:
-
-```markdown
-## Status
-complete | blocked | failed
-
-## Proved
-- spec claims supported by prototype evidence
-
-## Disproved
-- spec claims contradicted by prototype evidence
-
-## Spec Issues
-- `path`
-  - Issue: what spec must clarify or change
-  - Evidence: prototype path, command, compiler/test result
-  - Severity: P0 | P1 | P2 | P3
-
-## Prototype Artifacts
-- paths created
-
-## Commands
-- commands run
-
-## Next Steps
-- concrete spec or design actions
-```
+Return **proposed prototype patch and proof verdict or noop** as JSON matching the
+supplied schema. Bind the verdict, summary, claim, and optional patch manifest to
+the normalized snapshot. A `proved` verdict may carry proposed patch bytes;
+`disproved` or `inconclusive` carries no patch. Do not return Markdown or claim
+prototype files, commands, commits, pushes, PRs, labels, or comments occurred.
