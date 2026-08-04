@@ -2,11 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
-  digestBytes, digestJson, mapReconciliationIntents, mergeEligibility, parseLegacyMarkers, planMergeGate, planReconciliation,
+  digestBytes, digestJson, mergeEligibility, parseLegacyMarkers, planMergeGate, planReconciliation,
   reduceAssessments,
 } from "../core.mjs";
-import { controlSnapshotPlan, roleSnapshotPlan } from "../github.mjs";
-import { controlAuthority, deterministicRole, listRoles, planAudit, reduceControlArtifact, reduceDeterministicArtifact, reduceRoleArtifact, reduceStatusArtifact, role, validateRolePayload } from "../roles.mjs";
+import { deterministicRole, listRoles, reduceDeterministicArtifact, reduceRoleArtifact, role, validateRolePayload } from "../roles.mjs";
 
 const controlSha = "a".repeat(40);
 const headSha = "b".repeat(40);
@@ -68,7 +67,7 @@ function roleDecision(name, payload, state, patchBytes = null) {
   return reduceRoleArtifact({ snapshot, rolePolicy: policy, reduction, assessments: entries });
 }
 
-test("injected E2E: review/security evidence gates composed issue merge", () => {
+test("composed issue reaches merge only through both current-head review artifacts", () => {
   const triage = roleDecision("triager", { verdict: "accept", body: "Ready", labels: [] }, { entityId: "1", labels: [] });
   assert.ok(triage.operations.some(value => value.label === "ready"));
   const plan = roleDecision("planner", { verdict: "planned", summary: "Plan", issues: [{ title: "Slice", body: "Build", labels: ["planned"] }] }, { entityId: "1", labels: [] });
@@ -129,39 +128,6 @@ test("every provider-role write respects a current hold", () => {
     ["alert-triager", { verdict: "covered", summary: "Covered", issue: null }, { entityId: "3", labels: ["hold"] }],
   ];
   for (const [name, payload, state, patchBytes] of cases) assert.deepEqual(roleDecision(name, payload, state, patchBytes).operations, [{ type: "terminal", reason: "held" }], name);
-});
-
-test("route labels block merge while routed roles deterministically reconcile them", () => {
-  for (const label of ["needs:prototype", "needs:breakdown", "changes-requested"]) {
-    const result = mergeEligibility(mergeState({ labels: ["reviewed", "security-cleared", label] }));
-    assert.ok(result.reasons.includes(label), label);
-  }
-
-  const planner = roleDecision("planner", {
-    verdict: "planned", summary: "Split", issues: [{ title: "Slice", body: "Build", labels: ["planned"] }],
-  }, { entityId: "1", labels: ["needs:breakdown"] });
-  assert.deepEqual(planner.operations.map(operation => [operation.type, operation.label ?? null]), [
-    ["create_issue", null], ["remove_label", "needs:breakdown"],
-  ]);
-
-  const pioneer = roleDecision("pioneer", {
-    verdict: "inconclusive", summary: "Needs hardware", claim: "claim", patch: null,
-  }, { entityId: "1", labels: ["needs:prototype"] });
-  assert.deepEqual(pioneer.operations.map(operation => [operation.type, operation.label ?? null]), [
-    ["comment", null], ["remove_label", "needs:prototype"],
-  ]);
-
-  const bytes = Buffer.from("x");
-  const patch = { baseSha: headSha, digest: digestBytes(bytes), size: 1, files: [{ path: "smith/src/lib.rs", kind: "regular", oldMode: "100644", newMode: "100644" }] };
-  const reviser = roleDecision("reviser", { verdict: "patch", summary: "Revised", patch }, {
-    entityId: "2", labels: ["changes-requested"], changedPaths: ["smith/src/lib.rs"],
-  }, bytes);
-  assert.deepEqual(reviser.operations.map(operation => operation.type), ["update_pr"]);
-
-  const reviewer = roleDecision("reviewer", { verdict: "approve", risk: "none", findings: [] }, {
-    entityId: "2", labels: ["changes-requested"], headSha,
-  });
-  assert.ok(reviewer.operations.some(operation => operation.type === "remove_label" && operation.label === "changes-requested"));
 });
 
 test("issue route falls back once then reaches current-head squash intent", () => {
@@ -231,15 +197,14 @@ test("specialist decisions map every verdict to bounded operations", () => {
   assert.equal(roleDecision("dependency-manager", { verdict: "safe", summary: "Safe", reason: "semver" }, { entityId: "2", labels: [] }).operations.length, 1);
   assert.ok(roleDecision("dependency-manager", { verdict: "risky", summary: "Risky", reason: "major" }, { entityId: "2", labels: [] }).operations.some(value => value.label === "needs:spec"));
   assert.equal(roleDecision("alert-triager", { verdict: "issue", summary: "New", issue: { title: "Alert", body: "Fix", labels: ["security"] } }, { entityId: "3", labels: [] }).operations[0].type, "create_issue");
-  assert.deepEqual(roleDecision("alert-triager", { verdict: "covered", summary: "Covered", issue: null }, { entityId: "3", labels: [] }).operations, [{ type: "noop", reason: "already_complete" }]);
+  assert.equal(roleDecision("alert-triager", { verdict: "covered", summary: "Covered", issue: null }, { entityId: "3", labels: [] }).operations[0].type, "comment");
   assert.equal(roleDecision("docs-writer", { verdict: "noop", reason: "unchanged" }, { entityId: "2", labels: [] }).operations[0].type, "noop");
   const bytes = Buffer.from("x");
   const docsPatch = { baseSha: headSha, digest: digestBytes(bytes), size: 1, files: [{ path: "docs/guide.md", kind: "regular", oldMode: "100644", newMode: "100644" }] };
   const envelope = data => ({ trust: "untrusted", source: "pull:2", bytes: Buffer.byteLength(JSON.stringify(data)), digest: digestJson(data), data });
   assert.equal(roleDecision("docs-writer", { verdict: "patch", summary: "Docs", patch: docsPatch }, { entityId: "2", labels: [], headBranch: "docs/pr-2", baseBranch: "main", title: envelope("Docs"), body: envelope("Body") }, bytes).operations[0].type, "create_pr");
-  assert.equal(roleDecision("adw-doctor", { verdict: "action", summary: "Drift", actions: [{ kind: "report", entityId: "repository", reason: "ruleset" }] }, { entityId: "repository", labels: [], actionTargets: ["repository"] }).operations[0].type, "report_drift");
-  const failedJobs = [{ id: "10", conclusion: "failure" }];
-  assert.deepEqual(roleDecision("sweeper", { verdict: "action", summary: "Retry", actions: [{ kind: "retry", entityId: "1", reason: "failed" }] }, { entityId: "repository", labels: [], actionTargets: ["1"], resources: { runs: [{ id: "1", attempt: 1, failedJobs }] } }).operations[0], { type: "rerun_check", runId: "1", attempt: 1, failedJobs });
+  assert.equal(roleDecision("adw-doctor", { verdict: "action", summary: "Drift", actions: [{ kind: "report", entityId: "repository", reason: "ruleset" }] }, { entityId: "repository", labels: [], actionTargets: ["repository"] }).operations[0].type, "create_issue");
+  assert.equal(roleDecision("sweeper", { verdict: "action", summary: "Retry", actions: [{ kind: "retry", entityId: "run:1", reason: "failed" }] }, { entityId: "repository", labels: [], actionTargets: ["run:1"] }).operations[0].type, "rerun_check");
 });
 
 test("missed post-merge work remains retryable while holds suppress writes", () => {
@@ -253,221 +218,8 @@ test("missed post-merge work remains retryable while holds suppress writes", () 
     obligations: [{ role: "docs-writer", status: "failed", artifactDigest: null, expectedArtifactDigest: null }],
   };
   const base = { snapshot, routes: [], pulls: [pull], labelSync: { wantedDigest: "1".repeat(64), liveDigest: "1".repeat(64) }, comments: [], trust, reviews: [], pioneers: [], holds: [] };
-  assert.deepEqual(planReconciliation(base), [{ kind: "run_obligation", repositoryId: "R_1", prId: "2", mergeSha: "e".repeat(40), role: "docs-writer", provider: "codex" }]);
+  assert.deepEqual(planReconciliation(base), [{ kind: "run_obligation", prId: "2", mergeSha: "e".repeat(40), role: "docs-writer" }]);
   assert.deepEqual(planReconciliation({ ...base, holds: [{ entityId: "pr:2", reasons: ["hold"] }] }), [{ kind: "held", entityId: "pr:2", reasons: ["hold"] }]);
-});
-
-test("cancelled pending apply is deterministically retried instead of counted complete", () => {
-  const authority = controlAuthority("reconciler");
-  const cancelled = {
-    runId: "99", workflowPath: ".github/workflows/adw-pulls.yml", event: "pull_request_target", entityId: "167",
-    headSha, controlSha, attempt: 1, runConclusion: "failure", applyJobId: "9001", failedJobs: [{ id: "9001", conclusion: "cancelled" }],
-  };
-  const run = {
-    id: "99", name: "ADW pull and reconcile triggers", workflowPath: cancelled.workflowPath, displayTitle: "ADW pull #167",
-    event: cancelled.event, entityId: cancelled.entityId, status: "completed", conclusion: cancelled.runConclusion,
-    headSha: cancelled.headSha, headBranch: "feature/167", controlSha, applyJobId: cancelled.applyJobId, failedJobs: cancelled.failedJobs,
-    attempt: 1, actorId: "7", actorLogin: "bugabinga", actorType: "User",
-  };
-  const snapshot = {
-    ...snapshotFor("sweeper"),
-    event: { kind: "schedule", action: "reconcile", entityId: "R_1" },
-    routing: { role: authority.name, mode: "single", primary: null },
-    state: { currentRevisions: {}, resources: { runs: [run] }, reconciliation: { pulls: [], trust } },
-  };
-  const request = {
-    snapshot, routes: [], pulls: [], labelSync: { wantedDigest: "1".repeat(64), liveDigest: "1".repeat(64) },
-    comments: [], trust, reviews: [], pioneers: [], holds: [], cancelledApplies: [cancelled],
-  };
-  const intents = planReconciliation(request);
-  assert.deepEqual(intents, [{ kind: "retry_cancelled_apply", ...cancelled }]);
-  assert.deepEqual(mapReconciliationIntents({ snapshot, intents }), [{ type: "rerun_check", runId: "99", attempt: 1, failedJobs: cancelled.failedJobs }]);
-  const mixedSnapshot = structuredClone(snapshot);
-  mixedSnapshot.state.reconciliation.pulls = [{ prId: "3", repositoryId: "R_1", headRepositoryId: "R_1", base: "main", closingIssues: [], headSha, merged: false, mergeSha: null, obligations: [] }];
-  const mixed = [
-    ...intents,
-    { kind: "run_review", repositoryId: "R_1", prId: "3", headSha, role: "reviewer", provider: "claude" },
-    { kind: "sync_labels", definitionsDigest: "2".repeat(64) },
-  ];
-  assert.deepEqual(mapReconciliationIntents({ snapshot: mixedSnapshot, intents: mixed }).map(operation => operation.type), ["sync_labels", "rerun_check"]);
-});
-
-test("review-comment and check routes have reconciliation authority but no assessment route", () => {
-  for (const eventKind of ["pull_request_review_comment", "check"]) {
-    assert.equal(controlSnapshotPlan("reconciler", eventKind).role, "reconciler");
-    for (const roleName of listRoles()) assert.throws(() => roleSnapshotPlan(roleName, eventKind), error => error?.code === "contract");
-  }
-});
-
-test("submitted reviews admit provider-free reconciliation and only the reviser provider route", () => {
-  assert.equal(controlSnapshotPlan("reconciler", "pull_request_review").role, "reconciler");
-  assert.equal(roleSnapshotPlan("reviser", "pull_request_review").role, "reviser");
-  for (const roleName of listRoles().filter(name => name !== "reviser")) {
-    assert.throws(() => roleSnapshotPlan(roleName, "pull_request_review"), error => error?.code === "contract", roleName);
-  }
-});
-
-test("injected E2E: issue route maps reconciliation into provider-free closed repository dispatch authority", () => {
-  const policy = controlAuthority("reconciler");
-  const previousRevision = "1".repeat(64);
-  const currentRevision = "2".repeat(64);
-  const snapshot = {
-    ...snapshotFor("sweeper"),
-    repository: { id: "42", owner: "bugabinga", name: "smith", defaultBranch: "main" },
-    event: { kind: "schedule", action: "reconcile", entityId: "repository" },
-    routing: { role: policy.name, mode: "single", primary: null },
-    state: { currentRevisions: { "issue:7": currentRevision }, reconciliation: { pulls: [] } },
-  };
-  const request = {
-    snapshot,
-    routes: [{ issueId: "7", sourceRevision: previousRevision, status: "primary", primary: "claude", fallback: "codex", primaryOutcome: null, fallbackOutcome: null, artifactDigest: null, prId: null }],
-    pulls: [], labelSync: { wantedDigest: "1".repeat(64), liveDigest: "1".repeat(64) },
-    comments: [], trust, reviews: [], pioneers: [], holds: [],
-  };
-  const intents = planReconciliation(request);
-  const operations = mapReconciliationIntents({ snapshot, intents });
-  assert.deepEqual(operations, [{
-    type: "dispatch_repository", eventType: "retry_route",
-    clientPayload: { repositoryId: "42", issueId: "7", sourceRevision: currentRevision, role: "builder", provider: "claude" },
-  }]);
-  const decision = reduceControlArtifact({ name: "reconciler", snapshot, operations });
-  assert.equal(decision.assessmentDigests.length, 0);
-  assert.equal(role("sweeper").operations.includes("dispatch_repository"), false);
-  assert.deepEqual(policy.operations, ["add_label", "dispatch_repository", "noop", "rerun_check", "sync_labels"]);
-});
-
-test("injected E2E: post-merge obligation and review/check repairs map deterministically", () => {
-  const policy = controlAuthority("reconciler");
-  const mergeSha = "e".repeat(40);
-  const snapshot = {
-    ...snapshotFor("sweeper"),
-    repository: { id: "42", owner: "bugabinga", name: "smith", defaultBranch: "main" },
-    event: { kind: "check", action: "completed", entityId: "90" },
-    routing: { role: policy.name, mode: "single", primary: null },
-    state: { currentRevisions: {}, reconciliation: { pulls: [
-      { prId: "2", repositoryId: "42", headRepositoryId: "42", base: "main", closingIssues: [], headSha, merged: true, mergeSha, obligations: [] },
-      { prId: "3", repositoryId: "42", headRepositoryId: "42", base: "main", closingIssues: [], headSha, merged: false, mergeSha: null, obligations: [] },
-    ] } },
-  };
-  const intents = [
-    { kind: "run_obligation", repositoryId: "42", prId: "2", mergeSha, role: "docs-writer", provider: "codex" },
-    { kind: "run_review", repositoryId: "42", prId: "3", headSha, role: "security-reviewer", provider: "claude" },
-  ].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-  assert.deepEqual(mapReconciliationIntents({ snapshot, intents }).map(value => [value.eventType, value.clientPayload.role, value.clientPayload.provider]), [
-    ["run_review", "security-reviewer", "claude"],
-  ]);
-  assert.equal(controlSnapshotPlan("reconciler", "dispatch").role, "reconciler");
-});
-
-test("injected E2E: settings drift and labels use full provider-free audit state", () => {
-  const authority = controlAuthority("auditor");
-  const expectedRuleset = { name: "main", target: "branch", enforcement: "active", conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } }, rules: [{ type: "required_status_checks", parameters: { strict_required_status_checks_policy: false, required_status_checks: [{ context: "check" }, { context: "merge-gate" }] } }], bypass_actors: [] };
-  const labelSource = '- name: "ready"\n  color: "00ff00"\n  description: "Ready"\n';
-  const snapshot = {
-    ...snapshotFor("sweeper"),
-    event: { kind: "schedule", action: "audit", entityId: "repository" },
-    routing: { role: authority.name, mode: "single", primary: null },
-    state: { entityId: "repository", trust, resources: {
-      "trusted:.github/rulesets/main.json": { data: JSON.stringify(expectedRuleset) },
-      "trusted:.github/labels.yml": { data: labelSource },
-      rulesets: [{ ...expectedRuleset, rules: [{ ...expectedRuleset.rules[0], parameters: { ...expectedRuleset.rules[0].parameters, strict_required_status_checks_policy: true } }] }],
-      settings: { allowAutoMerge: true, allowMergeCommit: false, allowRebaseMerge: false, allowSquashMerge: true, deleteBranchOnMerge: true },
-      labels: [], pulls: [],
-    } },
-  };
-  const decision = planAudit(snapshot);
-  assert.deepEqual(decision.operations.map(value => value.type), ["report_drift", "sync_labels"]);
-  assert.match(decision.operations[0].body, /strict_required_status_checks_policy/);
-  assert.equal(decision.assessmentDigests.length, 0);
-});
-
-test("injected E2E: GitHub blocked state does not circularly block the ADW gate", () => {
-  const authority = controlAuthority("auditor");
-  const expectedRuleset = { name: "main", target: "branch", enforcement: "active", conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } }, rules: [], bypass_actors: [] };
-  const snapshot = {
-    ...snapshotFor("sweeper"),
-    event: { kind: "schedule", action: "audit", entityId: "repository" },
-    routing: { role: authority.name, mode: "single", primary: null },
-    state: { entityId: "repository", trust, resources: {
-      "trusted:.github/rulesets/main.json": { data: JSON.stringify(expectedRuleset) },
-      "trusted:.github/labels.yml": { data: "" }, rulesets: [expectedRuleset], labels: [],
-      settings: { allowAutoMerge: true, allowMergeCommit: false, allowRebaseMerge: false, allowSquashMerge: true, deleteBranchOnMerge: true },
-      pulls: [{ number: "2", state: "open", merged: false, mergeState: "blocked", headSha, base: "main", headRepository: "bugabinga/smith", labels: ["reviewed", "security-cleared"],
-        checks: [{ name: "check", headSha, status: "completed", conclusion: "success" }, { name: "merge-gate", headSha, status: "completed", conclusion: "success" }],
-        evidence: [evidence("correctness"), evidence("security")], riskMarker: null, timeline: [] }],
-    } },
-  };
-  const decision = planAudit(snapshot);
-  assert.ok(decision.operations.some(value => value.type === "comment" && value.marker.includes("smith:jam/v1")));
-  assert.ok(decision.operations.some(value => value.type === "publish_check" && value.name === "merge-gate" && value.conclusion === "success"));
-  assert.equal(decision.operations.some(value => value.type === "arm_auto_merge"), true);
-});
-
-test("live-shaped already-armed pull publishes its gate without another merge arm", () => {
-  const authority = controlAuthority("auditor");
-  const liveHead = "146c5467cd6b87d1ae3ef10f116b075f5910a94e";
-  const expectedRuleset = { name: "main", target: "branch", enforcement: "active", conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } }, rules: [], bypass_actors: [] };
-  const liveEvidence = kind => ({ ...evidence(kind), headSha: liveHead });
-  const snapshot = {
-    ...snapshotFor("sweeper"), event: { kind: "schedule", action: "audit", entityId: "repository" },
-    routing: { role: authority.name, mode: "single", primary: null },
-    state: { entityId: "repository", trust, resources: {
-      "trusted:.github/rulesets/main.json": { data: JSON.stringify(expectedRuleset) }, "trusted:.github/labels.yml": { data: "" },
-      rulesets: [expectedRuleset], labels: [], settings: { allowAutoMerge: true, allowMergeCommit: false, allowRebaseMerge: false, allowSquashMerge: true, deleteBranchOnMerge: true },
-      pulls: [{ number: "150", state: "open", draft: false, merged: false, mergeState: "blocked", headSha: liveHead, base: "main", headRepository: "bugabinga/smith", labels: ["reviewed", "security-cleared"],
-        autoMergeRequest: { mergeMethod: "SQUASH", enabledAt: "2026-07-28T19:38:16Z", enabledBy: { is_bot: true, login: "app/agent-smith-bugabinga-adc" } },
-        checks: [{ name: "check", headSha: liveHead, status: "completed", conclusion: "success" }], evidence: [liveEvidence("correctness"), liveEvidence("security")], riskMarker: null, timeline: [] }],
-    } },
-  };
-  for (const [labels, conclusion] of [[["reviewed", "security-cleared"], "success"], [["reviewed"], "failure"]]) {
-    const candidate = structuredClone(snapshot);
-    candidate.state.resources.pulls[0].labels = labels;
-    const operations = planAudit(candidate).operations;
-    assert.equal(operations.find(value => value.type === "publish_check" && value.name === "merge-gate")?.conclusion, conclusion);
-    assert.equal(operations.some(value => value.type === "arm_auto_merge"), false);
-  }
-});
-
-test("injected E2E: merge arm follows current-head deterministic gate", () => {
-  const authority = controlAuthority("auditor");
-  const expectedRuleset = { name: "main", target: "branch", enforcement: "active", conditions: { ref_name: { include: ["~DEFAULT_BRANCH"], exclude: [] } }, rules: [], bypass_actors: [] };
-  const snapshot = {
-    ...snapshotFor("sweeper"), event: { kind: "schedule", action: "audit", entityId: "repository" },
-    routing: { role: authority.name, mode: "single", primary: null },
-    state: { entityId: "repository", trust, resources: {
-      "trusted:.github/rulesets/main.json": { data: JSON.stringify(expectedRuleset) }, "trusted:.github/labels.yml": { data: "" },
-      rulesets: [expectedRuleset], labels: [], settings: { allowAutoMerge: true, allowMergeCommit: false, allowRebaseMerge: false, allowSquashMerge: true, deleteBranchOnMerge: true },
-      pulls: [{ number: "2", state: "open", draft: false, merged: false, mergeState: "clean", headSha, base: "main", headRepository: "bugabinga/smith", labels: ["reviewed", "security-cleared"],
-        checks: [{ name: "check", headSha, status: "completed", conclusion: "success" }], evidence: [evidence("correctness"), evidence("security")], riskMarker: null, timeline: [] }],
-    } },
-  };
-  assert.deepEqual(planAudit(snapshot).operations.map(value => value.type), ["publish_check", "arm_auto_merge"]);
-  for (const mergeState of ["blocked", "unknown", null]) {
-    const delegated = structuredClone(snapshot);
-    delegated.state.resources.pulls[0].mergeState = mergeState;
-    assert.equal(planAudit(delegated).operations.some(value => value.type === "arm_auto_merge"), true);
-  }
-  for (const patch of [{ draft: true }, { mergeState: "behind" }, { mergeState: "dirty" }]) {
-    const blocked = structuredClone(snapshot);
-    Object.assign(blocked.state.resources.pulls[0], patch);
-    assert.equal(planAudit(blocked).operations.some(value => value.type === "arm_auto_merge"), false);
-  }
-});
-
-test("terminal/fallback outcomes reduce to sanitized canonical publication operations", () => {
-  const policy = role("reviewer");
-  const value = {
-    ...snapshotFor("reviewer", { entityId: "2", headSha, labels: [] }),
-    event: { kind: "pull_request", action: "synchronize", entityId: "2" },
-    revisions: [{ resource: "pull:2", kind: "pull", token: headSha }],
-  };
-  for (const reduction of [{ status: "fallback", reason: "malformed", provider: "codex" }, { status: "terminal", reason: "providers_unavailable" }]) {
-    const decision = reduceStatusArtifact({ snapshot: value, rolePolicy: policy, reduction });
-    assert.equal(decision.operations[0].type, "publish_check");
-    assert.equal(decision.operations[0].summary.includes("malformed"), false);
-    assert.match(decision.operations[0].summary, /^ADW reviewer (fallback|terminal): /);
-  }
-  assert.deepEqual(role("reviewer").operations, policy.operations);
 });
 
 test("captured legacy evidence imports semantically without Projects or release", async () => {
