@@ -36,6 +36,26 @@ const EVENT_KINDS = new Set([
   "alert", "dispatch",
 ]);
 const PROVIDERS = new Set(["claude", "codex"]);
+const REST_ID = /^[1-9][0-9]*$/;
+
+export const REPOSITORY_DISPATCH_WORKFLOWS = Object.freeze({
+  retry_route: "adw-issues.yml",
+  fallback_route: "adw-issues.yml",
+  retry_pioneer: "adw-issues.yml",
+  run_review: "adw-pulls.yml",
+  run_obligation: "adw-operations.yml",
+});
+const REPOSITORY_DISPATCH_TYPES = new Set(Object.keys(REPOSITORY_DISPATCH_WORKFLOWS));
+const ROUTE_PROVIDER_ROLES = Object.freeze({ claude: "builder", codex: "codex-builder" });
+export const MERGE_OBLIGATION_PROVIDERS = Object.freeze({ "docs-writer": "codex" });
+const OPERATIONAL_WORKFLOW_EVENTS = Object.freeze({
+  ".github/workflows/adw-issues.yml": Object.freeze(["issue_comment", "issues"]),
+  ".github/workflows/adw-operations.yml": Object.freeze(["push", "schedule", "workflow_dispatch"]),
+  ".github/workflows/adw-pulls.yml": Object.freeze(["check_run", "check_suite", "pull_request_review", "pull_request_review_comment", "pull_request_target"]),
+});
+const OPERATIONAL_WORKFLOW_PATHS = new Set(Object.keys(OPERATIONAL_WORKFLOW_EVENTS));
+const RETRYABLE_RUN_CONCLUSIONS = new Set(["action_required", "cancelled", "failure", "stale", "startup_failure", "timed_out"]);
+const RERUNNABLE_JOB_CONCLUSIONS = new Set(["action_required", "cancelled", "failure", "stale", "startup_failure", "timed_out"]);
 
 function fail(message) {
   throw new AdwError("contract", message);
@@ -77,6 +97,11 @@ function digest(value, name) {
   return value;
 }
 
+function restId(value, name) {
+  if (typeof value !== "string" || !REST_ID.test(value) || !Number.isSafeInteger(Number(value))) fail(`${name} must be a REST ID`);
+  return value;
+}
+
 function array(value, name, max = 100) {
   if (!Array.isArray(value) || value.length > max) fail(`${name} must be an array`);
   return value;
@@ -98,6 +123,39 @@ function deepFreeze(value) {
 function copy(value) {
   canonicalBytes(value);
   return deepFreeze(structuredClone(value));
+}
+
+export function validateRepositoryDispatchPayload(eventType, value, includeOperationDigest = false) {
+  oneOf(eventType, REPOSITORY_DISPATCH_TYPES, "repository dispatch event type");
+  if (typeof includeOperationDigest !== "boolean") fail("repository dispatch digest mode is invalid");
+  const digestField = includeOperationDigest ? ["smith_operation_digest"] : [];
+  if (eventType === "retry_route" || eventType === "fallback_route" || eventType === "retry_pioneer") {
+    exact(value, ["repositoryId", "issueId", "sourceRevision", "role", "provider", ...digestField], "repository dispatch payload");
+    string(value.repositoryId, "repository dispatch repository");
+    restId(value.issueId, "repository dispatch issue");
+    digest(value.sourceRevision, "repository dispatch source revision");
+    oneOf(value.provider, PROVIDERS, "repository dispatch provider");
+    if (eventType === "retry_pioneer") {
+      if (value.role !== "pioneer" || value.provider !== "claude") fail("repository dispatch role/provider authority is invalid");
+    } else if (ROUTE_PROVIDER_ROLES[value.provider] !== value.role) {
+      fail("repository dispatch role/provider authority is invalid");
+    }
+  } else if (eventType === "run_review") {
+    exact(value, ["repositoryId", "prId", "headSha", "role", "provider", ...digestField], "repository dispatch payload");
+    string(value.repositoryId, "repository dispatch repository");
+    restId(value.prId, "repository dispatch pull");
+    sha(value.headSha, "repository dispatch head");
+    oneOf(value.role, new Set(["reviewer", "security-reviewer"]), "repository dispatch review role");
+    if (value.provider !== "claude") fail("repository dispatch role/provider authority is invalid");
+  } else {
+    exact(value, ["repositoryId", "prId", "mergeSha", "role", "provider", ...digestField], "repository dispatch payload");
+    string(value.repositoryId, "repository dispatch repository");
+    restId(value.prId, "repository dispatch pull");
+    sha(value.mergeSha, "repository dispatch merge SHA");
+    if (MERGE_OBLIGATION_PROVIDERS[value.role] !== value.provider) fail("repository dispatch role/provider authority is invalid");
+  }
+  if (includeOperationDigest) digest(value.smith_operation_digest, "repository dispatch operation digest");
+  return copy(value);
 }
 
 function patchMetadata(value, name) {
@@ -496,8 +554,8 @@ const OPERATION_FIELDS = Object.freeze({
   create_pr: { required: ["type", "head", "base", "title", "body", "marker"] },
   update_pr: { required: ["type", "prId"], optional: ["title", "body", "headSha"] },
   publish_check: { required: ["type", "headSha", "name", "conclusion", "summary", "externalId"] },
-  rerun_check: { required: ["type", "runId"] },
-  dispatch_workflow: { required: ["type", "workflow", "ref", "inputs"] },
+  rerun_check: { required: ["type", "runId", "attempt", "failedJobs"] },
+  dispatch_repository: { required: ["type", "eventType", "clientPayload"] },
   arm_auto_merge: { required: ["type", "prId", "headSha", "method"] },
   sync_labels: { required: ["type", "definitionsDigest"] },
   report_drift: { required: ["type", "title", "body", "marker"] },
@@ -529,12 +587,29 @@ function validateOperationShape(operation) {
     if (["labels"].includes(key)) {
       array(value, `operation.${key}`);
       value.forEach(item => string(item, `operation.${key}[]`));
-    } else if (key === "inputs") {
-      canonicalObject(value, "operation.inputs");
+    } else if (key === "failedJobs") {
+      array(value, "operation.failedJobs", 100);
+      if (value.length === 0) fail("operation.failedJobs is empty");
+      const identities = new Set();
+      let previous = 0;
+      for (const job of value) {
+        exact(job, ["id", "conclusion"], "operation failed job");
+        restId(job.id, "operation failed job id");
+        oneOf(job.conclusion, RERUNNABLE_JOB_CONCLUSIONS, "operation failed job conclusion");
+        const id = Number(job.id);
+        if (identities.has(job.id) || id <= previous) fail("operation.failedJobs is not canonical");
+        identities.add(job.id);
+        previous = id;
+      }
+    } else if (key === "clientPayload") {
+      validateRepositoryDispatchPayload(operation.eventType, value);
+    } else if (key === "attempt") {
+      if (!Number.isSafeInteger(value) || value < 1) fail("operation.attempt is invalid");
     } else {
       string(value, `operation.${key}`);
     }
   }
+  if (operation.type === "dispatch_repository") validateRepositoryDispatchPayload(operation.eventType, operation.clientPayload);
   for (const key of ["headSha", "baseSha", "treeSha"]) if (operation[key]) sha(operation[key], `operation.${key}`);
   if (operation.definitionsDigest) digest(operation.definitionsDigest, "operation.definitionsDigest");
   if (operation.method && operation.method !== "squash") fail("auto-merge method must be squash");
@@ -569,7 +644,7 @@ export function idempotencyKey(kind, fields) {
 const GLOBAL_DENIED_PATHS = [
   "docs/SPEC.md", "docs/PROJECT-INVARIANTS.md", ".github/CODEOWNERS",
   ".claude/settings.json", ".github/workflows/adw-issues.yml",
-  ".github/workflows/adw-pulls.yml", ".github/workflows/adw-maintenance.yml",
+  ".github/workflows/adw-pulls.yml", ".github/workflows/adw-operations.yml",
 ];
 const GLOBAL_DENIED_PREFIXES = [".agents/", ".claude/", ".github/", ".pi/", "adw/"];
 
@@ -603,8 +678,28 @@ function canonicalInstant(value, name) {
   return value;
 }
 
+function numericRestCommentId(value) {
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value)) fail("marker comment.id must be a REST ID");
+  const number = Number(value);
+  if (!Number.isSafeInteger(number)) fail("marker comment.id must be a REST ID");
+  return number;
+}
+
 function markerRecord(comment, kind, key, value) {
+  numericRestCommentId(comment.id);
   return { kind, key, commentId: comment.id, createdAt: comment.createdAt, value };
+}
+
+const APPLY_MARKER = /^<!-- smith:apply\/v1 role=([a-z][a-z0-9-]*) decision=([0-9a-f]{64}) operation=(0|[1-9][0-9]*) digest=([0-9a-f]{64}) phase=complete -->$/;
+
+function semanticMarkerBody(comment) {
+  const lines = comment.body.split("\n");
+  if (lines.length !== 2 || !lines[0].startsWith("<!-- smith:")) return { body: comment.body, pairedRole: null };
+  const apply = APPLY_MARKER.exec(lines[1]);
+  if (apply === null) return null;
+  const operationDigest = digestJson({ type: "comment", entityId: comment.entityId, body: lines[0], marker: lines[0] });
+  if (apply[4] !== operationDigest || !Number.isSafeInteger(Number(apply[3]))) return null;
+  return { body: lines[0], pairedRole: apply[1] };
 }
 
 function latestMarkers(records) {
@@ -612,8 +707,10 @@ function latestMarkers(records) {
   for (const record of records) {
     const id = `${record.kind}:${record.key}`;
     const previous = groups.get(id);
-    if (!previous || record.createdAt > previous.createdAt || (record.createdAt === previous.createdAt && record.commentId > previous.commentId)) groups.set(id, record);
-    if (previous && record.createdAt === previous.createdAt && digestJson(record.value) !== digestJson(previous.value)) fail("marker conflict at equal authority order");
+    const commentNumber = numericRestCommentId(record.commentId);
+    const previousNumber = previous === undefined ? null : numericRestCommentId(previous.commentId);
+    if (!previous || record.createdAt > previous.createdAt || (record.createdAt === previous.createdAt && commentNumber > previousNumber)) groups.set(id, record);
+    if (previous && record.createdAt === previous.createdAt && commentNumber === previousNumber && digestJson(record.value) !== digestJson(previous.value)) fail("marker conflict at equal authority order");
   }
   return [...groups.values()].sort((a, b) => canonicalBytes(a).compare(canonicalBytes(b)));
 }
@@ -628,8 +725,14 @@ export function parseLegacyMarkers({ comments, trust }) {
     exact(input, enveloped ? ["id", "actorId", "createdAt", "updatedAt", "body", "repositoryId", "entityId"] : ["id", "actorId", "createdAt", "body", "repositoryId", "entityId"], "marker comment");
     let body;
     if (enveloped) {
-      exact(input.body, ["trust", "source", "bytes", "digest", "data"], "marker comment body");
-      if (input.body.trust !== "untrusted" || typeof input.body.data !== "string" || input.body.bytes !== canonicalBytes(input.body.data).length || input.body.digest !== digestJson(input.body.data)) fail("marker comment body is invalid");
+      const projected = Object.hasOwn(input.body, "truncated");
+      exact(input.body, projected ? ["trust", "source", "bytes", "digest", "truncated", "data"] : ["trust", "source", "bytes", "digest", "data"], "marker comment body");
+      if (typeof input.body.data !== "string") fail("marker comment body is invalid");
+      const dataBytes = canonicalBytes(input.body.data).length;
+      const full = input.body.truncated === false;
+      if (input.body.trust !== "untrusted" || !Number.isSafeInteger(input.body.bytes) || input.body.bytes < dataBytes || !DIGEST.test(input.body.digest)
+          || (projected && typeof input.body.truncated !== "boolean") || (projected && full && (input.body.bytes !== dataBytes || input.body.digest !== digestJson(input.body.data)))
+          || (projected && input.body.truncated && input.body.bytes <= dataBytes) || (!projected && (input.body.bytes !== dataBytes || input.body.digest !== digestJson(input.body.data)))) fail("marker comment body is invalid");
       body = input.body.data;
       canonicalInstant(input.updatedAt, "marker comment.updatedAt");
     } else body = input.body;
@@ -638,25 +741,27 @@ export function parseLegacyMarkers({ comments, trust }) {
     for (const key of ["id", "actorId", "body", "repositoryId", "entityId"]) string(comment[key], `marker comment.${key}`, key === "body" ? 65_536 : 4096);
     canonicalInstant(comment.createdAt, "marker comment.createdAt");
     if (comment.actorId !== trust.appId) continue;
+    const semantic = semanticMarkerBody(comment);
+    if (semantic === null) continue;
     let match;
-    if ((match = /^<!-- smith:claude-attempt\/v1 issue=([1-9][0-9]*) branch=claude\/issue-\1 head=([0-9a-f]{40}) outcome=(success|failure|cancelled|skipped) -->$/.exec(comment.body))) {
+    if ((match = /^<!-- smith:claude-attempt\/v1 issue=([1-9][0-9]*) branch=claude\/issue-\1 head=([0-9a-f]{40}) outcome=(success|failure|cancelled|skipped) -->$/.exec(semantic.body))) {
       records.push(markerRecord(comment, "attempt", match[1], { issueId: match[1], branch: `claude/issue-${match[1]}`, headSha: match[2], outcome: match[3] }));
-    } else if ((match = /^<!-- smith:builder-route\/v1 issue=([1-9][0-9]*) id=([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}) source=claude\/issue-\1 target=codex\/issue-\1 phase=(prepared|armed|completed|cancelled) -->$/.exec(comment.body))) {
+    } else if ((match = /^<!-- smith:builder-route\/v1 issue=([1-9][0-9]*) id=([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}) source=claude\/issue-\1 target=codex\/issue-\1 phase=(prepared|armed|completed|cancelled) -->$/.exec(semantic.body))) {
       records.push(markerRecord(comment, "route", match[1], { issueId: match[1], routeId: match[2], source: `claude/issue-${match[1]}`, target: `codex/issue-${match[1]}`, phase: match[3] }));
-    } else if ((match = /^(Review|Security review): ([0-9a-f]{40})\nVERDICT: (reviewed|changes-requested|security-cleared|risk-high)(?:\n|$)/.exec(comment.body))) {
+    } else if ((match = /^(Review|Security review): ([0-9a-f]{40})\nVERDICT: (reviewed|changes-requested|security-cleared|risk-high)(?:\n|$)/.exec(semantic.body))) {
       const kind = match[1] === "Review" ? "correctness" : "security";
       const allowed = kind === "correctness" ? new Set(["reviewed", "changes-requested"]) : new Set(["security-cleared", "risk-high"]);
       if (allowed.has(match[3])) records.push(markerRecord(comment, "review", `${comment.repositoryId}:${comment.entityId}:${kind}:${match[2]}`, { repositoryId: comment.repositoryId, prId: comment.entityId, kind, headSha: match[2], conclusion: new Set(["reviewed", "security-cleared"]).has(match[3]) ? "approve" : "reject", actorId: trust.appId, provider: "claude", authoritative: true, artifactDigest: digestJson({ commentId: comment.id, body: comment.body }) }));
-    } else if ((match = /^<!-- smith:review-evidence\/v1 kind=(correctness|security) head=([0-9a-f]{40}) conclusion=(approve|reject) provider=(claude|codex) authoritative=(true|false) artifact=([0-9a-f]{64}) -->$/.exec(comment.body))) {
+    } else if ((match = /^<!-- smith:review-evidence\/v1 kind=(correctness|security) head=([0-9a-f]{40}) conclusion=(approve|reject) provider=(claude|codex) authoritative=(true|false) artifact=([0-9a-f]{64}) -->$/.exec(semantic.body))) {
       records.push(markerRecord(comment, "review", `${comment.repositoryId}:${comment.entityId}:${match[1]}:${match[2]}`, { repositoryId: comment.repositoryId, prId: comment.entityId, kind: match[1], headSha: match[2], conclusion: match[3], actorId: trust.appId, provider: match[4], authoritative: match[5] === "true", artifactDigest: match[6] }));
-    } else if ((match = /^<!-- smith:risk\/v1 head=([0-9a-f]{40}) finding=([0-9a-f]{64}) status=(open|cleared) created=([^ ]+) cleared=([^ ]+) -->$/.exec(comment.body))) {
+    } else if ((match = /^<!-- smith:risk\/v1 head=([0-9a-f]{40}) finding=([0-9a-f]{64}) status=(open|cleared) created=([^ ]+) cleared=([^ ]+) -->$/.exec(semantic.body))) {
       if ((match[3] === "open" && match[5] !== "-") || (match[3] === "cleared" && match[5] === "-")) continue;
       try { canonicalInstant(match[4], "risk createdAt"); if (match[5] !== "-") canonicalInstant(match[5], "risk clearedAt"); } catch { continue; }
       records.push(markerRecord(comment, "risk", match[1], { headSha: match[1], findingDigest: match[2], status: match[3], createdAt: match[4], clearedAt: match[5] === "-" ? null : match[5] }));
-    } else if ((match = /^<!-- smith:jam\/v1 entity=([^ ]+) head=([0-9a-f]{40}) status=(open|cleared) artifact=([0-9a-f]{64}) -->$/.exec(comment.body))) {
+    } else if ((match = /^<!-- smith:jam\/v1 entity=([^ ]+) head=([0-9a-f]{40}) status=(open|cleared) artifact=([0-9a-f]{64}) -->$/.exec(semantic.body))) {
       records.push(markerRecord(comment, "jam", `${match[1]}:${match[2]}`, { entityId: match[1], headSha: match[2], status: match[3], artifactDigest: match[4] }));
-    } else if ((match = /^<!-- smith:merge-finalized\/v1 pr=([1-9][0-9]*) merge=([0-9a-f]{40}) role=([a-z][a-z0-9-]*) status=(complete|failed) artifact=([0-9a-f]{64}|-) -->$/.exec(comment.body))) {
-      if ((match[4] === "complete") !== (match[5] !== "-")) continue;
+    } else if ((match = /^<!-- smith:merge-finalized\/v1 pr=([1-9][0-9]*) merge=([0-9a-f]{40}) role=([a-z][a-z0-9-]*) status=(complete|failed) artifact=([0-9a-f]{64}|-) -->$/.exec(semantic.body))) {
+      if ((match[4] === "complete") !== (match[5] !== "-") || (semantic.pairedRole !== null && semantic.pairedRole !== match[3])) continue;
       records.push(markerRecord(comment, "finalization", `${comment.repositoryId}:${match[1]}:${match[3]}`, { repositoryId: comment.repositoryId, prId: match[1], mergeSha: match[2], role: match[3], status: match[4], artifactDigest: match[5] === "-" ? null : match[5] }));
     }
   }
@@ -664,8 +769,8 @@ export function parseLegacyMarkers({ comments, trust }) {
 }
 
 export function planReconciliation(request) {
-  exact(request, ["snapshot", "routes", "pulls", "labelSync", "comments", "trust", "reviews", "pioneers", "holds"], "reconciliation");
-  const { snapshot, routes, pulls, labelSync, comments, trust, reviews, pioneers, holds } = request;
+  exactOptional(request, ["snapshot", "routes", "pulls", "labelSync", "comments", "trust", "reviews", "pioneers", "holds"], ["cancelledApplies"], "reconciliation");
+  const { snapshot, routes, pulls, labelSync, comments, trust, reviews, pioneers, holds, cancelledApplies = [] } = request;
   const markers = parseLegacyMarkers({ comments, trust });
   validateSnapshot(snapshot);
   array(routes, "routes");
@@ -673,6 +778,25 @@ export function planReconciliation(request) {
   array(reviews, "reconciliation reviews");
   array(pioneers, "reconciliation pioneers");
   array(holds, "reconciliation holds");
+  array(cancelledApplies, "cancelled applies", 20);
+  const cancelledRunIds = new Set();
+  for (const cancelled of cancelledApplies) {
+    exact(cancelled, ["runId", "workflowPath", "event", "entityId", "headSha", "controlSha", "attempt", "runConclusion", "applyJobId", "failedJobs"], "cancelled apply");
+    restId(cancelled.runId, "cancelled apply run"); restId(cancelled.applyJobId, "cancelled apply job");
+    string(cancelled.workflowPath, "cancelled apply workflow");
+    if (!OPERATIONAL_WORKFLOW_PATHS.has(cancelled.workflowPath)) fail("cancelled apply workflow is invalid");
+    string(cancelled.event, "cancelled apply event"); string(cancelled.entityId, "cancelled apply entity");
+    if (!OPERATIONAL_WORKFLOW_EVENTS[cancelled.workflowPath].includes(cancelled.event)) fail("cancelled apply event is invalid");
+    sha(cancelled.headSha, "cancelled apply head"); sha(cancelled.controlSha, "cancelled apply control");
+    if (cancelled.controlSha !== snapshot.controlSha || !RETRYABLE_RUN_CONCLUSIONS.has(cancelled.runConclusion)) fail("cancelled apply control or conclusion is invalid");
+    if (!Number.isSafeInteger(cancelled.attempt) || cancelled.attempt < 1) fail("cancelled apply attempt is invalid");
+    if (cancelledRunIds.has(cancelled.runId)) fail("duplicate cancelled apply");
+    cancelledRunIds.add(cancelled.runId);
+    const run = snapshot.state?.resources?.runs?.find(candidate => candidate?.id === cancelled.runId);
+    const expectedTitle = cancelled.workflowPath.endsWith("adw-issues.yml") ? `ADW issue #${cancelled.entityId}` : cancelled.workflowPath.endsWith("adw-pulls.yml") ? `ADW pull #${cancelled.entityId}` : null;
+    validateOperationShape({ type: "rerun_check", runId: cancelled.runId, attempt: cancelled.attempt, failedJobs: cancelled.failedJobs });
+    if (!run || run.workflowPath !== cancelled.workflowPath || run.event !== cancelled.event || run.entityId !== cancelled.entityId || (expectedTitle !== null && run.displayTitle !== expectedTitle) || (cancelled.workflowPath.endsWith("adw-operations.yml") && cancelled.entityId !== snapshot.repository.id) || run.headSha !== cancelled.headSha || run.controlSha !== cancelled.controlSha || run.applyJobId !== cancelled.applyJobId || digestJson(run.failedJobs) !== digestJson(cancelled.failedJobs) || run.attempt !== cancelled.attempt || run.status !== "completed" || run.conclusion !== cancelled.runConclusion) fail("cancelled apply is not snapshot-bound");
+  }
   const currentRevisions = snapshot.state.currentRevisions;
   if (!currentRevisions || Array.isArray(currentRevisions) || Object.getPrototypeOf(currentRevisions) !== Object.prototype) fail("snapshot current revisions are required");
   const intents = [];
@@ -686,6 +810,7 @@ export function planReconciliation(request) {
     held.set(hold.entityId, reasons);
     intents.push({ kind: "held", entityId: hold.entityId, reasons });
   }
+  if (!held.has("repository")) for (const cancelled of cancelledApplies) intents.push({ kind: "retry_cancelled_apply", ...cancelled });
   const routeIds = new Set();
   for (const route of routes) {
     exact(route, ["issueId", "sourceRevision", "status", "primary", "fallback", "primaryOutcome", "fallbackOutcome", "artifactDigest", "prId"], "route");
@@ -713,9 +838,9 @@ export function planReconciliation(request) {
     const current = currentRevisions[`issue:${route.issueId}`];
     string(current, "current revision");
     if (current !== route.sourceRevision && !held.has(`issue:${route.issueId}`) && !held.has("repository")) {
-      intents.push({ kind: "retry_route", issueId: route.issueId, sourceRevision: current });
+      intents.push({ kind: "retry_route", repositoryId: snapshot.repository.id, issueId: route.issueId, sourceRevision: current, role: ROUTE_PROVIDER_ROLES[route.primary], provider: route.primary });
     } else if (route.status === "primary" && route.primaryOutcome === "provider_failure" && !held.has(`issue:${route.issueId}`) && !held.has("repository")) {
-      intents.push({ kind: "fallback_route", issueId: route.issueId, sourceRevision: current, provider: route.fallback });
+      intents.push({ kind: "fallback_route", repositoryId: snapshot.repository.id, issueId: route.issueId, sourceRevision: current, role: ROUTE_PROVIDER_ROLES[route.fallback], provider: route.fallback });
     }
   }
   const pullIds = new Set();
@@ -738,6 +863,8 @@ export function planReconciliation(request) {
     for (const obligation of pull.obligations) {
       exact(obligation, ["role", "status", "artifactDigest", "expectedArtifactDigest"], "obligation");
       string(obligation.role, "obligation.role");
+      const obligationProvider = MERGE_OBLIGATION_PROVIDERS[obligation.role];
+      if (obligationProvider === undefined) fail("pull obligation role is unsupported");
       if (obligationRoles.has(obligation.role)) fail("duplicate pull obligation");
       obligationRoles.add(obligation.role);
       oneOf(obligation.status, new Set(["missing", "complete", "failed"]), "obligation.status");
@@ -746,7 +873,7 @@ export function planReconciliation(request) {
       if (obligation.status === "complete" && (obligation.artifactDigest === null || (obligation.expectedArtifactDigest !== null && obligation.artifactDigest !== obligation.expectedArtifactDigest))) fail("completed obligation lacks expected artifact");
       if (obligation.status !== "complete" && obligation.artifactDigest !== null) fail("incomplete obligation has artifact");
       const imported = markers.some(marker => marker.kind === "finalization" && marker.value.repositoryId === snapshot.repository.id && marker.value.prId === pull.prId && marker.value.mergeSha === pull.mergeSha && marker.value.role === obligation.role && marker.value.status === "complete" && marker.value.artifactDigest !== null && (obligation.expectedArtifactDigest === null || marker.value.artifactDigest === obligation.expectedArtifactDigest));
-      if ((obligation.status === "missing" || obligation.status === "failed") && !imported && !held.has(`pr:${pull.prId}`) && !held.has("repository")) intents.push({ kind: "run_obligation", prId: pull.prId, mergeSha: pull.mergeSha, role: obligation.role });
+      if ((obligation.status === "missing" || obligation.status === "failed") && !imported && !held.has(`pr:${pull.prId}`) && !held.has("repository")) intents.push({ kind: "run_obligation", repositoryId: snapshot.repository.id, prId: pull.prId, mergeSha: pull.mergeSha, role: obligation.role, provider: obligationProvider });
     }
   }
   for (const review of reviews) {
@@ -756,7 +883,7 @@ export function planReconciliation(request) {
     if (typeof review.protectedInput !== "boolean") fail("review.protectedInput must be boolean");
     const evidence = [...review.evidence, ...markers.filter(marker => marker.kind === "review" && marker.value.repositoryId === snapshot.repository.id && marker.value.prId === review.prId && marker.value.headSha === review.headSha).map(marker => ({ kind: marker.value.kind, headSha: marker.value.headSha, conclusion: marker.value.conclusion, actorId: marker.value.actorId, provider: marker.value.provider, authoritative: marker.value.authoritative, artifactDigest: marker.value.artifactDigest }))];
     const result = reduceReviews({ evidence, headSha: review.headSha, trust, protectedInput: review.protectedInput });
-    if (!held.has(`pr:${review.prId}`) && !held.has("repository")) for (const reason of result.reasons.filter(reason => reason.endsWith("_missing"))) intents.push({ kind: "run_review", prId: review.prId, headSha: review.headSha, reviewKind: reason.slice(0, -8) });
+    if (!held.has(`pr:${review.prId}`) && !held.has("repository")) for (const reason of result.reasons.filter(reason => reason.endsWith("_missing"))) intents.push({ kind: "run_review", repositoryId: snapshot.repository.id, prId: review.prId, headSha: review.headSha, role: reason === "correctness_missing" ? "reviewer" : "security-reviewer", provider: "claude" });
   }
   const pioneerIds = new Set();
   for (const pioneer of pioneers) {
@@ -773,16 +900,126 @@ export function planReconciliation(request) {
       if (!qualifying || !qualifying.closingIssues.some(issue => issue.repositoryId === snapshot.repository.id && issue.issueId === pioneer.issueId)) fail("pioneer proof lacks qualifying closing pull request");
     } else if (pioneer.closingPrId !== null) fail("non-proof pioneer has closing pull request");
     const current = currentRevisions[`issue:${pioneer.issueId}`]; string(current, "pioneer current revision");
-    if (current !== pioneer.sourceRevision && !held.has(`issue:${pioneer.issueId}`) && !held.has("repository")) intents.push({ kind: "retry_pioneer", issueId: pioneer.issueId, sourceRevision: current });
+    if (current !== pioneer.sourceRevision && !held.has(`issue:${pioneer.issueId}`) && !held.has("repository")) intents.push({ kind: "retry_pioneer", repositoryId: snapshot.repository.id, issueId: pioneer.issueId, sourceRevision: current, role: "pioneer", provider: "claude" });
     else if (pioneer.verdict === "disproved" && !held.has(`issue:${pioneer.issueId}`) && !held.has("repository")) intents.push({ kind: "hold_spec", issueId: pioneer.issueId, artifactDigest: pioneer.artifactDigest });
-    else if ((pioneer.verdict === "missing" || pioneer.verdict === "inconclusive") && !held.has(`issue:${pioneer.issueId}`) && !held.has("repository")) intents.push({ kind: "retry_pioneer", issueId: pioneer.issueId, sourceRevision: current });
+    else if ((pioneer.verdict === "missing" || pioneer.verdict === "inconclusive") && !held.has(`issue:${pioneer.issueId}`) && !held.has("repository")) intents.push({ kind: "retry_pioneer", repositoryId: snapshot.repository.id, issueId: pioneer.issueId, sourceRevision: current, role: "pioneer", provider: "claude" });
   }
   exact(labelSync, ["wantedDigest", "liveDigest"], "labelSync");
   digest(labelSync.wantedDigest, "labelSync.wantedDigest");
   digest(labelSync.liveDigest, "labelSync.liveDigest");
   if (labelSync.wantedDigest !== labelSync.liveDigest && !held.has("repository")) intents.push({ kind: "sync_labels", definitionsDigest: labelSync.wantedDigest });
-  const unique = new Map(intents.map(intent => [digestJson(intent), intent]));
+  const runs = snapshot.state?.resources?.runs ?? [];
+  const recovered = intents.map(intent => {
+    if (!REPOSITORY_DISPATCH_TYPES.has(intent.kind)) return intent;
+    const { kind: eventType, ...clientPayload } = intent;
+    const operationDigest = digestJson({ type: "dispatch_repository", eventType, clientPayload });
+    const workflowPath = `.github/workflows/${REPOSITORY_DISPATCH_WORKFLOWS[eventType]}`;
+    const matches = runs.filter(run => run?.workflowPath === workflowPath && run.event === "repository_dispatch" && run.displayTitle === operationDigest
+      && run.actorId === trust.appId && run.actorType === "Bot" && run.headBranch === snapshot.repository.defaultBranch && run.headSha === snapshot.controlSha);
+    if (matches.length > 1) fail("conflicting repository dispatch child runs");
+    const failedRun = matches.find(run => run.status === "completed" && RETRYABLE_RUN_CONCLUSIONS.has(run.conclusion));
+    if (failedRun === undefined) return intent;
+    restId(failedRun.id, "failed dispatch run");
+    if (!Number.isSafeInteger(failedRun.attempt) || failedRun.attempt < 1) fail("failed dispatch attempt is invalid");
+    validateOperationShape({ type: "rerun_check", runId: failedRun.id, attempt: failedRun.attempt, failedJobs: failedRun.failedJobs });
+    return { kind: "retry_failed_dispatch", runId: failedRun.id, workflowPath, headSha: failedRun.headSha, attempt: failedRun.attempt, failedJobs: failedRun.failedJobs, operationDigest, eventType, clientPayload };
+  });
+  const unique = new Map(recovered.map(intent => [digestJson(intent), intent]));
   return deepFreeze([...unique.values()].sort((a, b) => canonicalBytes(a).compare(canonicalBytes(b))));
+}
+
+function validateReconciliationIntent(intent) {
+  object(intent, "reconciliation intent");
+  if (intent.kind === "held") {
+    exact(intent, ["kind", "entityId", "reasons"], "reconciliation intent");
+    string(intent.entityId, "reconciliation intent entity");
+    const reasons = holdReasons(intent.reasons);
+    if (reasons.length === 0 || digestJson(reasons) !== digestJson(intent.reasons)) fail("reconciliation hold reasons are not canonical");
+  } else if (REPOSITORY_DISPATCH_TYPES.has(intent.kind)) {
+    const { kind, ...clientPayload } = intent;
+    validateRepositoryDispatchPayload(kind, clientPayload);
+  } else if (intent.kind === "retry_cancelled_apply") {
+    exact(intent, ["kind", "runId", "workflowPath", "event", "entityId", "headSha", "controlSha", "attempt", "runConclusion", "applyJobId", "failedJobs"], "reconciliation intent");
+    restId(intent.runId, "reconciliation run"); restId(intent.applyJobId, "reconciliation apply job");
+    sha(intent.headSha, "reconciliation run head"); sha(intent.controlSha, "reconciliation control");
+    string(intent.workflowPath, "reconciliation run workflow"); string(intent.event, "reconciliation run event"); string(intent.entityId, "reconciliation run entity");
+    if (!OPERATIONAL_WORKFLOW_PATHS.has(intent.workflowPath) || !OPERATIONAL_WORKFLOW_EVENTS[intent.workflowPath].includes(intent.event) || !RETRYABLE_RUN_CONCLUSIONS.has(intent.runConclusion) || !Number.isSafeInteger(intent.attempt) || intent.attempt < 1) fail("reconciliation run attempt is invalid");
+    validateOperationShape({ type: "rerun_check", runId: intent.runId, attempt: intent.attempt, failedJobs: intent.failedJobs });
+  } else if (intent.kind === "retry_failed_dispatch") {
+    exact(intent, ["kind", "runId", "workflowPath", "headSha", "attempt", "failedJobs", "operationDigest", "eventType", "clientPayload"], "reconciliation intent");
+    restId(intent.runId, "reconciliation run"); sha(intent.headSha, "reconciliation run head"); digest(intent.operationDigest, "reconciliation parent operation");
+    oneOf(intent.eventType, REPOSITORY_DISPATCH_TYPES, "reconciliation parent event"); validateRepositoryDispatchPayload(intent.eventType, intent.clientPayload);
+    if (intent.workflowPath !== `.github/workflows/${REPOSITORY_DISPATCH_WORKFLOWS[intent.eventType]}` || intent.operationDigest !== digestJson({ type: "dispatch_repository", eventType: intent.eventType, clientPayload: intent.clientPayload }) || !Number.isSafeInteger(intent.attempt) || intent.attempt < 1) fail("failed dispatch retry authority is invalid");
+    validateOperationShape({ type: "rerun_check", runId: intent.runId, attempt: intent.attempt, failedJobs: intent.failedJobs });
+  } else if (intent.kind === "hold_spec") {
+    exact(intent, ["kind", "issueId", "artifactDigest"], "reconciliation intent");
+    restId(intent.issueId, "reconciliation issue"); digest(intent.artifactDigest, "reconciliation artifact");
+  } else if (intent.kind === "sync_labels") {
+    exact(intent, ["kind", "definitionsDigest"], "reconciliation intent");
+    digest(intent.definitionsDigest, "reconciliation label digest");
+  } else fail("reconciliation intent kind is invalid");
+  return copy(intent);
+}
+
+function validateDispatchRevision(snapshot, intent) {
+  if (intent.repositoryId !== snapshot.repository.id) fail("reconciliation dispatch repository does not match");
+  if (["retry_route", "fallback_route", "retry_pioneer"].includes(intent.kind)) {
+    const current = snapshot.state?.currentRevisions?.[`issue:${intent.issueId}`];
+    if (typeof current !== "string" || current !== intent.sourceRevision) fail("reconciliation dispatch source revision is not current");
+    return;
+  }
+  const pulls = snapshot.state?.reconciliation?.pulls;
+  if (!Array.isArray(pulls)) fail("reconciliation dispatch pulls are unavailable");
+  const matches = pulls.filter(pull => pull?.prId === intent.prId && pull.repositoryId === snapshot.repository.id && pull.headRepositoryId === snapshot.repository.id && pull.base === snapshot.repository.defaultBranch);
+  if (matches.length !== 1) fail("reconciliation dispatch pull is not current");
+  const pull = matches[0];
+  if (intent.kind === "run_review") {
+    if (pull.merged !== false || pull.headSha !== intent.headSha) fail("reconciliation dispatch head is not current");
+  } else if (pull.merged !== true || pull.mergeSha !== intent.mergeSha) {
+    fail("reconciliation dispatch merge is not current");
+  }
+}
+
+export function mapReconciliationIntents({ snapshot, intents }) {
+  const trustedSnapshot = validateSnapshot(snapshot);
+  if (trustedSnapshot.routing.role !== "reconciler" || trustedSnapshot.routing.mode !== "single" || trustedSnapshot.routing.primary !== null) fail("reconciliation control authority is invalid");
+  array(intents, "reconciliation intents");
+  const validated = intents.map(validateReconciliationIntent);
+  const ordered = [...validated].sort((left, right) => canonicalBytes(left).compare(canonicalBytes(right)));
+  if (new Set(ordered.map(digestJson)).size !== ordered.length) fail("reconciliation intents contain duplicates");
+  const operations = [];
+  for (const intent of ordered) {
+    if (intent.kind === "held") continue;
+    if (intent.kind === "retry_cancelled_apply") {
+      const run = trustedSnapshot.state?.resources?.runs?.find(candidate => candidate?.id === intent.runId);
+      const expectedTitle = intent.workflowPath.endsWith("adw-issues.yml") ? `ADW issue #${intent.entityId}` : intent.workflowPath.endsWith("adw-pulls.yml") ? `ADW pull #${intent.entityId}` : null;
+      if (!run || run.workflowPath !== intent.workflowPath || run.event !== intent.event || run.entityId !== intent.entityId || (expectedTitle !== null && run.displayTitle !== expectedTitle) || (intent.workflowPath.endsWith("adw-operations.yml") && intent.entityId !== trustedSnapshot.repository.id) || run.headSha !== intent.headSha || run.controlSha !== intent.controlSha || intent.controlSha !== trustedSnapshot.controlSha || run.applyJobId !== intent.applyJobId || digestJson(run.failedJobs) !== digestJson(intent.failedJobs) || run.attempt !== intent.attempt || run.status !== "completed" || run.conclusion !== intent.runConclusion || !RETRYABLE_RUN_CONCLUSIONS.has(intent.runConclusion)) fail("cancelled apply retry is not current");
+      operations.push({ type: "rerun_check", runId: intent.runId, attempt: intent.attempt, failedJobs: intent.failedJobs });
+    } else if (intent.kind === "retry_failed_dispatch") {
+      const run = trustedSnapshot.state?.resources?.runs?.find(candidate => candidate?.id === intent.runId);
+      if (!run || run.workflowPath !== intent.workflowPath || run.displayTitle !== intent.operationDigest || run.event !== "repository_dispatch" || run.headSha !== intent.headSha || digestJson(run.failedJobs) !== digestJson(intent.failedJobs) || run.attempt !== intent.attempt || run.status !== "completed" || !RETRYABLE_RUN_CONCLUSIONS.has(run.conclusion) || run.actorId !== trustedSnapshot.state?.reconciliation?.trust?.appId) fail("failed dispatch retry is not current");
+      operations.push({ type: "rerun_check", runId: intent.runId, attempt: intent.attempt, failedJobs: intent.failedJobs });
+    } else if (intent.kind === "hold_spec") {
+      operations.push({ type: "add_label", entityId: intent.issueId, label: "needs:spec" });
+    } else if (intent.kind === "sync_labels") {
+      operations.push({ type: "sync_labels", definitionsDigest: intent.definitionsDigest });
+    } else {
+      validateDispatchRevision(trustedSnapshot, intent);
+      const { kind, ...clientPayload } = intent;
+      operations.push({ type: "dispatch_repository", eventType: kind, clientPayload });
+    }
+  }
+  if (operations.length === 0) operations.push({ type: "noop", reason: "unchanged" });
+  const unique = new Map(operations.map(operation => [digestJson(operation), validateOperationShape(operation)]));
+  const priority = operation => operation.type === "dispatch_repository" ? 2 : operation.type === "rerun_check" ? 1 : 0;
+  const orderedOperations = [...unique.values()].sort((left, right) => priority(left) - priority(right));
+  let asynchronous = false;
+  return deepFreeze(orderedOperations.filter(operation => {
+    if (operation.type !== "rerun_check" && operation.type !== "dispatch_repository") return true;
+    if (asynchronous) return false;
+    asynchronous = true;
+    return true;
+  }));
 }
 
 export function validateVerification(value) {
