@@ -152,6 +152,10 @@ require .github/workflows/adw-survey.yml 'gpt-5.6-sol' \
 require .github/workflows/adw-survey.yml 'set -o pipefail' \
   'surveyor fails when both providers fail'
 
+require .github/workflows/adw-build.yml "github\.event\.label\.name == 'ready'" \
+  'Claude builder runs only on the ready label event'
+require .github/workflows/adw-build.yml "!contains\(github\.event\.issue\.labels\.\*\.name, 'codex'\)" \
+  'Claude builder stands down when the issue is also labeled codex'
 require .github/workflows/adw-build.yml 'Create the Claude issue branch' \
   'Claude builder creates its stable issue branch before agent mode'
 require .github/workflows/adw-build.yml 'CLAUDE_BRANCH: "claude/issue-\$\{\{ github\.event\.issue\.number \}\}"' \
